@@ -28,14 +28,26 @@ make build
 make run
 ```
 
-By default, `make run` starts Hauth on `http://127.0.0.1:8080`. Override the
-port with `HAUTH_PORT`, for example:
+By default, `make run` starts `hauth serve` on `http://127.0.0.1:8080`.
+Override the port with `HAUTH_PORT` or `--port`, for example:
 
 ```sh
 HAUTH_PORT=18080 make run
+cabal run exe:hauth -- serve --port 18080
 ```
 
 Health checks are available at `/healthz` and `/healthz/deep`.
+
+The CLI exposes explicit command namespaces:
+
+```sh
+cabal run exe:hauth -- --help
+cabal run exe:hauth -- serve --help
+cabal run exe:hauth -- migrate --help
+```
+
+The `migrate` command currently parses `status` and `up`; those actions will be
+wired to the migration runner as part of issue `#5`.
 
 Default language extensions live in `hauth.cabal` under the shared `warnings`
 stanza, so future executables, test suites, and library components inherit the

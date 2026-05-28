@@ -51,6 +51,7 @@ library
     Hauth.API
     Hauth.API.Auth
     Hauth.API.Types
+    Hauth.CLI
     Hauth.Server
   hs-source-dirs: src
   build-depends:

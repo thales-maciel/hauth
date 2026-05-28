@@ -13,7 +13,7 @@ lint:
 	hlint app src test
 
 run:
-	cabal run exe:hauth
+	cabal run exe:hauth -- serve
 
 test:
 	cabal test all
