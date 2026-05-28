@@ -1,22 +1,61 @@
 module Main (main) where
 
+import Hauth.CLI (
+    CliError (..),
+    Command (..),
+    MigrateCommand (..),
+    Port (..),
+    helpText,
+    parseCommand,
+    resolveServePort,
+ )
 import Hauth.Server (runServer)
-import System.Environment (lookupEnv)
-import System.Exit (die)
-import Text.Read (readMaybe)
+import System.Environment (getArgs, lookupEnv)
+import System.Exit (exitFailure)
+import System.IO (hPutStr, hPutStrLn, stderr)
 
 main :: IO ()
 main = do
-    port <- resolvePort
-    runServer port
+    args <- getArgs
+    case parseCommand args of
+        Left err ->
+            printCliError err
+        Right command ->
+            runCommand command
 
-resolvePort :: IO Int
-resolvePort =
-    lookupEnv "HAUTH_PORT" >>= \case
-        Nothing ->
-            pure 8080
-        Just value ->
-            maybe
-                (die ("Invalid HAUTH_PORT: " <> value))
-                pure
-                (readMaybe value)
+runCommand :: Command -> IO ()
+runCommand = \case
+    Help topic ->
+        putStr (helpText topic)
+    Serve options -> do
+        envPort <- lookupEnv "HAUTH_PORT"
+        case resolveServePort envPort options of
+            Left message ->
+                failWith message
+            Right (Port port) ->
+                runServer port
+    Migrate command ->
+        failWith (migrateNotImplementedMessage command)
+
+printCliError :: CliError -> IO ()
+printCliError CliError{cliErrorMessage, cliErrorHelp} = do
+    hPutStrLn stderr cliErrorMessage
+    hPutStrLn stderr ""
+    hPutStr stderr cliErrorHelp
+    exitFailure
+
+failWith :: String -> IO ()
+failWith message = do
+    hPutStrLn stderr message
+    exitFailure
+
+migrateNotImplementedMessage :: MigrateCommand -> String
+migrateNotImplementedMessage command =
+    "hauth migrate "
+        <> migrateCommandName command
+        <> " is not wired to a migration runner yet; see issue #5."
+
+migrateCommandName :: MigrateCommand -> String
+migrateCommandName = \case
+    MigrateStatus -> "status"
+    MigrateUp -> "up"
