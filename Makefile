@@ -1,4 +1,4 @@
-.PHONY: build ci format format-check lint test
+.PHONY: build ci format format-check lint run test
 
 build:
 	cabal build all
@@ -11,6 +11,9 @@ format-check:
 
 lint:
 	hlint app test
+
+run:
+	cabal run exe:hauth
 
 test:
 	cabal test all
