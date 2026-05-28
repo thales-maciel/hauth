@@ -27,6 +27,10 @@ make test
 make build
 ```
 
+Default language extensions live in `hauth.cabal` under the shared `warnings`
+stanza, so future executables, test suites, and library components inherit the
+same baseline.
+
 CI runs formatting, linting, build, and tests on branch pushes and pull
 requests. Pushing a tag matching `v*` builds a Linux x86_64 binary archive and
 publishes it as a GitHub release asset.
