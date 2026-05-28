@@ -4,9 +4,8 @@ version: 0.0.0.0
 synopsis: Postgres-native authentication service
 description:
   Hauth is a Postgres-native authentication service written in Haskell.
-  This package currently contains only the initial executable scaffold.
-author: Hauth contributors
-maintainer: Hauth contributors
+author: Thales Maciel
+maintainer: Thales Maciel
 category: Web
 build-type: Simple
 tested-with: GHC ==9.4.8
