@@ -6,6 +6,9 @@ The current repository is intentionally only a scaffold. The executable exits
 successfully and gives CI/CD a real package to build, lint, format-check, test,
 and release.
 
+The v0.1 Supabase compatibility target is documented in
+[docs/v0.1-compatibility.md](docs/v0.1-compatibility.md).
+
 ## Development
 
 Required tools:
