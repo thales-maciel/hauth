@@ -13,7 +13,7 @@ lint:
 	hlint app src test
 
 run:
-	cabal run exe:hauth -- serve
+	cabal run exe:hauth -- serve --config config.example.json
 
 test:
 	cabal test all

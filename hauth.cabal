@@ -52,6 +52,7 @@ library
     Hauth.API.Auth
     Hauth.API.Types
     Hauth.CLI
+    Hauth.Config
     Hauth.Server
   hs-source-dirs: src
   build-depends:
@@ -88,5 +89,6 @@ test-suite hauth-test
   hs-source-dirs: test
   build-depends:
     base >=4.17 && <5
+    , bytestring >=0.11 && <0.13
     , hauth
   default-language: Haskell2010

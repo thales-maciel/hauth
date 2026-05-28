@@ -1,0 +1,31 @@
+{
+  "database": {
+    "url": "postgresql://hauth:hauth@localhost:5432/hauth",
+    "pool_size": 5
+  },
+  "jwt": {
+    "secret": "0123456789abcdef0123456789abcdef",
+    "issuer": "hauth",
+    "audience": "authenticated",
+    "access_token_ttl_seconds": 3600,
+    "refresh_token_ttl_seconds": 2592000
+  },
+  "site": {
+    "url": "http://localhost:3000",
+    "allowed_redirect_urls": [
+      "http://localhost:3000/auth/callback"
+    ]
+  },
+  "email": {
+    "from": "noreply@example.com",
+    "smtp_host": "localhost",
+    "smtp_port": 1025
+  },
+  "oauth": {
+    "providers": []
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8080
+  }
+}
