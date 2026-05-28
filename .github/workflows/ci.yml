@@ -28,13 +28,13 @@ jobs:
       - name: Install check tools
         run: |
           cabal update
-          cabal install --overwrite-policy=always fourmolu hlint
+          cabal install --overwrite-policy=always fourmolu-0.15.0.0 hlint-3.8
 
       - name: Check formatting
-        run: fourmolu --mode check app test
+        run: fourmolu --mode check app src test
 
       - name: Lint
-        run: hlint app test
+        run: hlint app src test
 
       - name: Build
         run: cabal build all

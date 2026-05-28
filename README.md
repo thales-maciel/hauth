@@ -15,8 +15,8 @@ Required tools:
 
 - GHC 9.4.8
 - Cabal 3.12.1.0
-- Fourmolu
-- HLint
+- Fourmolu 0.15.0.0
+- HLint 3.8
 
 Common commands:
 

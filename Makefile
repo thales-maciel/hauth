@@ -4,13 +4,13 @@ build:
 	cabal build all
 
 format:
-	fourmolu -i app test
+	fourmolu -i app src test
 
 format-check:
-	fourmolu --mode check app test
+	fourmolu --mode check app src test
 
 lint:
-	hlint app test
+	hlint app src test
 
 run:
 	cabal run exe:hauth
