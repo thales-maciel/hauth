@@ -25,7 +25,17 @@ make format
 make lint
 make test
 make build
+make run
 ```
+
+By default, `make run` starts Hauth on `http://127.0.0.1:8080`. Override the
+port with `HAUTH_PORT`, for example:
+
+```sh
+HAUTH_PORT=18080 make run
+```
+
+Health checks are available at `/healthz` and `/healthz/deep`.
 
 Default language extensions live in `hauth.cabal` under the shared `warnings`
 stanza, so future executables, test suites, and library components inherit the

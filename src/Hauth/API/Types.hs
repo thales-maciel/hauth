@@ -41,44 +41,55 @@ module Hauth.API.Types (
     WebhookDeliveryResponse (..),
 ) where
 
+import Data.Aeson (FromJSON, ToJSON)
 import Data.Text (Text)
 import Data.Time (UTCTime)
 import GHC.Generics (Generic)
+import Web.HttpApiData (FromHttpApiData, ToHttpApiData)
 
 newtype UserId = UserId {unUserId :: Text}
     deriving stock (Eq, Generic, Ord, Show)
+    deriving newtype (FromHttpApiData, FromJSON, ToHttpApiData, ToJSON)
 
 newtype Email = Email {unEmail :: Text}
     deriving stock (Eq, Generic, Ord, Show)
+    deriving newtype (FromJSON, ToJSON)
 
 newtype Password = Password {unPassword :: Text}
     deriving stock (Eq, Generic, Show)
+    deriving newtype (FromJSON, ToJSON)
 
 newtype FactorId = FactorId {unFactorId :: Text}
     deriving stock (Eq, Generic, Ord, Show)
+    deriving newtype (FromHttpApiData, FromJSON, ToHttpApiData, ToJSON)
 
 newtype IdentityId = IdentityId {unIdentityId :: Text}
     deriving stock (Eq, Generic, Ord, Show)
+    deriving newtype (FromHttpApiData, FromJSON, ToHttpApiData, ToJSON)
 
 newtype WebhookDeliveryId = WebhookDeliveryId {unWebhookDeliveryId :: Text}
     deriving stock (Eq, Generic, Ord, Show)
+    deriving newtype (FromHttpApiData, FromJSON, ToHttpApiData, ToJSON)
 
 newtype HealthResponse = HealthResponse
     { healthStatus :: Text
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 data DeepHealthResponse = DeepHealthResponse
     { deepHealthStatus :: Text
     , deepHealthChecks :: [Text]
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 data SettingsResponse = SettingsResponse
     { settingsExternalProviders :: [Text]
     , settingsDisableSignup :: Bool
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 data SignupRequest = SignupRequest
     { signupEmail :: Email
@@ -86,6 +97,7 @@ data SignupRequest = SignupRequest
     , signupUserMetadata :: Maybe Text
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 data TokenRequest = TokenRequest
     { tokenEmail :: Maybe Email
@@ -94,23 +106,27 @@ data TokenRequest = TokenRequest
     , tokenCode :: Maybe Text
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 newtype RecoverRequest = RecoverRequest
     { recoverEmail :: Email
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 data VerifyRequest = VerifyRequest
     { verifyToken :: Text
     , verifyType :: Text
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 data ResendRequest = ResendRequest
     { resendEmail :: Email
     , resendType :: Text
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 data UpdateUserRequest = UpdateUserRequest
     { updateUserEmail :: Maybe Email
@@ -118,6 +134,7 @@ data UpdateUserRequest = UpdateUserRequest
     , updateUserMetadata :: Maybe Text
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 data SessionResponse = SessionResponse
     { sessionAccessToken :: Text
@@ -126,6 +143,7 @@ data SessionResponse = SessionResponse
     , sessionUser :: UserResponse
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 data UserResponse = UserResponse
     { userId :: UserId
@@ -134,27 +152,32 @@ data UserResponse = UserResponse
     , userCreatedAt :: UTCTime
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 newtype MessageResponse = MessageResponse
     { message :: Text
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 newtype OAuthAuthorizeResponse = OAuthAuthorizeResponse
     { oauthAuthorizeUrl :: Text
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 newtype ListFactorsResponse = ListFactorsResponse
     { listFactors :: [FactorResponse]
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 data EnrollFactorRequest = EnrollFactorRequest
     { enrollFactorType :: Text
     , enrollFactorFriendlyName :: Maybe Text
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 data FactorResponse = FactorResponse
     { factorId :: FactorId
@@ -162,33 +185,39 @@ data FactorResponse = FactorResponse
     , factorStatus :: Text
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 newtype ChallengeFactorRequest = ChallengeFactorRequest
     { challengeFactorChannel :: Maybe Text
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 data ChallengeFactorResponse = ChallengeFactorResponse
     { challengeFactorId :: Text
     , challengeExpiresAt :: UTCTime
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 data VerifyFactorRequest = VerifyFactorRequest
     { verifyFactorChallengeId :: Text
     , verifyFactorCode :: Text
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 newtype VerifyFactorResponse = VerifyFactorResponse
     { verifyFactorSession :: SessionResponse
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 newtype ListUsersResponse = ListUsersResponse
     { listUsers :: [UserResponse]
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 data AdminCreateUserRequest = AdminCreateUserRequest
     { adminCreateUserEmail :: Email
@@ -196,6 +225,7 @@ data AdminCreateUserRequest = AdminCreateUserRequest
     , adminCreateUserConfirmed :: Bool
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 data AdminUpdateUserRequest = AdminUpdateUserRequest
     { adminUpdateUserEmail :: Maybe Email
@@ -203,57 +233,68 @@ data AdminUpdateUserRequest = AdminUpdateUserRequest
     , adminUpdateUserBannedUntil :: Maybe UTCTime
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 newtype DeletedUserResponse = DeletedUserResponse
     { deletedUserId :: UserId
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 newtype ListIdentitiesResponse = ListIdentitiesResponse
     { listIdentities :: [Text]
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 data GenerateLinkRequest = GenerateLinkRequest
     { generateLinkEmail :: Email
     , generateLinkType :: Text
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 newtype GenerateLinkResponse = GenerateLinkResponse
     { generateLinkActionLink :: Text
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 newtype InviteUserRequest = InviteUserRequest
     { inviteUserEmail :: Email
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 newtype ProvidersResponse = ProvidersResponse
     { providers :: [Text]
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 newtype UpdateProvidersRequest = UpdateProvidersRequest
     { updateProviders :: [Text]
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 newtype EmailTemplatesResponse = EmailTemplatesResponse
     { emailTemplates :: [Text]
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 newtype UpdateEmailTemplatesRequest = UpdateEmailTemplatesRequest
     { updateEmailTemplates :: [Text]
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 newtype WebhookDeliveriesResponse = WebhookDeliveriesResponse
     { webhookDeliveries :: [WebhookDeliveryResponse]
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)
 
 data WebhookDeliveryResponse = WebhookDeliveryResponse
     { webhookDeliveryId :: WebhookDeliveryId
@@ -261,3 +302,4 @@ data WebhookDeliveryResponse = WebhookDeliveryResponse
     , webhookDeliveryAttempts :: Int
     }
     deriving stock (Eq, Generic, Show)
+    deriving anyclass (FromJSON, ToJSON)

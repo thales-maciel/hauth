@@ -13,6 +13,7 @@ tested-with: GHC ==9.4.8
 common warnings
   default-extensions:
     BangPatterns
+    BlockArguments
     DataKinds
     DeriveAnyClass
     DeriveFoldable
@@ -50,21 +51,33 @@ library
     Hauth.API
     Hauth.API.Auth
     Hauth.API.Types
+    Hauth.Server
   hs-source-dirs: src
   build-depends:
-      base >=4.17 && <5
+      aeson >=2.2 && <2.3
+    , base >=4.17 && <5
+    , bytestring >=0.11 && <0.13
+    , http-api-data >=0.6 && <0.7
+    , mtl >=2.2 && <2.4
     , servant >=0.19 && <0.21
     , servant-server >=0.19 && <0.21
     , text >=2.0 && <2.2
     , time >=1.12 && <1.15
+    , wai >=3.2 && <3.3
+    , warp >=3.3 && <3.5
   default-language: Haskell2010
 
 executable hauth
   import: warnings
+  ghc-options:
+    -threaded
+    -rtsopts
+    -with-rtsopts=-N
   main-is: Main.hs
   hs-source-dirs: app
   build-depends:
     base >=4.17 && <5
+    , hauth
   default-language: Haskell2010
 
 test-suite hauth-test
