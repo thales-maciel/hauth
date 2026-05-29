@@ -2,14 +2,50 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  checks:
-    name: Format, lint, and test
+  lint:
+    name: Format and lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install fourmolu
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -L -o "$HOME/.local/bin/fourmolu" \
+            https://github.com/fourmolu/fourmolu/releases/download/v0.15.0.0/fourmolu-0.15.0.0-linux-x86_64
+          chmod +x "$HOME/.local/bin/fourmolu"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Check formatting
+        run: fourmolu --mode check app src test
+
+      - name: Set up hlint
+        uses: haskell-actions/hlint-setup@v2
+        with:
+          version: "3.8"
+
+      - name: Lint
+        uses: haskell-actions/hlint-run@v2
+        with:
+          path: '["app/", "src/", "test/"]'
+          fail-on: warning
+
+  build-test:
+    name: Build and test
     runs-on: ubuntu-latest
 
     steps:
@@ -17,32 +53,33 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Haskell
+        id: setup
         uses: haskell-actions/setup@v2
         with:
           ghc-version: "9.4.8"
           cabal-version: "3.12.1.0"
 
-      - name: Set up mise tools
-        uses: jdx/mise-action@v3
-        env:
-          POSTGRES_CONFIGURE_OPTIONS: "--with-openssl --with-zlib --without-readline --without-icu"
+      - name: Install libpq
+        run: sudo apt-get update && sudo apt-get install -y libpq-dev
 
-      - name: Add Cabal executables to PATH
-        run: echo "$HOME/.cabal/bin" >> "$GITHUB_PATH"
+      - name: Cache cabal store and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ steps.setup.outputs.cabal-store }}
+            dist-newstyle
+          key: ${{ runner.os }}-ghc9.4.8-${{ hashFiles('**/*.cabal', 'cabal.project', 'cabal.project.ci') }}
+          restore-keys: |
+            ${{ runner.os }}-ghc9.4.8-
 
-      - name: Install check tools
-        run: |
-          cabal update
-          cabal install --overwrite-policy=always fourmolu-0.15.0.0 hlint-3.8
+      - name: Update package index
+        run: cabal update
 
-      - name: Check formatting
-        run: fourmolu --mode check app src test
-
-      - name: Lint
-        run: hlint app src test
+      - name: Build dependencies
+        run: cabal build all --only-dependencies --project-file=cabal.project.ci
 
       - name: Build
-        run: mise exec -- cabal build all
+        run: cabal build all --project-file=cabal.project.ci
 
       - name: Test
-        run: mise exec -- cabal test all
+        run: cabal test all --project-file=cabal.project.ci
