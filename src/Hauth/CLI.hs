@@ -7,6 +7,7 @@ module Hauth.CLI (
     ServeOptions (..),
     helpText,
     parseCommand,
+    resolveServeConfigPath,
     resolveServePort,
 ) where
 
@@ -16,8 +17,9 @@ import Text.Read (readMaybe)
 newtype Port = Port {unPort :: Int}
     deriving stock (Eq, Show)
 
-newtype ServeOptions = ServeOptions
-    { servePortOverride :: Maybe Port
+data ServeOptions = ServeOptions
+    { serveConfigPath :: Maybe FilePath
+    , servePortOverride :: Maybe Port
     }
     deriving stock (Eq, Show)
 
@@ -64,18 +66,41 @@ parseCommand = \case
 parseServeCommand :: [String] -> Either CliError Command
 parseServeCommand = \case
     [] ->
-        Right (Serve (ServeOptions Nothing))
+        Right (Serve (ServeOptions Nothing Nothing))
     ["-h"] ->
         Right (Help ServeHelp)
     ["--help"] ->
         Right (Help ServeHelp)
-    ["--port", value] ->
-        Serve . ServeOptions . Just <$> parsePort "--port" value serveHelp
-    ["-p", value] ->
-        Serve . ServeOptions . Just <$> parsePort "-p" value serveHelp
-    [arg]
-        | Just value <- stripPrefix "--port=" arg ->
-            Serve . ServeOptions . Just <$> parsePort "--port" value serveHelp
+    args ->
+        Serve <$> parseServeOptions (ServeOptions Nothing Nothing) args
+
+parseServeOptions :: ServeOptions -> [String] -> Either CliError ServeOptions
+parseServeOptions options = \case
+    [] ->
+        Right options
+    "--config" : value : rest -> do
+        configPath <- parseConfigPath "--config" value
+        parseServeOptions options{serveConfigPath = Just configPath} rest
+    "-c" : value : rest -> do
+        configPath <- parseConfigPath "-c" value
+        parseServeOptions options{serveConfigPath = Just configPath} rest
+    "--port" : value : rest -> do
+        port <- parsePort "--port" value serveHelp
+        parseServeOptions options{servePortOverride = Just port} rest
+    "-p" : value : rest -> do
+        port <- parsePort "-p" value serveHelp
+        parseServeOptions options{servePortOverride = Just port} rest
+    arg : rest
+        | Just value <- stripPrefix "--config=" arg -> do
+            configPath <- parseConfigPath "--config" value
+            parseServeOptions options{serveConfigPath = Just configPath} rest
+        | Just value <- stripPrefix "--port=" arg -> do
+            port <- parsePort "--port" value serveHelp
+            parseServeOptions options{servePortOverride = Just port} rest
+    ["--config"] ->
+        Left (CliError "Missing value for --config." serveHelp)
+    ["-c"] ->
+        Left (CliError "Missing value for -c." serveHelp)
     ["--port"] ->
         Left (CliError "Missing value for --port." serveHelp)
     ["-p"] ->
@@ -100,13 +125,29 @@ parseMigrateCommand = \case
     command : _ ->
         Left (CliError ("Unknown migrate command: " <> command) migrateHelp)
 
-resolveServePort :: Maybe String -> ServeOptions -> Either String Port
-resolveServePort envPort ServeOptions{servePortOverride} =
+resolveServeConfigPath :: Maybe FilePath -> ServeOptions -> Either String FilePath
+resolveServeConfigPath envConfigPath ServeOptions{serveConfigPath} =
+    case serveConfigPath of
+        Just configPath
+            | not (null configPath) ->
+                Right configPath
+        Just _ ->
+            Left "Missing config path. Set HAUTH_CONFIG or pass --config PATH."
+        Nothing ->
+            case envConfigPath of
+                Just configPath
+                    | not (null configPath) ->
+                        Right configPath
+                _ ->
+                    Left "Missing config path. Set HAUTH_CONFIG or pass --config PATH."
+
+resolveServePort :: Port -> Maybe String -> ServeOptions -> Either String Port
+resolveServePort configPort envPort ServeOptions{servePortOverride} =
     case servePortOverride of
         Just port ->
             Right port
         Nothing ->
-            maybe (Right defaultPort) (parseEnvPort "HAUTH_PORT") envPort
+            maybe (Right configPort) (parseEnvPort "HAUTH_PORT") envPort
 
 parseEnvPort :: String -> String -> Either String Port
 parseEnvPort name value =
@@ -124,6 +165,12 @@ parsePort flag value help =
         Nothing ->
             Left (CliError ("Invalid " <> flag <> ": " <> value) help)
 
+parseConfigPath :: String -> FilePath -> Either CliError FilePath
+parseConfigPath flag value =
+    if null value
+        then Left (CliError ("Invalid " <> flag <> ": value must not be empty") serveHelp)
+        else Right value
+
 readPort :: String -> Maybe Port
 readPort value =
     case readMaybe value of
@@ -132,10 +179,6 @@ readPort value =
                 Just (Port port)
         _ ->
             Nothing
-
-defaultPort :: Port
-defaultPort =
-    Port 8080
 
 helpText :: HelpTopic -> String
 helpText = \case
@@ -161,12 +204,13 @@ topLevelHelp =
 serveHelp :: String
 serveHelp =
     unlines
-        [ "Usage: hauth serve [--port PORT]"
+        [ "Usage: hauth serve --config PATH [--port PORT]"
         , ""
         , "Start the Hauth HTTP server."
         , ""
         , "Options:"
-        , "  -p, --port PORT   Listen on PORT instead of HAUTH_PORT or 8080"
+        , "  -c, --config PATH   Load startup config from PATH instead of HAUTH_CONFIG"
+        , "  -p, --port PORT     Listen on PORT instead of HAUTH_PORT or config server.port"
         ]
 
 migrateHelp :: String

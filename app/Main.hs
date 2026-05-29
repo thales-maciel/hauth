@@ -7,8 +7,10 @@ import Hauth.CLI (
     Port (..),
     helpText,
     parseCommand,
+    resolveServeConfigPath,
     resolveServePort,
  )
+import Hauth.Config (Config (..), ServerConfig (..), formatConfigError, loadConfig)
 import Hauth.Server (runServer)
 import System.Environment (getArgs, lookupEnv)
 import System.Exit (exitFailure)
@@ -28,12 +30,23 @@ runCommand = \case
     Help topic ->
         putStr (helpText topic)
     Serve options -> do
+        envConfigPath <- lookupEnv "HAUTH_CONFIG"
         envPort <- lookupEnv "HAUTH_PORT"
-        case resolveServePort envPort options of
+        case resolveServeConfigPath envConfigPath options of
             Left message ->
                 failWith message
-            Right (Port port) ->
-                runServer port
+            Right configPath -> do
+                configResult <- loadConfig configPath
+                case configResult of
+                    Left err ->
+                        failWith (formatConfigError err)
+                    Right config -> do
+                        let configPort = Port (serverPort (configServer config))
+                        case resolveServePort configPort envPort options of
+                            Left message ->
+                                failWith message
+                            Right (Port port) ->
+                                runServer config{configServer = (configServer config){serverPort = port}}
     Migrate command ->
         failWith (migrateNotImplementedMessage command)
 

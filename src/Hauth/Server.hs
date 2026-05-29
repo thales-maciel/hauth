@@ -6,9 +6,12 @@ module Hauth.Server (
 
 import Control.Monad.Except (throwError)
 import qualified Data.ByteString as BS
+import Data.String (fromString)
+import qualified Data.Text as T
 import Hauth.API
 import Hauth.API.Auth
 import Hauth.API.Types
+import Hauth.Config (Config (..), ServerConfig (..))
 import Network.Wai (Application, Request, requestHeaders)
 import qualified Network.Wai.Handler.Warp as Warp
 import Servant.API (type (:<|>) ((:<|>)))
@@ -23,10 +26,14 @@ import Servant.Server (
  )
 import Servant.Server.Experimental.Auth (AuthHandler, mkAuthHandler)
 
-runServer :: Int -> IO ()
-runServer port = do
-    putStrLn ("hauth listening on http://127.0.0.1:" <> show port)
-    Warp.run port app
+runServer :: Config -> IO ()
+runServer Config{configServer = ServerConfig{serverHost, serverPort}} = do
+    putStrLn ("hauth listening on http://" <> T.unpack serverHost <> ":" <> show serverPort)
+    Warp.runSettings
+        ( Warp.setHost (fromString (T.unpack serverHost)) $
+            Warp.setPort serverPort Warp.defaultSettings
+        )
+        app
 
 app :: Application
 app =

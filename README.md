@@ -29,11 +29,21 @@ make run
 ```
 
 By default, `make run` starts `hauth serve` on `http://127.0.0.1:8080`.
-Override the port with `HAUTH_PORT` or `--port`, for example:
+It loads `config.example.json`, validates the full startup configuration, and
+reports field-level errors before the HTTP server starts.
+
+Run with an explicit config path or set `HAUTH_CONFIG`:
 
 ```sh
-HAUTH_PORT=18080 make run
-cabal run exe:hauth -- serve --port 18080
+cabal run exe:hauth -- serve --config config.example.json
+HAUTH_CONFIG=config.example.json cabal run exe:hauth -- serve
+```
+
+Override the configured server port with `HAUTH_PORT` or `--port`, for example:
+
+```sh
+HAUTH_PORT=18080 cabal run exe:hauth -- serve --config config.example.json
+cabal run exe:hauth -- serve --config config.example.json --port 18080
 ```
 
 Health checks are available at `/healthz` and `/healthz/deep`.
