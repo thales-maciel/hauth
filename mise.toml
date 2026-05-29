@@ -2,4 +2,4 @@
 postgres = "16"
 
 [env]
-POSTGRES_EXTRA_CONFIGURE_OPTIONS = "--without-readline"
+POSTGRES_CONFIGURE_OPTIONS = "--with-openssl --with-zlib --without-readline --without-icu"

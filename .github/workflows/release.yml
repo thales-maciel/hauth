@@ -26,7 +26,7 @@ jobs:
       - name: Set up mise tools
         uses: jdx/mise-action@v3
         env:
-          POSTGRES_EXTRA_CONFIGURE_OPTIONS: "--without-readline"
+          POSTGRES_CONFIGURE_OPTIONS: "--with-openssl --with-zlib --without-readline --without-icu"
 
       - name: Update package index
         run: cabal update
