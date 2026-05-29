@@ -22,6 +22,9 @@ jobs:
           ghc-version: "9.4.8"
           cabal-version: "3.12.1.0"
 
+      - name: Set up mise tools
+        uses: jdx/mise-action@v3
+
       - name: Add Cabal executables to PATH
         run: echo "$HOME/.cabal/bin" >> "$GITHUB_PATH"
 
@@ -37,7 +40,7 @@ jobs:
         run: hlint app src test
 
       - name: Build
-        run: cabal build all
+        run: mise exec -- cabal build all
 
       - name: Test
-        run: cabal test all
+        run: mise exec -- cabal test all

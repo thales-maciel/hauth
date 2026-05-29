@@ -23,14 +23,17 @@ jobs:
           ghc-version: "9.4.8"
           cabal-version: "3.12.1.0"
 
+      - name: Set up mise tools
+        uses: jdx/mise-action@v3
+
       - name: Update package index
         run: cabal update
 
       - name: Test
-        run: cabal test all
+        run: mise exec -- cabal test all
 
       - name: Build executable
-        run: cabal build exe:hauth
+        run: mise exec -- cabal build exe:hauth
 
       - name: Package executable
         run: |
@@ -38,7 +41,7 @@ jobs:
           tag="${GITHUB_REF_NAME}"
           target="hauth-${tag}-linux-x86_64"
           mkdir -p dist/release
-          cp "$(cabal list-bin exe:hauth)" "dist/release/${target}"
+          cp "$(mise exec -- cabal list-bin exe:hauth)" "dist/release/${target}"
           chmod +x "dist/release/${target}"
           tar -C dist/release -czf "dist/release/${target}.tar.gz" "${target}"
           cd dist/release
