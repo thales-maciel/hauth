@@ -1,0 +1,9 @@
+Confirm your email address
+
+Follow the link below to confirm {{recipient_email}} and finish signing up.
+
+{{action_url}}
+
+If you didn't create an account, you can safely ignore this email.
+
+-- {{site_url}}

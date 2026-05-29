@@ -1,6 +1,9 @@
 module Main (main) where
 
+import Control.Monad (when)
 import qualified Data.ByteString.Char8 as BSC
+import Data.Text (Text)
+import qualified Data.Text as T
 import Hauth.API (hauthAPI)
 import Hauth.CLI (
     CliError (..),
@@ -31,6 +34,16 @@ import Hauth.Crypto.Password (
     defaultPasswordPolicy,
     hashPassword,
     verifyPassword,
+ )
+import Hauth.Email (
+    EmailError (..),
+    EmailMessage (..),
+    TemplateData (..),
+    TemplateKind (..),
+    renderEmail,
+    sendEmail,
+    stubSender,
+    substituteVars,
  )
 import Hauth.Env (
     AppEnv (..),
@@ -162,16 +175,12 @@ main = do
                 , argon2Memory = 8
                 , argon2Parallelism = 1
                 }
-    -- Round-trip: correct password verifies, wrong password does not.
     hash1 <- hashPassword cheapSettings "correct horse"
     assertEqual "verify correct password" True (verifyPassword hash1 "correct horse")
     assertEqual "verify wrong password" False (verifyPassword hash1 "wrong")
-    -- Different salts: two hashes of the same password differ.
     hash2 <- hashPassword cheapSettings "correct horse"
     assertEqual "different salts produce different hashes" True (hash1 /= hash2)
-    -- Parse error returns False, does not throw.
     assertEqual "bad phc string" False (verifyPassword "not a phc string" "anything")
-    -- Policy checks.
     assertEqual
         "policy rejects empty password"
         (Left (PasswordTooShort 8 0))
@@ -180,6 +189,13 @@ main = do
         "policy accepts min-length password"
         (Right ())
         (checkPasswordPolicy defaultPasswordPolicy "abcdefgh")
+    let fromAddr = "noreply@example.com" :: Text
+    mapM_ (assertRenderEmail fromAddr sampleTemplateData) [minBound .. maxBound]
+    assertSubstituteVars
+    stubResult <- sendEmail stubSender (dummyEmailMessage fromAddr)
+    case stubResult of
+        Left (EmailSendError _) -> pure ()
+        other -> fail ("stubSender: expected EmailSendError, got " <> show other)
     exitSuccess
 
 assertEqual :: (Eq a, Show a) => String -> a -> a -> IO ()
@@ -288,3 +304,88 @@ invalidConfigBytes =
             , "  }"
             , "}"
             ]
+
+-- | Sample template data used in email rendering tests.
+sampleTemplateData :: TemplateData
+sampleTemplateData =
+    TemplateData
+        { templateRecipientEmail = "user@example.com"
+        , templateActionUrl = "https://example.com/auth/confirm?token=abc"
+        , templateSiteUrl = "https://example.com"
+        , templateTokenHash = "abc123"
+        }
+
+-- | Minimal dummy message for stubSender test.
+dummyEmailMessage :: Text -> EmailMessage
+dummyEmailMessage from =
+    EmailMessage
+        { emailTo = "user@example.com"
+        , emailFrom = from
+        , emailSubject = "Test"
+        , emailTextBody = "Test body"
+        , emailHtmlBody = Nothing
+        }
+
+-- | Assert that rendering a given kind returns a well-formed message.
+assertRenderEmail :: Text -> TemplateData -> TemplateKind -> IO ()
+assertRenderEmail from tdata kind =
+    case renderEmail kind from tdata of
+        Left err ->
+            fail ("renderEmail " <> show kind <> ": unexpected error: " <> show err)
+        Right msg -> do
+            let label = show kind
+            assertEqual (label <> " emailTo") (templateRecipientEmail tdata) (emailTo msg)
+            assertEqual (label <> " emailFrom") from (emailFrom msg)
+            assertNonEmptyNoNewline label (emailSubject msg)
+            assertSubstituted label (emailTextBody msg) tdata
+            case emailHtmlBody msg of
+                Nothing ->
+                    fail (label <> ": expected Just htmlBody, got Nothing")
+                Just html ->
+                    assertSubstituted (label <> " html") html tdata
+
+-- | Assert that a subject is non-empty and contains no newlines.
+assertNonEmptyNoNewline :: String -> Text -> IO ()
+assertNonEmptyNoNewline label subj = do
+    when (T.null subj) $
+        fail (label <> " subject: expected non-empty subject")
+    when (T.any (== '\n') subj) $
+        fail (label <> " subject: unexpected newline in subject")
+
+-- | Assert that all four placeholder variables were substituted in a body.
+assertSubstituted :: String -> Text -> TemplateData -> IO ()
+assertSubstituted label body tdata = do
+    assertContains (label <> " recipient_email") (templateRecipientEmail tdata) body
+    assertContains (label <> " action_url") (templateActionUrl tdata) body
+    assertContains (label <> " site_url") (templateSiteUrl tdata) body
+
+assertContains :: String -> Text -> Text -> IO ()
+assertContains label needle haystack =
+    if T.isInfixOf needle haystack
+        then pure ()
+        else
+            fail
+                ( label
+                    <> ": expected "
+                    <> show needle
+                    <> " to appear in body"
+                )
+
+{- | Test the substituteVars helper directly, including unknown placeholder
+pass-through.
+-}
+assertSubstituteVars :: IO ()
+assertSubstituteVars = do
+    let tdata =
+            TemplateData
+                { templateRecipientEmail = "u@x.com"
+                , templateActionUrl = "https://x.com/action"
+                , templateSiteUrl = "https://x.com"
+                , templateTokenHash = "tok"
+                }
+        input = "Hello {{recipient_email}} visit {{action_url}} ref {{token_hash}} unknown {{nope}}"
+        result = substituteVars tdata input
+    assertContains "subst recipient" "u@x.com" result
+    assertContains "subst action" "https://x.com/action" result
+    assertContains "subst token" "tok" result
+    assertContains "subst unknown passthrough" "{{nope}}" result

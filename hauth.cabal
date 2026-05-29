@@ -11,6 +11,7 @@ build-type: Simple
 tested-with: GHC ==9.4.8
 extra-source-files:
   migrations/*.sql
+  templates/*
 
 common warnings
   default-extensions:
@@ -56,6 +57,7 @@ library
     Hauth.CLI
     Hauth.Config
     Hauth.Crypto.Password
+    Hauth.Email
     Hauth.Env
     Hauth.Migrate
     Hauth.Server
@@ -101,4 +103,5 @@ test-suite hauth-test
     base >=4.17 && <5
     , bytestring >=0.11 && <0.13
     , hauth
+    , text >=2.0 && <2.2
   default-language: Haskell2010

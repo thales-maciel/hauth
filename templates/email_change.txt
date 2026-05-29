@@ -1,0 +1,10 @@
+Confirm your new email address
+
+Follow the link below to confirm {{recipient_email}} as your new email address.
+
+{{action_url}}
+
+If you didn't request this change, you can safely ignore this email.
+Your email address will not change until you follow the link above.
+
+-- {{site_url}}
