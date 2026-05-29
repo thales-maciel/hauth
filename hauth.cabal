@@ -9,6 +9,8 @@ maintainer: Thales Maciel
 category: Web
 build-type: Simple
 tested-with: GHC ==9.4.8
+extra-source-files:
+  migrations/*.sql
 
 common warnings
   default-extensions:
@@ -54,12 +56,14 @@ library
     Hauth.CLI
     Hauth.Config
     Hauth.Env
+    Hauth.Migrate
     Hauth.Server
   hs-source-dirs: src
   build-depends:
       aeson >=2.2 && <2.3
     , base >=4.17 && <5
     , bytestring >=0.11 && <0.13
+    , file-embed >=0.0.15 && <0.1
     , http-api-data >=0.6 && <0.7
     , mtl >=2.2 && <2.4
     , postgresql-simple >=0.7 && <0.8
