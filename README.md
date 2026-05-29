@@ -60,8 +60,20 @@ cabal run exe:hauth -- serve --help
 cabal run exe:hauth -- migrate --help
 ```
 
-The `migrate` command currently parses `status` and `up`; those actions will be
-wired to the migration runner as part of issue `#5`.
+The `migrate` command applies SQL migration files compiled into the binary
+(from `migrations/`) in lexicographic order and tracks them in
+`auth.schema_migrations`. The runner also creates the `auth` schema if it does
+not already exist.
+
+```sh
+cabal run exe:hauth -- migrate status --config config.example.json
+cabal run exe:hauth -- migrate up --config config.example.json
+```
+
+Migrations are **forward-only in v0.1**: there is no `down` subcommand and no
+embedded rollback. Recover by restoring a database backup or using
+point-in-time recovery. Down migrations and a richer rollback story will land
+in a later milestone.
 
 Default language extensions live in `hauth.cabal` under the shared `warnings`
 stanza, so future executables, test suites, and library components inherit the

@@ -3,17 +3,20 @@ module Main (main) where
 import Hauth.CLI (
     CliError (..),
     Command (..),
-    MigrateCommand (..),
+    MigrateCommand,
+    MigrateOptions,
     Port (..),
     helpText,
     parseCommand,
+    resolveMigrateConfigPath,
     resolveServeConfigPath,
     resolveServePort,
  )
 import Hauth.Config (Config (..), ServerConfig (..), formatConfigError, loadConfig)
+import Hauth.Migrate (runMigrate)
 import Hauth.Server (runServer)
 import System.Environment (getArgs, lookupEnv)
-import System.Exit (exitFailure)
+import System.Exit (exitFailure, exitWith)
 import System.IO (hPutStr, hPutStrLn, stderr)
 
 main :: IO ()
@@ -36,19 +39,36 @@ runCommand = \case
             Left message ->
                 failWith message
             Right configPath -> do
-                configResult <- loadConfig configPath
-                case configResult of
-                    Left err ->
-                        failWith (formatConfigError err)
-                    Right config -> do
-                        let configPort = Port (serverPort (configServer config))
-                        case resolveServePort configPort envPort options of
-                            Left message ->
-                                failWith message
-                            Right (Port port) ->
-                                runServer config{configServer = (configServer config){serverPort = port}}
-    Migrate command ->
-        failWith (migrateNotImplementedMessage command)
+                config <- loadConfigOrExit configPath
+                let configPort = Port (serverPort (configServer config))
+                case resolveServePort configPort envPort options of
+                    Left message ->
+                        failWith message
+                    Right (Port port) ->
+                        runServer config{configServer = (configServer config){serverPort = port}}
+    Migrate options command -> do
+        envConfigPath <- lookupEnv "HAUTH_CONFIG"
+        runMigrateCommand envConfigPath options command
+
+runMigrateCommand :: Maybe FilePath -> MigrateOptions -> MigrateCommand -> IO ()
+runMigrateCommand envConfigPath options command =
+    case resolveMigrateConfigPath envConfigPath options of
+        Left message ->
+            failWith message
+        Right configPath -> do
+            config <- loadConfigOrExit configPath
+            code <- runMigrate config command
+            exitWith code
+
+loadConfigOrExit :: FilePath -> IO Config
+loadConfigOrExit configPath = do
+    result <- loadConfig configPath
+    case result of
+        Left err -> do
+            hPutStrLn stderr (formatConfigError err)
+            exitFailure
+        Right config ->
+            pure config
 
 printCliError :: CliError -> IO ()
 printCliError CliError{cliErrorMessage, cliErrorHelp} = do
@@ -61,14 +81,3 @@ failWith :: String -> IO ()
 failWith message = do
     hPutStrLn stderr message
     exitFailure
-
-migrateNotImplementedMessage :: MigrateCommand -> String
-migrateNotImplementedMessage command =
-    "hauth migrate "
-        <> migrateCommandName command
-        <> " is not wired to a migration runner yet; see issue #5."
-
-migrateCommandName :: MigrateCommand -> String
-migrateCommandName = \case
-    MigrateStatus -> "status"
-    MigrateUp -> "up"

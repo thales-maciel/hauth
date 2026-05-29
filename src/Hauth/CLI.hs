@@ -3,10 +3,12 @@ module Hauth.CLI (
     Command (..),
     HelpTopic (..),
     MigrateCommand (..),
+    MigrateOptions (..),
     Port (..),
     ServeOptions (..),
     helpText,
     parseCommand,
+    resolveMigrateConfigPath,
     resolveServeConfigPath,
     resolveServePort,
 ) where
@@ -20,6 +22,11 @@ newtype Port = Port {unPort :: Int}
 data ServeOptions = ServeOptions
     { serveConfigPath :: Maybe FilePath
     , servePortOverride :: Maybe Port
+    }
+    deriving stock (Eq, Show)
+
+newtype MigrateOptions = MigrateOptions
+    { migrateConfigPath :: Maybe FilePath
     }
     deriving stock (Eq, Show)
 
@@ -37,7 +44,7 @@ data HelpTopic
 data Command
     = Help HelpTopic
     | Serve ServeOptions
-    | Migrate MigrateCommand
+    | Migrate MigrateOptions MigrateCommand
     deriving stock (Eq, Show)
 
 data CliError = CliError
@@ -79,10 +86,10 @@ parseServeOptions options = \case
     [] ->
         Right options
     "--config" : value : rest -> do
-        configPath <- parseConfigPath "--config" value
+        configPath <- parseConfigPath "--config" serveHelp value
         parseServeOptions options{serveConfigPath = Just configPath} rest
     "-c" : value : rest -> do
-        configPath <- parseConfigPath "-c" value
+        configPath <- parseConfigPath "-c" serveHelp value
         parseServeOptions options{serveConfigPath = Just configPath} rest
     "--port" : value : rest -> do
         port <- parsePort "--port" value serveHelp
@@ -92,7 +99,7 @@ parseServeOptions options = \case
         parseServeOptions options{servePortOverride = Just port} rest
     arg : rest
         | Just value <- stripPrefix "--config=" arg -> do
-            configPath <- parseConfigPath "--config" value
+            configPath <- parseConfigPath "--config" serveHelp value
             parseServeOptions options{serveConfigPath = Just configPath} rest
         | Just value <- stripPrefix "--port=" arg -> do
             port <- parsePort "--port" value serveHelp
@@ -118,28 +125,67 @@ parseMigrateCommand = \case
         Right (Help MigrateHelp)
     ["help"] ->
         Right (Help MigrateHelp)
-    ["status"] ->
-        Right (Migrate MigrateStatus)
-    ["up"] ->
-        Right (Migrate MigrateUp)
-    command : _ ->
-        Left (CliError ("Unknown migrate command: " <> command) migrateHelp)
+    sub : rest -> do
+        cmd <- parseMigrateSubcommand sub
+        opts <- parseMigrateOptions (MigrateOptions Nothing) rest
+        pure (Migrate opts cmd)
+
+parseMigrateSubcommand :: String -> Either CliError MigrateCommand
+parseMigrateSubcommand = \case
+    "status" ->
+        Right MigrateStatus
+    "up" ->
+        Right MigrateUp
+    other ->
+        Left (CliError ("Unknown migrate command: " <> other) migrateHelp)
+
+parseMigrateOptions :: MigrateOptions -> [String] -> Either CliError MigrateOptions
+parseMigrateOptions options = \case
+    [] ->
+        Right options
+    "--config" : value : rest -> do
+        configPath <- parseConfigPath "--config" migrateHelp value
+        parseMigrateOptions options{migrateConfigPath = Just configPath} rest
+    "-c" : value : rest -> do
+        configPath <- parseConfigPath "-c" migrateHelp value
+        parseMigrateOptions options{migrateConfigPath = Just configPath} rest
+    arg : rest
+        | Just value <- stripPrefix "--config=" arg -> do
+            configPath <- parseConfigPath "--config" migrateHelp value
+            parseMigrateOptions options{migrateConfigPath = Just configPath} rest
+    ["--config"] ->
+        Left (CliError "Missing value for --config." migrateHelp)
+    ["-c"] ->
+        Left (CliError "Missing value for -c." migrateHelp)
+    args ->
+        Left (CliError ("Unknown migrate option(s): " <> unwords args) migrateHelp)
 
 resolveServeConfigPath :: Maybe FilePath -> ServeOptions -> Either String FilePath
 resolveServeConfigPath envConfigPath ServeOptions{serveConfigPath} =
-    case serveConfigPath of
+    resolveConfigPath serveConfigPath envConfigPath
+
+resolveMigrateConfigPath :: Maybe FilePath -> MigrateOptions -> Either String FilePath
+resolveMigrateConfigPath envConfigPath MigrateOptions{migrateConfigPath} =
+    resolveConfigPath migrateConfigPath envConfigPath
+
+resolveConfigPath :: Maybe FilePath -> Maybe FilePath -> Either String FilePath
+resolveConfigPath optionPath envPath =
+    case optionPath of
         Just configPath
             | not (null configPath) ->
                 Right configPath
         Just _ ->
-            Left "Missing config path. Set HAUTH_CONFIG or pass --config PATH."
+            missing
         Nothing ->
-            case envConfigPath of
+            case envPath of
                 Just configPath
                     | not (null configPath) ->
                         Right configPath
                 _ ->
-                    Left "Missing config path. Set HAUTH_CONFIG or pass --config PATH."
+                    missing
+  where
+    missing =
+        Left "Missing config path. Set HAUTH_CONFIG or pass --config PATH."
 
 resolveServePort :: Port -> Maybe String -> ServeOptions -> Either String Port
 resolveServePort configPort envPort ServeOptions{servePortOverride} =
@@ -165,10 +211,10 @@ parsePort flag value help =
         Nothing ->
             Left (CliError ("Invalid " <> flag <> ": " <> value) help)
 
-parseConfigPath :: String -> FilePath -> Either CliError FilePath
-parseConfigPath flag value =
+parseConfigPath :: String -> String -> FilePath -> Either CliError FilePath
+parseConfigPath flag help value =
     if null value
-        then Left (CliError ("Invalid " <> flag <> ": value must not be empty") serveHelp)
+        then Left (CliError ("Invalid " <> flag <> ": value must not be empty") help)
         else Right value
 
 readPort :: String -> Maybe Port
@@ -216,13 +262,14 @@ serveHelp =
 migrateHelp :: String
 migrateHelp =
     unlines
-        [ "Usage: hauth migrate COMMAND"
+        [ "Usage: hauth migrate COMMAND [--config PATH]"
         , ""
         , "Manage database migrations."
         , ""
         , "Commands:"
-        , "  status   Show migration status"
-        , "  up       Apply pending migrations"
+        , "  status   Show applied and pending migrations"
+        , "  up       Apply pending migrations in order"
         , ""
-        , "Migration actions are parsed now and will be wired to the runner in issue #5."
+        , "Options:"
+        , "  -c, --config PATH   Load startup config from PATH instead of HAUTH_CONFIG"
         ]
