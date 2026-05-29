@@ -18,16 +18,30 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Haskell
+        id: setup
         uses: haskell-actions/setup@v2
         with:
           ghc-version: "9.4.8"
           cabal-version: "3.12.1.0"
 
+      - name: Install libpq
+        run: sudo apt-get update && sudo apt-get install -y libpq-dev
+
+      - name: Cache cabal store and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ steps.setup.outputs.cabal-store }}
+            dist-newstyle
+          key: ${{ runner.os }}-ghc9.4.8-${{ hashFiles('**/*.cabal', 'cabal.project', 'cabal.project.ci') }}
+          restore-keys: |
+            ${{ runner.os }}-ghc9.4.8-
+
       - name: Update package index
         run: cabal update
 
       - name: Test
-        run: cabal test all
+        run: cabal test all --project-file=cabal.project.ci
 
       - name: Build executable
         run: cabal build exe:hauth

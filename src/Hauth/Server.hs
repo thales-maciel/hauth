@@ -4,42 +4,69 @@ module Hauth.Server (
     server,
 ) where
 
+import Control.Exception (bracket)
 import Control.Monad.Except (throwError)
+import Control.Monad.Reader (ReaderT, ask, runReaderT)
 import qualified Data.ByteString as BS
+import Data.Proxy (Proxy (Proxy))
 import Data.String (fromString)
 import qualified Data.Text as T
 import Hauth.API
 import Hauth.API.Auth
 import Hauth.API.Types
 import Hauth.Config (Config (..), ServerConfig (..))
+import Hauth.Env (AppEnv (..), LogLevel (..), createAppEnv, destroyAppEnv, logMessage)
 import Network.Wai (Application, Request, requestHeaders)
 import qualified Network.Wai.Handler.Warp as Warp
 import Servant.API (type (:<|>) ((:<|>)))
 import Servant.Server (
     Context (EmptyContext, (:.)),
     Handler,
-    Server,
     ServerError (errBody),
+    ServerT,
     err401,
     err501,
+    hoistServerWithContext,
     serveWithContext,
  )
 import Servant.Server.Experimental.Auth (AuthHandler, mkAuthHandler)
 
+type AppHandler = ReaderT AppEnv Handler
+
+type AuthContext =
+    '[ AuthHandler Request AnonymousPrincipal
+     , AuthHandler Request SessionPrincipal
+     , AuthHandler Request ServiceRolePrincipal
+     ]
+
 runServer :: Config -> IO ()
-runServer Config{configServer = ServerConfig{serverHost, serverPort}} = do
-    putStrLn ("hauth listening on http://" <> T.unpack serverHost <> ":" <> show serverPort)
-    Warp.runSettings
-        ( Warp.setHost (fromString (T.unpack serverHost)) $
-            Warp.setPort serverPort Warp.defaultSettings
+runServer config =
+    bracket (createAppEnv config) destroyAppEnv \env@AppEnv{appConfig, appLogger} -> do
+        let Config{configServer = ServerConfig{serverHost, serverPort}} = appConfig
+        logMessage appLogger LogInfo ("hauth listening on http://" <> serverHost <> ":" <> T.pack (show serverPort))
+        Warp.runSettings
+            ( Warp.setHost (fromString (T.unpack serverHost)) $
+                Warp.setPort serverPort Warp.defaultSettings
+            )
+            (app env)
+
+app :: AppEnv -> Application
+app env =
+    serveWithContext
+        hauthAPI
+        authContext
+        ( hoistServerWithContext
+            hauthAPI
+            (Proxy :: Proxy AuthContext)
+            (runAppHandler env)
+            server
         )
-        app
 
-app :: Application
-app =
-    serveWithContext hauthAPI authContext server
+runAppHandler :: AppEnv -> AppHandler a -> Handler a
+runAppHandler env handler =
+    runReaderT handler env
 
-server :: Server HauthAPI
+server :: ServerT HauthAPI AppHandler
 server =
     operatorServer
         :<|> publicAuthServer
@@ -47,12 +74,12 @@ server =
         :<|> mfaServer
         :<|> adminServer
 
-operatorServer :: Server OperatorAPI
+operatorServer :: ServerT OperatorAPI AppHandler
 operatorServer =
     healthHandler
         :<|> deepHealthHandler
 
-publicAuthServer :: Server PublicAuthAPI
+publicAuthServer :: ServerT PublicAuthAPI AppHandler
 publicAuthServer =
     notImplemented1
         :<|> notImplemented2
@@ -63,13 +90,13 @@ publicAuthServer =
         :<|> notImplemented3
         :<|> notImplemented3
 
-sessionServer :: Server SessionAPI
+sessionServer :: ServerT SessionAPI AppHandler
 sessionServer =
     notImplemented1
         :<|> notImplemented2
         :<|> notImplemented2
 
-mfaServer :: Server MfaAPI
+mfaServer :: ServerT MfaAPI AppHandler
 mfaServer =
     notImplemented1
         :<|> notImplemented2
@@ -77,13 +104,13 @@ mfaServer =
         :<|> notImplemented3
         :<|> notImplemented2
 
-adminServer :: Server AdminAPI
+adminServer :: ServerT AdminAPI AppHandler
 adminServer =
     adminUsersServer
         :<|> adminConfigServer
         :<|> adminWebhookServer
 
-adminUsersServer :: Server AdminUsersAPI
+adminUsersServer :: ServerT AdminUsersAPI AppHandler
 adminUsersServer =
     notImplemented3
         :<|> notImplemented2
@@ -95,53 +122,51 @@ adminUsersServer =
         :<|> notImplemented2
         :<|> notImplemented2
 
-adminConfigServer :: Server AdminConfigAPI
+adminConfigServer :: ServerT AdminConfigAPI AppHandler
 adminConfigServer =
     notImplemented1
         :<|> notImplemented2
         :<|> notImplemented1
         :<|> notImplemented2
 
-adminWebhookServer :: Server AdminWebhookAPI
+adminWebhookServer :: ServerT AdminWebhookAPI AppHandler
 adminWebhookServer =
     notImplemented2
         :<|> notImplemented2
         :<|> notImplemented2
 
-healthHandler :: AnonymousPrincipal -> Handler HealthResponse
-healthHandler _ =
+healthHandler :: AnonymousPrincipal -> AppHandler HealthResponse
+healthHandler _ = do
+    _env <- ask
     pure HealthResponse{healthStatus = "ok"}
 
-deepHealthHandler :: AnonymousPrincipal -> Handler DeepHealthResponse
-deepHealthHandler _ =
+deepHealthHandler :: AnonymousPrincipal -> AppHandler DeepHealthResponse
+deepHealthHandler _ = do
+    _env <- ask
     pure
         DeepHealthResponse
             { deepHealthStatus = "ok"
-            , deepHealthChecks = ["process"]
+            , deepHealthChecks = ["process", "config", "postgres-pool"]
             }
 
-notImplemented :: Handler a
+notImplemented :: AppHandler a
 notImplemented =
     throwError err501{errBody = "Not implemented"}
 
-notImplemented1 :: a -> Handler b
+notImplemented1 :: a -> AppHandler b
 notImplemented1 _ =
     notImplemented
 
-notImplemented2 :: a -> b -> Handler c
+notImplemented2 :: a -> b -> AppHandler c
 notImplemented2 _ _ =
     notImplemented
 
-notImplemented3 :: a -> b -> c -> Handler d
+notImplemented3 :: a -> b -> c -> AppHandler d
 notImplemented3 _ _ _ =
     notImplemented
 
 authContext ::
-    Context
-        '[ AuthHandler Request AnonymousPrincipal
-         , AuthHandler Request SessionPrincipal
-         , AuthHandler Request ServiceRolePrincipal
-         ]
+    Context AuthContext
 authContext =
     anonymousAuth
         :. validSessionAuth

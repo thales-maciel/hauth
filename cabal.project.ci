@@ -1,0 +1,2 @@
+import: cabal.project
+optimization: 0

@@ -21,12 +21,18 @@ import Hauth.Config (
     ServerConfig (..),
     decodeConfigBytes,
  )
-import Hauth.Server (app)
+import Hauth.Env (
+    AppEnv (..),
+    Logger (..),
+    createAppEnvWithLogger,
+    destroyAppEnv,
+ )
+import Hauth.Server (server)
 import System.Exit (exitSuccess)
 
 main :: IO ()
 main = do
-    hauthAPI `seq` app `seq` pure ()
+    hauthAPI `seq` server `seq` pure ()
     assertEqual "top-level help" (Right (Help TopLevelHelp)) (parseCommand ["--help"])
     assertEqual "serve default" (Right (Serve (ServeOptions Nothing Nothing))) (parseCommand ["serve"])
     assertEqual
@@ -57,6 +63,9 @@ main = do
         Right config -> do
             assertEqual "config database url" "postgresql://hauth:hauth@localhost:5432/hauth" (databaseUrl (configDatabase config))
             assertEqual "config server port" 8080 (serverPort (configServer config))
+            env <- createAppEnvWithLogger testLogger config
+            assertEqual "env config" config (appConfig env)
+            destroyAppEnv env
     assertConfigFields
         "missing config sections"
         ["database", "jwt", "site", "email", "oauth", "server"]
@@ -106,6 +115,11 @@ assertConfigFields label expected (Left (ConfigValidationError _ errors)) =
     assertEqual label expected (fmap configFieldPath errors)
 assertConfigFields label _ actual =
     fail (label <> ": expected config validation error, got " <> show actual)
+
+testLogger :: Logger
+testLogger =
+    Logger \_level _message ->
+        pure ()
 
 validConfigBytes :: BSC.ByteString
 validConfigBytes =

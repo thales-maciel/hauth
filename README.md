@@ -17,20 +17,24 @@ Required tools:
 - Cabal 3.12.1.0
 - Fourmolu 0.15.0.0
 - HLint 3.8
+- mise 2026.2.3 or newer
 
 Common commands:
 
 ```sh
-make format
-make lint
-make test
-make build
-make run
+mise install
+mise exec -- make format
+mise exec -- make lint
+mise exec -- make test
+mise exec -- make build
+mise exec -- make run
 ```
 
 By default, `make run` starts `hauth serve` on `http://127.0.0.1:8080`.
 It loads `config.example.json`, validates the full startup configuration, and
-reports field-level errors before the HTTP server starts.
+reports field-level errors before the HTTP server starts. Startup also builds
+the shared application environment used by request handlers, including the
+loaded config, a logger placeholder, and a Postgres connection pool.
 
 Run with an explicit config path or set `HAUTH_CONFIG`:
 
