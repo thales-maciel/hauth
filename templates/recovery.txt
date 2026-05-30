@@ -1,0 +1,11 @@
+Reset your password
+
+We received a request to reset the password for {{recipient_email}}.
+Follow the link below to choose a new password.
+
+{{action_url}}
+
+If you didn't request this, you can safely ignore this email.
+Your password will not change until you follow the link above.
+
+-- {{site_url}}

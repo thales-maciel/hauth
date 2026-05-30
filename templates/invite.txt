@@ -1,0 +1,9 @@
+You've been invited
+
+You've been invited to create an account at {{site_url}}.
+This invitation was sent to {{recipient_email}}.
+Follow the link below to accept the invitation and set your password.
+
+{{action_url}}
+
+If you weren't expecting this invitation, you can safely ignore this email.
