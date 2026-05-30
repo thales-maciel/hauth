@@ -68,9 +68,13 @@ jobs:
           path: |
             ${{ steps.setup.outputs.cabal-store }}
             dist-newstyle
-          key: ${{ runner.os }}-ghc9.4.8-${{ hashFiles('**/*.cabal', 'cabal.project', 'cabal.project.ci') }}
+          key: ${{ runner.os }}-ghc9.4.8-${{ hashFiles('**/*.cabal', 'cabal.project', 'cabal.project.ci', 'migrations/**/*.sql', 'templates/**') }}
           restore-keys: |
             ${{ runner.os }}-ghc9.4.8-
+
+      - name: Refresh source mtimes
+        # Cache restore stamps dist-newstyle artifacts newer than checked-out sources, defeating GHC's TH addDependentFile tracking on changed embedded files.
+        run: find migrations templates src app test -type f -exec touch {} + 2>/dev/null || true
 
       - name: Update package index
         run: cabal update
