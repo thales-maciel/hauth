@@ -10,7 +10,7 @@ import Control.Exception (SomeException, bracket, try)
 import Control.Monad (when)
 import Control.Monad.Except (throwError)
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.Reader (ReaderT, ask, runReaderT)
+import Control.Monad.Reader (ReaderT, ask, asks, runReaderT)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy.Char8 as BSLC
@@ -92,7 +92,7 @@ operatorServer =
 
 publicAuthServer :: ServerT PublicAuthAPI AppHandler
 publicAuthServer =
-    notImplemented1
+    settingsHandler
         :<|> notImplemented2
         :<|> notImplemented3
         :<|> notImplemented2
@@ -225,6 +225,10 @@ checkPostgres env = do
             , deepHealthCheckOutcome = outcome
             , deepHealthCheckLatencyMs = latencyMs
             }
+
+settingsHandler :: AnonymousPrincipal -> AppHandler SettingsResponse
+settingsHandler _ =
+    asks (buildSettingsResponse . appConfig)
 
 notImplemented :: AppHandler a
 notImplemented =
