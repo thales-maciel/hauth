@@ -6,14 +6,17 @@ module Hauth.Server (
 
 import Control.Exception (bracket)
 import Control.Monad.Except (throwError)
+import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader (ReaderT, ask, runReaderT)
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy.Char8 as BSLC
 import Data.Proxy (Proxy (Proxy))
 import Data.String (fromString)
 import qualified Data.Text as T
 import Hauth.API
 import Hauth.API.Auth
 import Hauth.API.Types
+import Hauth.Auth.Jwt (validateAccessToken)
 import Hauth.Config (Config (..), ServerConfig (..))
 import Hauth.Env (AppEnv (..), LogLevel (..), createAppEnv, destroyAppEnv, logMessage)
 import Network.Wai (Application, Request, requestHeaders)
@@ -54,7 +57,7 @@ app :: AppEnv -> Application
 app env =
     serveWithContext
         hauthAPI
-        authContext
+        (authContext env)
         ( hoistServerWithContext
             hauthAPI
             (Proxy :: Proxy AuthContext)
@@ -166,11 +169,11 @@ notImplemented3 _ _ _ =
     notImplemented
 
 authContext ::
-    Context AuthContext
-authContext =
+    AppEnv -> Context AuthContext
+authContext env =
     anonymousAuth
         :. validSessionAuth
-        :. serviceRoleAuth
+        :. serviceRoleAuth env
         :. EmptyContext
 
 anonymousAuth :: AuthHandler Request AnonymousPrincipal
@@ -189,11 +192,18 @@ validSessionAuth =
                 , sessionAccessTokenId = "authorization-header"
                 }
 
-serviceRoleAuth :: AuthHandler Request ServiceRolePrincipal
-serviceRoleAuth =
+serviceRoleAuth :: AppEnv -> AuthHandler Request ServiceRolePrincipal
+serviceRoleAuth env =
     mkAuthHandler \request -> do
-        requireAuthorization request
-        pure ServiceRolePrincipal{serviceRoleName = "service_role"}
+        let AppEnv{appConfig} = env
+            Config{configJwt} = appConfig
+        token <- case extractBearerToken (requestHeaders request) of
+            Left msg -> throwError err401{errBody = BSLC.pack (T.unpack msg)}
+            Right t -> pure t
+        result <- liftIO (validateAccessToken configJwt token)
+        case checkServiceRole result of
+            Left msg -> throwError err401{errBody = BSLC.pack (T.unpack msg)}
+            Right principal -> pure principal
 
 requireAuthorization :: Request -> Handler ()
 requireAuthorization request =
