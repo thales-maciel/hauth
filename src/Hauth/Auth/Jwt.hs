@@ -1,0 +1,291 @@
+{- | JWT signing and validation for Supabase-compatible access tokens.
+
+Implements HS256 (HMAC-SHA256) compact JWTs with the Supabase Auth claim
+shape so existing Postgres RLS policies and PostgREST integrations keep
+working without changes.
+-}
+module Hauth.Auth.Jwt (
+    AccessTokenClaims (..),
+    AmrEntry (..),
+    JwtError (..),
+    signAccessToken,
+    validateAccessToken,
+) where
+
+import Crypto.Hash (SHA256)
+import Crypto.MAC.HMAC (HMAC, hmac, hmacGetDigest)
+import Data.Aeson (
+    FromJSON (..),
+    Object,
+    Result (..),
+    ToJSON (..),
+    Value (..),
+    fromJSON,
+    object,
+    withObject,
+    (.:),
+    (.=),
+ )
+import qualified Data.Aeson as Aeson
+import Data.Aeson.Key (fromText)
+import qualified Data.Aeson.KeyMap as KeyMap
+import Data.ByteArray (convert)
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Base64.URL as B64URL
+import qualified Data.ByteString.Lazy as BSL
+import Data.Text (Text)
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
+import Data.Time.Clock (UTCTime, getCurrentTime)
+import Data.Time.Clock.POSIX (POSIXTime, posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
+import Hauth.Config (JwtConfig (..))
+
+-- | A single entry in the Authentication Methods References claim array.
+data AmrEntry = AmrEntry
+    { amrMethod :: Text
+    -- ^ Authentication method, e.g. @"password"@, @"oauth"@, @"totp"@.
+    , amrTimestamp :: Integer
+    -- ^ Unix epoch seconds when the method was applied.
+    }
+    deriving stock (Eq, Show)
+
+instance ToJSON AmrEntry where
+    toJSON AmrEntry{amrMethod, amrTimestamp} =
+        object
+            [ "method" .= amrMethod
+            , "timestamp" .= amrTimestamp
+            ]
+
+instance FromJSON AmrEntry where
+    parseJSON = withObject "AmrEntry" \o ->
+        AmrEntry
+            <$> o .: "method"
+            <*> o .: "timestamp"
+
+-- | Claims carried in a Supabase-compatible access token.
+data AccessTokenClaims = AccessTokenClaims
+    { claimSub :: Text
+    -- ^ User UUID (@sub@).
+    , claimRole :: Text
+    -- ^ Postgres role, e.g. @"authenticated"@.
+    , claimEmail :: Maybe Text
+    -- ^ User email address; omitted when not present.
+    , claimPhone :: Maybe Text
+    -- ^ User phone number; omitted when not present.
+    , claimAppMetadata :: Value
+    -- ^ Server-controlled metadata object.
+    , claimUserMetadata :: Value
+    -- ^ User-controlled metadata object.
+    , claimAal :: Text
+    -- ^ Authenticator Assurance Level: @"aal1"@ or @"aal2"@.
+    , claimAmr :: [AmrEntry]
+    -- ^ Authentication methods used in this session.
+    , claimSessionId :: Text
+    -- ^ Session UUID (@session_id@).
+    , claimIssuedAt :: UTCTime
+    -- ^ Token issue time (@iat@).
+    , claimExpiresAt :: UTCTime
+    -- ^ Token expiry time (@exp@).
+    }
+    deriving stock (Eq, Show)
+
+-- | Errors that can occur during JWT signing or validation.
+data JwtError
+    = -- | A claim value prevented signing (e.g. negative timestamp).
+      JwtSignError String
+    | -- | Signature invalid, token malformed, or token expired.
+      JwtVerifyError String
+    | -- | A required claim is missing or has the wrong type.
+      JwtClaimError String
+    deriving stock (Eq, Show)
+
+-- ---------------------------------------------------------------------------
+-- Signing
+-- ---------------------------------------------------------------------------
+
+{- | Sign an access token using HS256 with the configured secret.
+
+Embeds @iss@ and @aud@ from 'JwtConfig', plus all Supabase-required extra
+claims. Returns the compact JWT text.
+-}
+signAccessToken :: JwtConfig -> AccessTokenClaims -> IO (Either JwtError Text)
+signAccessToken JwtConfig{jwtSecret, jwtIssuer, jwtAudience} claims = do
+    let iatSeconds = floor (utcTimeToPOSIXSeconds (claimIssuedAt claims)) :: Integer
+        expSeconds = floor (utcTimeToPOSIXSeconds (claimExpiresAt claims)) :: Integer
+        payload = buildPayload jwtIssuer jwtAudience iatSeconds expSeconds claims
+        headerJson = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}"
+        headerB64 = base64urlEncode (TE.encodeUtf8 headerJson)
+        payloadB64 = base64urlEncode (BSL.toStrict (Aeson.encode payload))
+        signingInput = headerB64 <> "." <> payloadB64
+        sig = computeHmac256 jwtSecret signingInput
+        token = signingInput <> "." <> sig
+    pure (Right token)
+
+-- | Build the full JSON claims object for signing.
+buildPayload :: Text -> Text -> Integer -> Integer -> AccessTokenClaims -> Object
+buildPayload issuer audience iatSecs expSecs AccessTokenClaims{..} =
+    KeyMap.fromList $
+        [ (fromText "iss", String issuer)
+        , (fromText "sub", String claimSub)
+        , (fromText "aud", String audience)
+        , (fromText "iat", Number (fromInteger iatSecs))
+        , (fromText "exp", Number (fromInteger expSecs))
+        , (fromText "role", String claimRole)
+        , (fromText "aal", String claimAal)
+        , (fromText "amr", toJSON claimAmr)
+        , (fromText "session_id", String claimSessionId)
+        , (fromText "app_metadata", claimAppMetadata)
+        , (fromText "user_metadata", claimUserMetadata)
+        ]
+            ++ maybe [] (\e -> [(fromText "email", String e)]) claimEmail
+            ++ maybe [] (\p -> [(fromText "phone", String p)]) claimPhone
+
+-- ---------------------------------------------------------------------------
+-- Validation
+-- ---------------------------------------------------------------------------
+
+{- | Verify an access token: signature, @iss@, @aud@, and @exp@.
+
+Returns the parsed 'AccessTokenClaims' on success.
+-}
+validateAccessToken :: JwtConfig -> Text -> IO (Either JwtError AccessTokenClaims)
+validateAccessToken cfg@JwtConfig{jwtSecret} token = do
+    now <- fmap utcTimeToPOSIXSeconds getCurrentTime
+    pure case T.splitOn "." token of
+        [headerB64, payloadB64, sigB64] ->
+            let signingInput = headerB64 <> "." <> payloadB64
+                expectedSig = computeHmac256 jwtSecret signingInput
+             in if sigB64 /= expectedSig
+                    then Left (JwtVerifyError "signature verification failed")
+                    else do
+                        payloadBytes <- decodeBase64url payloadB64
+                        obj <- parsePayloadJson payloadBytes
+                        extractClaims cfg now obj
+        _ -> Left (JwtVerifyError "malformed token: expected 3 dot-separated segments")
+
+-- | Parse the JSON payload from raw bytes.
+parsePayloadJson :: BS.ByteString -> Either JwtError Object
+parsePayloadJson bytes =
+    case Aeson.decodeStrict' bytes of
+        Nothing -> Left (JwtVerifyError "malformed payload: not valid JSON")
+        Just (Object obj) -> Right obj
+        Just _ -> Left (JwtVerifyError "malformed payload: not a JSON object")
+
+-- | Extract and validate all claims from the decoded payload object.
+extractClaims :: JwtConfig -> POSIXTime -> Object -> Either JwtError AccessTokenClaims
+extractClaims JwtConfig{jwtIssuer, jwtAudience} now obj = do
+    -- Registered claims
+    issText <- requireText obj "iss"
+    if issText /= jwtIssuer
+        then Left (JwtClaimError ("iss mismatch: got " <> T.unpack issText))
+        else Right ()
+
+    audText <- requireText obj "aud"
+    if audText /= jwtAudience
+        then Left (JwtClaimError ("aud mismatch: got " <> T.unpack audText))
+        else Right ()
+
+    expSecs <- requireInteger obj "exp"
+    if fromInteger expSecs <= now
+        then Left (JwtVerifyError "token has expired")
+        else Right ()
+
+    iatSecs <- requireInteger obj "iat"
+    subText <- requireText obj "sub"
+
+    -- Extra claims
+    roleText <- requireText obj "role"
+    let emailVal = lookupText obj "email"
+    let phoneVal = lookupText obj "phone"
+    appMeta <- requireValue obj "app_metadata"
+    userMeta <- requireValue obj "user_metadata"
+    aalText <- requireText obj "aal"
+    amrEntries <- requireAmr obj "amr"
+    sessionId <- requireText obj "session_id"
+
+    Right
+        AccessTokenClaims
+            { claimSub = subText
+            , claimRole = roleText
+            , claimEmail = emailVal
+            , claimPhone = phoneVal
+            , claimAppMetadata = appMeta
+            , claimUserMetadata = userMeta
+            , claimAal = aalText
+            , claimAmr = amrEntries
+            , claimSessionId = sessionId
+            , claimIssuedAt = posixSecondsToUTCTime (fromInteger iatSecs)
+            , claimExpiresAt = posixSecondsToUTCTime (fromInteger expSecs)
+            }
+
+-- ---------------------------------------------------------------------------
+-- Claim helpers
+-- ---------------------------------------------------------------------------
+
+requireText :: Object -> Text -> Either JwtError Text
+requireText obj key =
+    case KeyMap.lookup (fromText key) obj of
+        Nothing -> Left (JwtClaimError ("missing claim: " <> T.unpack key))
+        Just (String t) -> Right t
+        Just _ -> Left (JwtClaimError ("claim is not a string: " <> T.unpack key))
+
+lookupText :: Object -> Text -> Maybe Text
+lookupText obj key =
+    case KeyMap.lookup (fromText key) obj of
+        Just (String t) -> Just t
+        _ -> Nothing
+
+requireInteger :: Object -> Text -> Either JwtError Integer
+requireInteger obj key =
+    case KeyMap.lookup (fromText key) obj of
+        Nothing -> Left (JwtClaimError ("missing claim: " <> T.unpack key))
+        Just (Number n) -> Right (floor n)
+        Just _ -> Left (JwtClaimError ("claim is not a number: " <> T.unpack key))
+
+requireValue :: Object -> Text -> Either JwtError Value
+requireValue obj key =
+    case KeyMap.lookup (fromText key) obj of
+        Nothing -> Left (JwtClaimError ("missing claim: " <> T.unpack key))
+        Just v -> Right v
+
+requireAmr :: Object -> Text -> Either JwtError [AmrEntry]
+requireAmr obj key =
+    case KeyMap.lookup (fromText key) obj of
+        Nothing -> Left (JwtClaimError ("missing claim: " <> T.unpack key))
+        Just v ->
+            case fromJSON v of
+                Error e -> Left (JwtClaimError ("failed to parse amr: " <> e))
+                Success entries -> Right entries
+
+-- ---------------------------------------------------------------------------
+-- Crypto helpers
+-- ---------------------------------------------------------------------------
+
+{- | Compute HMAC-SHA256 over @signingInput@ using @secret@ as the key,
+returning a base64url-encoded (unpadded) result.
+-}
+computeHmac256 :: Text -> Text -> Text
+computeHmac256 secret signingInput =
+    let key = TE.encodeUtf8 secret
+        msg = TE.encodeUtf8 signingInput
+        mac = hmac key msg :: HMAC SHA256
+        digest = convert (hmacGetDigest mac) :: BS.ByteString
+     in base64urlEncode digest
+
+-- | Base64url-encode a strict 'ByteString', stripping padding @=@.
+base64urlEncode :: BS.ByteString -> Text
+base64urlEncode = TE.decodeUtf8 . stripPadding . B64URL.encode
+  where
+    stripPadding = BS.filter (/= 61) -- 61 == ord '='
+
+-- | Base64url-decode a text segment (with or without padding).
+decodeBase64url :: Text -> Either JwtError BS.ByteString
+decodeBase64url t =
+    case B64URL.decode padded of
+        Left e -> Left (JwtVerifyError ("base64url decode failed: " <> e))
+        Right bs -> Right bs
+  where
+    raw = TE.encodeUtf8 t
+    rem4 = BS.length raw `mod` 4
+    padding = if rem4 == 0 then 0 else 4 - rem4
+    padded = raw <> BS.replicate padding 61
