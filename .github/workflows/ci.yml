@@ -62,19 +62,14 @@ jobs:
       - name: Install libpq
         run: sudo apt-get update && sudo apt-get install -y libpq-dev
 
-      - name: Cache cabal store and build artifacts
+      - name: Cache cabal store
+        # Only the dep store is cached; dist-newstyle is intentionally excluded. GHC's TH addDependentFile tracking uses content hashes, not mtimes, so a cached library .hi file does not know about newly-added files-embed inputs (e.g. new migrations) and silently reuses stale embeds. Rebuilding the local library from scratch each run is ~30s; the deps store is the real win.
         uses: actions/cache@v4
         with:
-          path: |
-            ${{ steps.setup.outputs.cabal-store }}
-            dist-newstyle
-          key: ${{ runner.os }}-ghc9.4.8-${{ hashFiles('**/*.cabal', 'cabal.project', 'cabal.project.ci', 'migrations/**/*.sql', 'templates/**') }}
+          path: ${{ steps.setup.outputs.cabal-store }}
+          key: ${{ runner.os }}-ghc9.4.8-store-${{ hashFiles('**/*.cabal', 'cabal.project', 'cabal.project.ci') }}
           restore-keys: |
-            ${{ runner.os }}-ghc9.4.8-
-
-      - name: Refresh source mtimes
-        # Cache restore stamps dist-newstyle artifacts newer than checked-out sources, defeating GHC's TH addDependentFile tracking on changed embedded files.
-        run: find migrations templates src app test -type f -exec touch {} + 2>/dev/null || true
+            ${{ runner.os }}-ghc9.4.8-store-
 
       - name: Update package index
         run: cabal update
