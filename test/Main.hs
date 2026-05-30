@@ -23,6 +23,15 @@ import Hauth.Config (
     ServerConfig (..),
     decodeConfigBytes,
  )
+import Hauth.Crypto.Password (
+    Argon2Settings (..),
+    PasswordPolicyError (..),
+    checkPasswordPolicy,
+    defaultArgon2Settings,
+    defaultPasswordPolicy,
+    hashPassword,
+    verifyPassword,
+ )
 import Hauth.Env (
     AppEnv (..),
     Logger (..),
@@ -146,6 +155,31 @@ main = do
         "pending all when nothing applied"
         names
         (fmap migrationName (pendingMigrations [] embeddedMigrations))
+    -- Password hashing tests use cheap settings to keep CI fast.
+    let cheapSettings =
+            defaultArgon2Settings
+                { argon2Iterations = 1
+                , argon2Memory = 8
+                , argon2Parallelism = 1
+                }
+    -- Round-trip: correct password verifies, wrong password does not.
+    hash1 <- hashPassword cheapSettings "correct horse"
+    assertEqual "verify correct password" True (verifyPassword hash1 "correct horse")
+    assertEqual "verify wrong password" False (verifyPassword hash1 "wrong")
+    -- Different salts: two hashes of the same password differ.
+    hash2 <- hashPassword cheapSettings "correct horse"
+    assertEqual "different salts produce different hashes" True (hash1 /= hash2)
+    -- Parse error returns False, does not throw.
+    assertEqual "bad phc string" False (verifyPassword "not a phc string" "anything")
+    -- Policy checks.
+    assertEqual
+        "policy rejects empty password"
+        (Left (PasswordTooShort 8 0))
+        (checkPasswordPolicy defaultPasswordPolicy "")
+    assertEqual
+        "policy accepts min-length password"
+        (Right ())
+        (checkPasswordPolicy defaultPasswordPolicy "abcdefgh")
     exitSuccess
 
 assertEqual :: (Eq a, Show a) => String -> a -> a -> IO ()
