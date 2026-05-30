@@ -172,7 +172,16 @@ main = do
     assertCliError "migrate unknown option" (parseCommand ["migrate", "up", "--bogus"])
     assertCliError "bad port" (parseCommand ["serve", "--port", "nope"])
     let names = fmap migrationName embeddedMigrations
-    assertEqual "embedded bootstrap" ["0001_init.sql"] names
+    assertEqual
+        "embedded migrations"
+        [ "0001_init.sql"
+        , "0002_users.sql"
+        , "0003_identities.sql"
+        , "0004_sessions.sql"
+        , "0005_refresh_tokens.sql"
+        , "0006_mfa_factors.sql"
+        ]
+        names
     assertEqual
         "pending none when all applied"
         []
