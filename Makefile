@@ -1,4 +1,4 @@
-.PHONY: build ci format format-check lint run test
+.PHONY: build ci coverage format format-check lint run test
 
 build:
 	cabal build all
@@ -17,5 +17,9 @@ run:
 
 test:
 	cabal test all
+
+coverage:
+	cabal test all --project-file=cabal.project.ci --enable-coverage
+	@find dist-newstyle -type f -path '*hpc/vanilla/html/hpc_index.html' -print
 
 ci: format-check lint build test

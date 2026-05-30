@@ -26,6 +26,7 @@ mise install
 mise exec -- make format
 mise exec -- make lint
 mise exec -- make test
+mise exec -- make coverage
 mise exec -- make build
 mise exec -- make run
 ```
@@ -80,5 +81,7 @@ stanza, so future executables, test suites, and library components inherit the
 same baseline.
 
 CI runs formatting, linting, build, and tests on branch pushes and pull
-requests. Pushing a tag matching `v*` builds a Linux x86_64 binary archive and
+requests. Each `Build and test` job emits an HPC coverage report as a
+downloadable `coverage-report` artifact (open `hpc_index.html` to browse).
+Pushing a tag matching `v*` builds a Linux x86_64 binary archive and
 publishes it as a GitHub release asset.
