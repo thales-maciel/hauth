@@ -81,4 +81,22 @@ jobs:
         run: cabal build all --project-file=cabal.project.ci
 
       - name: Test
-        run: cabal test all --project-file=cabal.project.ci
+        run: cabal test all --project-file=cabal.project.ci --enable-coverage
+
+      - name: Collect coverage report
+        run: |
+          set -euo pipefail
+          src=$(find dist-newstyle -type d -path '*hpc/vanilla/html' | head -n 1)
+          if [ -z "$src" ]; then
+            echo "no HPC HTML report found" >&2
+            exit 1
+          fi
+          mkdir -p coverage-report
+          cp -r "$src"/. coverage-report/
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage-report/
+          retention-days: 14
