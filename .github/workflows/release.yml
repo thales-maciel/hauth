@@ -10,32 +10,17 @@ permissions:
 
 jobs:
   release:
-    name: Build release binary
+    name: Build static release binary
     runs-on: ubuntu-latest
+    container:
+      image: benz0li/ghc-musl:9.4.8
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Haskell
-        id: setup
-        uses: haskell-actions/setup@v2
-        with:
-          ghc-version: "9.4.8"
-          cabal-version: "3.12.1.0"
-
-      - name: Install libpq
-        run: sudo apt-get update && sudo apt-get install -y libpq-dev
-
-      - name: Cache cabal store and build artifacts
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ steps.setup.outputs.cabal-store }}
-            dist-newstyle
-          key: ${{ runner.os }}-ghc9.4.8-${{ hashFiles('**/*.cabal', 'cabal.project', 'cabal.project.ci') }}
-          restore-keys: |
-            ${{ runner.os }}-ghc9.4.8-
+      - name: Install build deps
+        run: apk add --no-cache postgresql16-dev openssl-libs-static zlib-static
 
       - name: Update package index
         run: cabal update
@@ -43,16 +28,29 @@ jobs:
       - name: Test
         run: cabal test all --project-file=cabal.project.ci
 
-      - name: Build executable
-        run: cabal build exe:hauth
+      - name: Build static executable
+        run: |
+          cabal build exe:hauth \
+            --enable-executable-static \
+            --ghc-options="-optl-static -optl-pthread -optl-L/usr/lib"
 
-      - name: Package executable
+      - name: Verify static
+        run: |
+          set -euo pipefail
+          bin=$(cabal list-bin exe:hauth)
+          file "$bin"
+          file "$bin" | grep -q "statically linked"
+          ldd "$bin" 2>&1 | grep -q "not a dynamic executable"
+          "$bin" --help > /dev/null
+
+      - name: Strip and package
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
           target="hauth-${tag}-linux-x86_64"
           mkdir -p dist/release
           cp "$(cabal list-bin exe:hauth)" "dist/release/${target}"
+          strip "dist/release/${target}"
           chmod +x "dist/release/${target}"
           tar -C dist/release -czf "dist/release/${target}.tar.gz" "${target}"
           cd dist/release
