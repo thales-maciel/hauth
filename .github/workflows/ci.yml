@@ -24,7 +24,7 @@ jobs:
       - name: Reject unresolved conflict markers
         # `=======` is too generic to match safely (appears in ASCII art / comments); only check the angle-bracket markers.
         run: |
-          if grep -rnE '^(<<<<<<<|>>>>>>>) ' app src test 2>/dev/null; then
+          if grep -rnE '^(<<<<<<<|>>>>>>>) ' app src test e2e 2>/dev/null; then
             echo "::error::Unresolved conflict markers found." >&2
             exit 1
           fi
@@ -39,7 +39,7 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Check formatting
-        run: fourmolu --mode check app src test
+        run: fourmolu --mode check app src test e2e
 
       - name: Set up hlint
         uses: haskell-actions/hlint-setup@v2
@@ -49,12 +49,27 @@ jobs:
       - name: Lint
         uses: haskell-actions/hlint-run@v2
         with:
-          path: '["app/", "src/", "test/"]'
+          path: '["app/", "src/", "test/", "e2e/"]'
           fail-on: warning
 
   build-test:
     name: Build and test
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: hauth
+          POSTGRES_PASSWORD: hauth
+          POSTGRES_DB: hauth
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hauth"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - name: Checkout
@@ -89,7 +104,17 @@ jobs:
         run: cabal build all --project-file=cabal.project.ci
 
       - name: Test
-        run: cabal test all --project-file=cabal.project.ci --enable-coverage
+        run: cabal test hauth-test --project-file=cabal.project.ci --enable-coverage
+
+      - name: Create e2e database
+        env:
+          PGPASSWORD: hauth
+        run: psql -h localhost -U hauth -d hauth -c 'CREATE DATABASE hauth_e2e;'
+
+      - name: End-to-end tests
+        env:
+          HAUTH_E2E_DATABASE_URL: postgresql://hauth:hauth@localhost:5432/hauth_e2e
+        run: cabal test hauth-e2e --project-file=cabal.project.ci --test-show-details=streaming
 
       - name: Collect coverage report
         run: |

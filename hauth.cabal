@@ -163,3 +163,31 @@ test-suite hauth-test
     , time >=1.12 && <1.15
     , uuid >=1.3 && <1.4
   default-language: Haskell2010
+
+test-suite hauth-e2e
+  import: warnings
+  type: exitcode-stdio-1.0
+  main-is: Main.hs
+  hs-source-dirs: e2e
+  other-modules:
+    E2E.AdminSpec
+    E2E.AuthSpec
+    E2E.Helpers
+    E2E.MfaSpec
+    E2E.OAuthSpec
+    E2E.RecoverySpec
+    E2E.UserSpec
+  build-depends:
+      base >=4.17 && <5
+    , aeson >=2.2 && <2.3
+    , bytestring >=0.11 && <0.13
+    , hauth
+    , hspec >=2.10 && <2.12
+    , http-types >=0.12 && <0.13
+    , postgresql-simple >=0.7 && <0.8
+    , text >=2.0 && <2.2
+    , time >=1.12 && <1.15
+    , uuid >=1.3 && <1.4
+    , wai >=3.2 && <3.3
+    , wai-extra >=3.1 && <3.2
+  default-language: Haskell2010
