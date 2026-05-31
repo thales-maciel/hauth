@@ -4,6 +4,7 @@ module Hauth.User (
     NewUser (..),
     UserUpdate (..),
     SignupError (..),
+    applyPasswordReset,
     applyUserUpdate,
     createUser,
     emptyUserUpdate,
@@ -11,8 +12,10 @@ module Hauth.User (
     getUserByConfirmationToken,
     getUserByEmail,
     getUserById,
+    getUserByRecoveryToken,
     markEmailConfirmed,
     setConfirmationToken,
+    setRecoveryToken,
     validateSignupEmail,
     validateSignupPassword,
 ) where
@@ -29,7 +32,7 @@ import qualified Data.Text.Encoding as TE
 import Data.Time (UTCTime)
 import Data.UUID (UUID)
 import qualified Data.UUID.V4 as UUID4
-import Database.PostgreSQL.Simple (Connection, Only (..), query)
+import Database.PostgreSQL.Simple (Connection, Only (..), execute, query)
 import Database.PostgreSQL.Simple.FromRow (FromRow (..), field)
 import Database.PostgreSQL.Simple.ToField (Action, ToField (..))
 import Database.PostgreSQL.Simple.ToRow (ToRow (..))
@@ -323,6 +326,57 @@ validateSignupPassword pw =
             Left (SignupPasswordTooShort minLen actual)
         Right () ->
             Right pw
+
+-- | Set @recovery_token@ and @recovery_sent_at@ for a user.
+setRecoveryToken :: Connection -> UserId -> Text -> IO ()
+setRecoveryToken conn (UserId uid) token = do
+    _ <-
+        execute
+            conn
+            "UPDATE auth.users \
+            \SET recovery_token = ?, recovery_sent_at = now(), updated_at = now() \
+            \WHERE id = ?"
+            (token, uid)
+    pure ()
+
+{- | Look up a user by their @recovery_token@.
+
+Returns 'Nothing' when no user has that token (token not found, already
+consumed, or the user was deleted).
+-}
+getUserByRecoveryToken :: Connection -> Text -> IO (Maybe User)
+getUserByRecoveryToken conn token = do
+    rows <-
+        query
+            conn
+            "SELECT \
+            \  id, email, encrypted_password, email_confirmed_at, \
+            \  confirmation_token, confirmation_sent_at, \
+            \  raw_app_meta_data, raw_user_meta_data, \
+            \  role, aud, created_at, updated_at \
+            \FROM auth.users \
+            \WHERE recovery_token = ? AND deleted_at IS NULL"
+            (Only token)
+    pure $ case rows of
+        [row] -> Just row
+        _ -> Nothing
+
+{- | Apply a password reset: update @encrypted_password@, clear
+@recovery_token@ and @recovery_sent_at@, and bump @updated_at@.
+-}
+applyPasswordReset :: Connection -> UserId -> Text -> IO ()
+applyPasswordReset conn (UserId uid) phc = do
+    _ <-
+        execute
+            conn
+            "UPDATE auth.users \
+            \SET encrypted_password = ?, \
+            \    recovery_token = NULL, \
+            \    recovery_sent_at = NULL, \
+            \    updated_at = now() \
+            \WHERE id = ?"
+            (phc, uid)
+    pure ()
 
 -- | Minimal email validation: non-empty local and domain parts around @\@@.
 isEmailLike :: Text -> Bool

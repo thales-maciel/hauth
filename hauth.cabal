@@ -57,6 +57,7 @@ library
     Hauth.Auth.Jwt
     Hauth.Auth.Login
     Hauth.Auth.Logout
+    Hauth.Auth.Recovery
     Hauth.Auth.UserUpdate
     Hauth.Auth.Verify
     Hauth.CLI

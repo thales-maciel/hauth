@@ -7,7 +7,7 @@ module Hauth.Server (
 ) where
 
 import Control.Exception (SomeException, bracket, try)
-import Control.Monad (when)
+import Control.Monad (unless, when)
 import Control.Monad.Except (throwError)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader (ReaderT, ask, asks, runReaderT)
@@ -33,11 +33,13 @@ import Hauth.API.Types
 import Hauth.Auth.Jwt (AccessTokenClaims (..), AmrEntry (..), signAccessToken, validateAccessToken)
 import Hauth.Auth.Login (LoginError (..), authorizeLogin, buildLoginClaims, extractCredentials)
 import Hauth.Auth.Logout (LogoutError (..), resolveLogoutSession)
+import Hauth.Auth.Recovery (RecoveryError (..), recoverySentMessage, validateRecoverRequest, validateRecoveryVerify)
 import Hauth.Auth.UserUpdate (UpdateUserError (..), validateUpdateRequest)
 import Hauth.Auth.Verify (OtpType (..), VerifyError (..), classifyVerifyRequest, parseOtpType)
 import Hauth.Config (Config (..), DatabaseConfig (..), EmailConfig (..), JwtConfig (..), ServerConfig (..), SiteConfig (..))
-import Hauth.Crypto.Password (defaultArgon2Settings, hashPassword, verifyPassword)
-import Hauth.Email (TemplateData (..), TemplateKind (..), renderEmail, sendEmail, stubSender)
+import Hauth.Crypto.Password (defaultArgon2Settings, hashPassword)
+import qualified Hauth.Crypto.Password as Pwd
+import Hauth.Email (EmailSender (..), TemplateData (..), TemplateKind (..), renderEmail, sendEmail, stubSender)
 import Hauth.Env (AppEnv (..), LogLevel (..), createAppEnv, destroyAppEnv, logMessage, withDatabaseConnection)
 import Hauth.Session (
     NewSession (..),
@@ -46,6 +48,7 @@ import Hauth.Session (
     SessionId (..),
     createRefreshToken,
     createSession,
+    generateOpaqueToken,
     lookupRefreshTokenRaw,
     revokeRefreshToken,
     revokeSession,
@@ -53,6 +56,7 @@ import Hauth.Session (
     sessionId,
     touchSessionRefreshedAt,
  )
+import qualified Hauth.Session as Session
 import Hauth.User (
     SignupError (..),
     generateConfirmationToken,
@@ -133,7 +137,7 @@ publicAuthServer =
     settingsHandler
         :<|> signupHandler
         :<|> tokenHandler
-        :<|> notImplemented2
+        :<|> recoverHandler
         :<|> verifyHandler
         :<|> resendHandler
         :<|> notImplemented3
@@ -461,7 +465,7 @@ handlePasswordGrant req = do
     -- Verify stored password; missing encrypted password is also invalid_grant.
     let verified = case User.userEncryptedPassword user of
             Nothing -> False
-            Just phc -> verifyPassword phc passwordText
+            Just phc -> Pwd.verifyPassword phc passwordText
     -- Authorize: checks password result and email confirmation together.
     case authorizeLogin verified (User.userEmailConfirmedAt user) of
         Left LoginInvalidGrant -> throwError invalidGrantError
@@ -649,19 +653,57 @@ signupErrorBody code msg =
             ]
 
 -- ---------------------------------------------------------------------------
+-- Recover endpoint
+-- ---------------------------------------------------------------------------
+
+recoverHandler :: AnonymousPrincipal -> RecoverRequest -> AppHandler MessageResponse
+recoverHandler _ req = do
+    env <- ask
+    let AppEnv{appConfig, appLogger} = env
+        Config{configEmail, configSite = SiteConfig{siteUrl}} = appConfig
+        EmailConfig{emailFrom} = configEmail
+    emailText <- case validateRecoverRequest req of
+        Left _ ->
+            pure ""
+        Right e -> pure e
+    unless (T.null emailText) $ do
+        mUser <- liftIO (withDatabaseConnection env (`User.getUserByEmail` emailText))
+        case mUser of
+            Nothing -> pure ()
+            Just user ->
+                case User.userEncryptedPassword user of
+                    Nothing -> pure ()
+                    Just _ -> do
+                        token <- liftIO generateOpaqueToken
+                        liftIO $ withDatabaseConnection env \conn ->
+                            User.setRecoveryToken conn (User.userId user) token
+                        let actionUrl = siteUrl <> "/auth/v1/verify?token=" <> token <> "&type=recovery"
+                            tdata =
+                                TemplateData
+                                    { templateRecipientEmail = emailText
+                                    , templateActionUrl = actionUrl
+                                    , templateSiteUrl = siteUrl
+                                    , templateTokenHash = token
+                                    }
+                        case renderEmail Recovery emailFrom tdata of
+                            Left err ->
+                                liftIO $
+                                    logMessage appLogger LogWarn $
+                                        "recoverHandler: renderEmail failed: " <> T.pack (show err)
+                            Right msg -> do
+                                result <- liftIO (sendEmail stubSender msg)
+                                case result of
+                                    Left err ->
+                                        liftIO $
+                                            logMessage appLogger LogWarn $
+                                                "recoverHandler: email send failed: " <> T.pack (show err)
+                                    Right () -> pure ()
+    pure MessageResponse{message = recoverySentMessage}
+
+-- ---------------------------------------------------------------------------
 -- Verify endpoint
 -- ---------------------------------------------------------------------------
 
-{- | Handler for @POST /verify@.
-
-Dispatches on the @type@ field of 'VerifyRequest':
-
-- @signup@: confirms the user's email address, creates a session, and
-  returns a 'SessionResponse'.  Idempotent: if the email is already
-  confirmed a fresh session is still issued.
-- Any other type that is recognised but not yet implemented: 400.
-- An unrecognised type string: 400 @unsupported_otp_type@.
--}
 verifyHandler :: AnonymousPrincipal -> VerifyRequest -> AppHandler SessionResponse
 verifyHandler _ req =
     case classifyVerifyRequest req of
@@ -697,6 +739,8 @@ verifyHandler _ req =
                     }
         Right OtpSignup ->
             handleSignupVerify req
+        Right OtpRecovery ->
+            handleRecoveryVerify req
         Right _ ->
             throwError
                 err400
@@ -714,7 +758,6 @@ handleSignupVerify VerifyRequest{verifyToken} = do
     let AppEnv{appConfig} = env
         Config{configJwt} = appConfig
         JwtConfig{jwtAccessTokenTtlSeconds} = configJwt
-    -- Look up the user by confirmation token.
     mUser <- liftIO (withDatabaseConnection env (`User.getUserByConfirmationToken` verifyToken))
     user <- case mUser of
         Nothing ->
@@ -728,10 +771,68 @@ handleSignupVerify VerifyRequest{verifyToken} = do
                                 ]
                     }
         Just u -> pure u
-    -- Mark confirmed (idempotent: update even if already confirmed, and also
-    -- clears the confirmation_token to prevent replay).
     liftIO (withDatabaseConnection env (`User.markEmailConfirmed` User.userId user))
-    -- Create session and tokens.
+    issueSessionForUser user "otp"
+
+handleRecoveryVerify :: VerifyRequest -> AppHandler SessionResponse
+handleRecoveryVerify req = do
+    (token, password) <- case validateRecoveryVerify req of
+        Left RecoveryMissingToken ->
+            throwError
+                err401
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("otp_expired" :: T.Text)
+                                , "error_description" Aeson..= ("Token is missing" :: T.Text)
+                                ]
+                    }
+        Left (RecoveryPasswordTooShort minLen _) ->
+            throwError
+                err422
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("weak_password" :: T.Text)
+                                , "error_description" Aeson..= ("Password must be at least " <> T.pack (show minLen) <> " characters" :: T.Text)
+                                ]
+                    }
+        Left RecoveryMissingEmail ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("invalid_request" :: T.Text)
+                                , "error_description" Aeson..= ("Invalid request" :: T.Text)
+                                ]
+                    }
+        Right pair -> pure pair
+    env <- ask
+    mUser <- liftIO (withDatabaseConnection env (`User.getUserByRecoveryToken` token))
+    user <- case mUser of
+        Nothing ->
+            throwError
+                err401
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("otp_expired" :: T.Text)
+                                , "error_description" Aeson..= ("Token has expired or is invalid" :: T.Text)
+                                ]
+                    }
+        Just u -> pure u
+    phc <- liftIO (hashPassword defaultArgon2Settings password)
+    liftIO $ withDatabaseConnection env \conn ->
+        User.applyPasswordReset conn (User.userId user) phc
+    issueSessionForUser user "recovery"
+
+issueSessionForUser :: User.User -> T.Text -> AppHandler SessionResponse
+issueSessionForUser user methodName = do
+    env <- ask
+    let AppEnv{appConfig} = env
+        Config{configJwt} = appConfig
+        JwtConfig{jwtAccessTokenTtlSeconds} = configJwt
     now <- liftIO getCurrentTime
     let uid = User.unUserId (User.userId user)
         ttl = fromIntegral jwtAccessTokenTtlSeconds
@@ -760,7 +861,7 @@ handleSignupVerify VerifyRequest{verifyToken} = do
                 , claimAal = "aal1"
                 , claimAmr =
                     [ AmrEntry
-                        { amrMethod = "otp"
+                        { amrMethod = methodName
                         , amrTimestamp = iatSecs
                         }
                     ]
@@ -793,15 +894,6 @@ handleSignupVerify VerifyRequest{verifyToken} = do
 -- Resend endpoint
 -- ---------------------------------------------------------------------------
 
-{- | Handler for @POST /resend@.
-
-Dispatches on the @type@ field of 'ResendRequest':
-
-- @signup@: if the user exists and is unconfirmed, regenerates the
-  confirmation token and calls 'stubSender'.  Always returns 200 with the
-  same message regardless of whether the user was found (anti-enumeration).
-- Any other type: 400 @unsupported_otp_type@.
--}
 resendHandler :: AnonymousPrincipal -> ResendRequest -> AppHandler MessageResponse
 resendHandler _ ResendRequest{resendEmail, resendType} =
     case parseOtpType resendType of
@@ -846,14 +938,11 @@ handleSignupResend emailText = do
     mUser <- liftIO (withDatabaseConnection env (`User.getUserByEmail` emailText))
     case mUser of
         Nothing ->
-            -- Anti-enumeration: return success regardless.
             pure antiEnumMsg
         Just user
             | isJust (User.userEmailConfirmedAt user) ->
-                -- Already confirmed: return success silently.
                 pure antiEnumMsg
             | otherwise -> do
-                -- Generate a fresh token and attempt delivery.
                 newToken <- liftIO generateConfirmationToken
                 liftIO $
                     withDatabaseConnection env \conn ->
@@ -870,7 +959,6 @@ handleSignupResend emailText = do
                             }
                 case renderEmail Confirmation (emailFrom configEmail) tdata of
                     Left _ ->
-                        -- Template error: log and continue.
                         liftIO (logMessage appLogger LogWarn "resend: failed to render confirmation email")
                     Right msg -> do
                         sendResult <- liftIO (sendEmail stubSender msg)
