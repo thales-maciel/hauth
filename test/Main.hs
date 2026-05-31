@@ -15,6 +15,7 @@ import qualified Spec.Crypto.PasswordSpec
 import qualified Spec.EmailSpec
 import qualified Spec.Mfa.TotpSpec
 import qualified Spec.MigrateSpec
+import qualified Spec.OAuth.GoogleSpec
 import qualified Spec.OAuthSpec
 import qualified Spec.RefreshTokenSpec
 import qualified Spec.ServerSpec
@@ -40,6 +41,7 @@ main = do
     Spec.EmailSpec.runSpec
     Spec.SessionSpec.runSpec
     Spec.UserSpec.runSpec
+    Spec.OAuth.GoogleSpec.runSpec
     Spec.OAuthSpec.runSpec
     Spec.Mfa.TotpSpec.runSpec
     Spec.RefreshTokenSpec.runSpec
