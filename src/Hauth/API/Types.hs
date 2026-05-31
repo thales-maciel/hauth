@@ -703,7 +703,20 @@ data ChallengeFactorResponse = ChallengeFactorResponse
     , challengeExpiresAt :: UTCTime
     }
     deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+
+instance ToJSON ChallengeFactorResponse where
+    toJSON ChallengeFactorResponse{challengeFactorId, challengeExpiresAt} =
+        object
+            [ "id" .= challengeFactorId
+            , "type" .= ("totp" :: Text)
+            , "expires_at" .= challengeExpiresAt
+            ]
+
+instance FromJSON ChallengeFactorResponse where
+    parseJSON = withObject "ChallengeFactorResponse" \o ->
+        ChallengeFactorResponse
+            <$> o Aeson..: "id"
+            <*> o Aeson..: "expires_at"
 
 data VerifyFactorRequest = VerifyFactorRequest
     { verifyFactorChallengeId :: Text
@@ -716,7 +729,13 @@ newtype VerifyFactorResponse = VerifyFactorResponse
     { verifyFactorSession :: SessionResponse
     }
     deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+
+-- | Serialise as a flat session object (Supabase wire format).
+instance ToJSON VerifyFactorResponse where
+    toJSON (VerifyFactorResponse sess) = toJSON sess
+
+instance FromJSON VerifyFactorResponse where
+    parseJSON v = VerifyFactorResponse <$> parseJSON v
 
 data ListUsersResponse = ListUsersResponse
     { listUsers :: [UserResponse]

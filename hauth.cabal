@@ -68,11 +68,13 @@ library
     Hauth.Env
     Hauth.Identity
     Hauth.Mfa.Totp
+    Hauth.Mfa.TotpVerify
     Hauth.MfaFactor
     Hauth.Migrate
     Hauth.OAuth
     Hauth.Server
     Hauth.Server.Admin
+    Hauth.Server.Mfa
     Hauth.Server.OAuth
     Hauth.Session
     Hauth.User
@@ -133,6 +135,7 @@ test-suite hauth-test
     Spec.Crypto.PasswordSpec
     Spec.EmailSpec
     Spec.Mfa.TotpSpec
+    Spec.Mfa.VerifySpec
     Spec.MigrateSpec
     Spec.OAuthSpec
     Spec.RefreshTokenSpec
