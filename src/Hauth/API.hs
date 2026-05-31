@@ -20,6 +20,7 @@ import Servant.API (
     Delete,
     Get,
     JSON,
+    NoContent,
     Post,
     Put,
     QueryParam,
@@ -55,7 +56,7 @@ type PublicAuthAPI =
 type SessionAPI =
     RequireAuth 'ValidSession :> "user" :> Get '[JSON] UserResponse
         :<|> RequireAuth 'ValidSession :> "user" :> ReqBody '[JSON] UpdateUserRequest :> Put '[JSON] UserResponse
-        :<|> RequireAuth 'ValidSession :> "logout" :> QueryParam "scope" Text :> Post '[JSON] MessageResponse
+        :<|> RequireAuth 'ValidSession :> "logout" :> QueryParam "scope" Text :> Post '[JSON] NoContent
 
 type MfaAPI =
     RequireAuth 'ValidSession :> "factors" :> Get '[JSON] ListFactorsResponse
