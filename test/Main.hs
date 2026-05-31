@@ -26,6 +26,7 @@ import Hauth.API.Types (
     DeepHealthResponse (..),
     SettingsResponse (..),
     buildSettingsResponse,
+    buildSignupResponse,
  )
 import Hauth.Auth.Jwt (
     AccessTokenClaims (..),
@@ -96,6 +97,14 @@ import Hauth.Session (
     Session (..),
     SessionId (..),
     generateOpaqueToken,
+ )
+import Hauth.User (
+    SignupError (..),
+    User (..),
+    UserId (..),
+    generateConfirmationToken,
+    validateSignupEmail,
+    validateSignupPassword,
  )
 import System.Exit (exitSuccess)
 
@@ -548,6 +557,104 @@ main = do
         mixedCaseSettings = buildSettingsResponse mixedCaseConfig
     assertEqual "settings provider case-fold" (Just True) (Map.lookup "github" (settingsExternal mixedCaseSettings))
     assertEqual "settings provider case-fold absent" Nothing (Map.lookup "GitHub" (settingsExternal mixedCaseSettings))
+
+    -- Hauth.User tests
+    -- generateConfirmationToken: non-empty, 43 chars, two calls differ
+    ctok1 <- generateConfirmationToken
+    assertEqual "generateConfirmationToken non-empty" True (not (T.null ctok1))
+    assertEqual "generateConfirmationToken length 43" 43 (T.length ctok1)
+    ctok2 <- generateConfirmationToken
+    assertEqual "generateConfirmationToken two calls differ" True (ctok1 /= ctok2)
+
+    -- User record constructor and selector round-trip
+    now3 <- getCurrentTime
+    let testUserId = UserId UUID.nil
+        testUser =
+            User
+                { userId = testUserId
+                , userEmail = Just "test@example.com"
+                , userEncryptedPassword = Just "$argon2id$v=19$..."
+                , userEmailConfirmedAt = Nothing
+                , userConfirmationToken = Just ctok1
+                , userConfirmationSentAt = Just now3
+                , userRawAppMetaData = Aeson.object []
+                , userRawUserMetaData = Aeson.object []
+                , userRole = "authenticated"
+                , userAud = "authenticated"
+                , userCreatedAt = now3
+                , userUpdatedAt = now3
+                }
+    assertEqual "user userId" testUserId (userId testUser)
+    assertEqual "user email" (Just "test@example.com") (userEmail testUser)
+    assertEqual "user role" "authenticated" (userRole testUser)
+    assertEqual "user aud" "authenticated" (userAud testUser)
+    assertEqual "user emailConfirmedAt" Nothing (userEmailConfirmedAt testUser)
+    assertEqual "user confirmationToken" (Just ctok1) (userConfirmationToken testUser)
+
+    -- buildSignupResponse produces required Supabase keys
+    let signupResp = buildSignupResponse testUser
+        signupJson = Aeson.encode signupResp
+    case Aeson.decode signupJson of
+        Nothing -> fail "buildSignupResponse: JSON decode failed"
+        Just (obj :: Object) -> do
+            let requiredSignupKeys =
+                    [ "id"
+                    , "aud"
+                    , "role"
+                    , "email"
+                    , "confirmation_sent_at"
+                    , "created_at"
+                    , "updated_at"
+                    , "app_metadata"
+                    , "user_metadata"
+                    ]
+            mapM_
+                ( \k ->
+                    if KeyMap.member k obj
+                        then pure ()
+                        else fail ("buildSignupResponse: missing key: " <> show k)
+                )
+                requiredSignupKeys
+
+    -- validateSignupEmail: rejects invalid, accepts valid
+    assertEqual
+        "validateSignupEmail rejects empty"
+        (Left (SignupEmailInvalid ""))
+        (validateSignupEmail "")
+    assertEqual
+        "validateSignupEmail rejects no-at"
+        (Left (SignupEmailInvalid "no-at"))
+        (validateSignupEmail "no-at")
+    assertEqual
+        "validateSignupEmail rejects @no-local"
+        (Left (SignupEmailInvalid "@no-local"))
+        (validateSignupEmail "@no-local")
+    assertEqual
+        "validateSignupEmail accepts a@b.co"
+        (Right "a@b.co")
+        (validateSignupEmail "a@b.co")
+
+    -- validateSignupPassword: rejects short, accepts 8+
+    case validateSignupPassword "" of
+        Left (SignupPasswordTooShort _ _) -> pure ()
+        other -> fail ("validateSignupPassword empty: expected SignupPasswordTooShort, got " <> show other)
+    case validateSignupPassword "short" of
+        Left (SignupPasswordTooShort _ _) -> pure ()
+        other -> fail ("validateSignupPassword short: expected SignupPasswordTooShort, got " <> show other)
+    assertEqual
+        "validateSignupPassword accepts 8+"
+        (Right "abcdefgh")
+        (validateSignupPassword "abcdefgh")
+
+    -- hash-then-verify roundtrip with cheap settings
+    let cheapSettings2 =
+            defaultArgon2Settings
+                { argon2Iterations = 1
+                , argon2Memory = 8
+                , argon2Parallelism = 1
+                }
+    hash3 <- hashPassword cheapSettings2 "correct horse"
+    assertEqual "signup hash+verify roundtrip" True (verifyPassword hash3 "correct horse")
 
     exitSuccess
 

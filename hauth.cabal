@@ -63,6 +63,7 @@ library
     Hauth.Migrate
     Hauth.Server
     Hauth.Session
+    Hauth.User
   hs-source-dirs: src
   build-depends:
       aeson >=2.2 && <2.3
