@@ -36,12 +36,12 @@ jobs:
             --ghc-options="-optl-static -optl-pthread -optl-no-pie -optl-L/usr/lib -optl-lpgcommon -optl-lpgport -optl-lssl -optl-lcrypto"
 
       - name: Verify static
+        # `file` is authoritative — it directly reads the ELF and reports the linkage. Skipping `ldd` because Alpine musl ldd doesn't print "not a dynamic executable" the way glibc does.
         run: |
           set -euo pipefail
           bin=$(cabal list-bin exe:hauth)
           file "$bin"
           file "$bin" | grep -q "statically linked"
-          ldd "$bin" 2>&1 | grep -q "not a dynamic executable"
           "$bin" --help > /dev/null
 
       - name: Strip and package
