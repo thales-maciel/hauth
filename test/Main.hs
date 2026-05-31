@@ -4,6 +4,7 @@ import Control.Monad (when)
 import Data.Aeson (Object, Value (..), decodeStrict', encode)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base64.URL as B64URL
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BSL
@@ -27,6 +28,8 @@ import Hauth.API.Types (
     DeepHealthResponse (..),
     DeletedUserResponse (..),
     Email (..),
+    EnrollError (..),
+    EnrollFactorRequest (..),
     GrantType (..),
     InviteUserRequest (..),
     ListIdentitiesResponse (..),
@@ -42,12 +45,14 @@ import Hauth.API.Types (
     UpdateUserRequest (..),
     ValidRefreshToken (..),
     VerifyRequest (..),
+    buildFactorResponse,
     buildIdentityResponse,
     buildSettingsResponse,
     buildSignupResponse,
     buildUserResponse,
     classifyRefreshTokenLookup,
     parseGrantType,
+    validateEnrollRequest,
  )
 import Hauth.Auth.Admin (
     AdminError (..),
@@ -141,6 +146,14 @@ import Hauth.Env (
     destroyAppEnv,
  )
 import Hauth.Identity (Identity (..), IdentityId (..))
+import Hauth.Mfa.Totp (
+    TotpSecret (..),
+    decodeBase32,
+    encodeBase32,
+    generateTotpSecret,
+    otpAuthUri,
+    unTotpSecret,
+ )
 import Hauth.Migrate (
     MigrationFile (..),
     embeddedMigrations,
@@ -1244,18 +1257,12 @@ main = do
                         }
                     ]
                 }
-
-    -- lookupProvider: exact match
     case lookupProvider oauthCfg "google" of
         Left e -> fail ("lookupProvider exact match: expected Right, got Left: " <> show e)
         Right cfg -> assertEqual "lookupProvider exact match name" "google" (oauthProviderName cfg)
-
-    -- lookupProvider: case-insensitive match
     case lookupProvider oauthCfg "GOOGLE" of
         Left e -> fail ("lookupProvider case-insensitive: expected Right, got Left: " <> show e)
         Right cfg -> assertEqual "lookupProvider GOOGLE match name" "google" (oauthProviderName cfg)
-
-    -- lookupProvider: unknown provider
     case lookupProvider oauthCfg "facebook" of
         Left (OAuthUnknownProvider n) ->
             assertEqual "lookupProvider unknown provider name" "facebook" n
@@ -1263,8 +1270,6 @@ main = do
             fail ("lookupProvider unknown: expected OAuthUnknownProvider, got " <> show other)
         Right _ ->
             fail "lookupProvider unknown: expected Left, got Right"
-
-    -- validateRedirectTo: allowed URL
     let oauthSiteCfg =
             SiteConfig
                 { siteUrl = "https://app.example.com"
@@ -1274,20 +1279,14 @@ main = do
         "validateRedirectTo allowed"
         (Right "https://app.example.com/auth/callback")
         (validateRedirectTo oauthSiteCfg "https://app.example.com/auth/callback")
-
-    -- validateRedirectTo: disallowed URL
     case validateRedirectTo oauthSiteCfg "https://evil.example.com/steal" of
         Left _ -> pure ()
         Right _ -> fail "validateRedirectTo disallowed: expected Left, got Right"
-
-    -- generateState: non-empty 43-char token
     stateA <- generateState
     assertEqual "generateState non-empty" True (not (T.null stateA))
     assertEqual "generateState length 43" 43 (T.length stateA)
     stateB <- generateState
     assertEqual "generateState two calls differ" True (stateA /= stateB)
-
-    -- isFlowStateExpired: 5 minutes ago, max 600 → False
     nowForExpiry <- getCurrentTime
     let createdRecently = addUTCTime (negate 300) nowForExpiry
         createdLongAgo = addUTCTime (negate 1200) nowForExpiry
@@ -1295,14 +1294,10 @@ main = do
         "isFlowStateExpired 5 min ago not expired"
         False
         (isFlowStateExpired nowForExpiry createdRecently 600)
-
-    -- isFlowStateExpired: 20 minutes ago, max 600 → True
     assertEqual
         "isFlowStateExpired 20 min ago expired"
         True
         (isFlowStateExpired nowForExpiry createdLongAgo 600)
-
-    -- buildStubAuthorizeUrl: contains required substrings
     let stubCfg =
             OAuthProviderConfig
                 { oauthProviderName = "google"
@@ -1316,8 +1311,6 @@ main = do
     assertContains "buildStubAuthorizeUrl redirect_uri=" "redirect_uri=" stubUrl
     assertContains "buildStubAuthorizeUrl state value" "test-state-token" stubUrl
     assertContains "buildStubAuthorizeUrl client_id value" "my-client-id" stubUrl
-
-    -- OAuthAuthorizeResponse JSON shape: must have keys "url" and "state"
     let oauthResp =
             OAuthAuthorizeResponse
                 { oauthAuthorizeUrl = "https://accounts.google.com/o/oauth2/auth?state=xyz"
@@ -1340,11 +1333,6 @@ main = do
                 "OAuthAuthorizeResponse state value"
                 (Just (String "xyz"))
                 (KeyMap.lookup "state" obj)
-
-    -- ---------------------------------------------------------------------------
-    -- Hauth.Auth.Admin: parsePagination
-    -- ---------------------------------------------------------------------------
-
     assertEqual
         "parsePagination Nothing Nothing == defaultPagination"
         defaultPagination
@@ -1357,7 +1345,6 @@ main = do
         "parsePagination defaults per_page=50"
         50
         (pagPerPage (parsePagination Nothing Nothing))
-    -- page=0 is clamped to 1; per_page=200 is clamped to 100 (maxPerPage)
     assertEqual
         "parsePagination clamps page 0 → 1"
         1
@@ -1370,11 +1357,6 @@ main = do
         "parsePagination explicit page=3 per_page=20"
         (Pagination{pagPage = 3, pagPerPage = 20})
         (parsePagination (Just 3) (Just 20))
-
-    -- ---------------------------------------------------------------------------
-    -- Hauth.Auth.Admin: computeNextPage
-    -- ---------------------------------------------------------------------------
-
     assertEqual
         "computeNextPage on last page → Nothing"
         Nothing
@@ -1395,11 +1377,6 @@ main = do
         "computeNextPage zero total → Nothing"
         Nothing
         (computeNextPage (Pagination 1 50) 0)
-
-    -- ---------------------------------------------------------------------------
-    -- Hauth.Auth.Admin: validateAdminCreate
-    -- ---------------------------------------------------------------------------
-
     assertEqual
         "validateAdminCreate empty email → AdminEmailRequired"
         (Left AdminEmailRequired)
@@ -1434,7 +1411,6 @@ main = do
         Left (AdminPasswordPolicy _ _) -> pure ()
         other ->
             fail ("validateAdminCreate short password: expected AdminPasswordPolicy, got " <> show other)
-    -- Email-only (no password) → Right () — admin can create without a password
     assertEqual
         "validateAdminCreate email-only → Right ()"
         (Right ())
@@ -1447,11 +1423,6 @@ main = do
                 , adminCreateUserAppMetadata = Nothing
                 }
         )
-
-    -- ---------------------------------------------------------------------------
-    -- Hauth.Auth.Admin: validateInvite
-    -- ---------------------------------------------------------------------------
-
     assertEqual
         "validateInvite empty email → AdminEmailRequired"
         (Left AdminEmailRequired)
@@ -1460,11 +1431,6 @@ main = do
         "validateInvite valid email → Right ()"
         (Right ())
         (validateInvite InviteUserRequest{inviteUserEmail = Email "invite@example.com", inviteUserData = Nothing})
-
-    -- ---------------------------------------------------------------------------
-    -- ListUsersResponse JSON shape
-    -- ---------------------------------------------------------------------------
-
     now7 <- getCurrentTime
     let sampleUserResp =
             buildUserResponse
@@ -1502,11 +1468,6 @@ main = do
                 "ListUsersResponse aud"
                 (Just (String "authenticated"))
                 (KeyMap.lookup "aud" obj)
-
-    -- ---------------------------------------------------------------------------
-    -- DeletedUserResponse JSON shape
-    -- ---------------------------------------------------------------------------
-
     let deletedResp = DeletedUserResponse{deletedUser = sampleUserResp}
     case Aeson.decode (Aeson.encode deletedResp) of
         Nothing -> fail "DeletedUserResponse: JSON decode failed"
@@ -1514,11 +1475,6 @@ main = do
             if KeyMap.member "user" obj
                 then pure ()
                 else fail "DeletedUserResponse JSON: missing 'user' key"
-
-    -- ---------------------------------------------------------------------------
-    -- Identity record selectors round-trip
-    -- ---------------------------------------------------------------------------
-
     let sampleIdentity =
             Identity
                 { identityIdentityId = IdentityId "provider-id-123"
@@ -1535,7 +1491,6 @@ main = do
     assertEqual "identity userId" UUID.nil (identityUserId sampleIdentity)
     assertEqual "identity provider" "email" (identityProvider sampleIdentity)
     assertEqual "identity email" (Just "user@example.com") (identityEmail sampleIdentity)
-    -- Build IdentityResponse and check JSON shape
     let identResp = buildIdentityResponse sampleIdentity
     case Aeson.decode (Aeson.encode identResp) of
         Nothing -> fail "IdentityResponse: JSON decode failed"
@@ -1554,7 +1509,6 @@ main = do
                 , "created_at"
                 , "updated_at"
                 ]
-    -- ListIdentitiesResponse JSON shape
     let listIdResp = ListIdentitiesResponse{listIdentities = [identResp]}
     case Aeson.decode (Aeson.encode listIdResp) of
         Nothing -> fail "ListIdentitiesResponse: JSON decode failed"
@@ -1562,6 +1516,121 @@ main = do
             if KeyMap.member "identities" obj
                 then pure ()
                 else fail "ListIdentitiesResponse JSON: missing 'identities' key"
+    assertEqual
+        "encodeBase32 empty"
+        ""
+        (encodeBase32 "")
+    assertEqual
+        "encodeBase32 foobar"
+        "MZXW6YTBOI"
+        (encodeBase32 "foobar")
+    assertEqual
+        "encodeBase32 f"
+        "MY"
+        (encodeBase32 "f")
+    assertEqual
+        "encodeBase32 fo"
+        "MZXQ"
+        (encodeBase32 "fo")
+    let knownSecret20 = BS.pack [0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x01, 0x23, 0x45, 0x67]
+    case decodeBase32 (encodeBase32 knownSecret20) of
+        Nothing -> fail "decodeBase32 round-trip: got Nothing"
+        Just decoded -> assertEqual "decodeBase32 round-trip 20-byte" knownSecret20 decoded
+    case decodeBase32 "MZXW6YTBOI======" of
+        Nothing -> fail "decodeBase32 with padding: got Nothing"
+        Just decoded -> assertEqual "decodeBase32 with padding equals foobar" "foobar" decoded
+    case decodeBase32 "mzxw6ytboi" of
+        Nothing -> fail "decodeBase32 lowercase: got Nothing"
+        Just decoded -> assertEqual "decodeBase32 lowercase round-trip" "foobar" decoded
+    assertEqual
+        "decodeBase32 invalid char returns Nothing"
+        Nothing
+        (decodeBase32 "invalid!")
+    secret1 <- generateTotpSecret
+    assertEqual "generateTotpSecret produces 20 bytes" 20 (BS.length (unTotpSecret secret1))
+    secret2 <- generateTotpSecret
+    assertEqual "generateTotpSecret two calls differ" True (unTotpSecret secret1 /= unTotpSecret secret2)
+    let knownSecret = TotpSecret (BS.pack (replicate 20 0))
+        uri = otpAuthUri "hauth" "alice@example.com" knownSecret
+    assertEqual
+        "otpAuthUri starts with otpauth://totp/"
+        True
+        (T.isPrefixOf "otpauth://totp/" uri)
+    assertEqual
+        "otpAuthUri encodes @ as %40"
+        True
+        (T.isInfixOf "alice%40example.com" uri)
+    assertEqual
+        "otpAuthUri contains issuer=hauth"
+        True
+        (T.isInfixOf "&issuer=hauth" uri)
+    assertEqual
+        "otpAuthUri contains algorithm=SHA1"
+        True
+        (T.isInfixOf "&algorithm=SHA1" uri)
+    assertEqual
+        "otpAuthUri contains digits=6"
+        True
+        (T.isInfixOf "&digits=6" uri)
+    assertEqual
+        "otpAuthUri contains period=30"
+        True
+        (T.isInfixOf "&period=30" uri)
+    assertEqual
+        "validateEnrollRequest accepts totp"
+        (Right ())
+        ( validateEnrollRequest
+            EnrollFactorRequest
+                { enrollFactorType = "totp"
+                , enrollFactorFriendlyName = Nothing
+                , enrollFactorIssuer = Nothing
+                }
+        )
+    assertEqual
+        "validateEnrollRequest rejects webauthn"
+        (Left (EnrollUnsupportedFactorType "webauthn"))
+        ( validateEnrollRequest
+            EnrollFactorRequest
+                { enrollFactorType = "webauthn"
+                , enrollFactorFriendlyName = Nothing
+                , enrollFactorIssuer = Nothing
+                }
+        )
+    let totpUri' = "otpauth://totp/hauth:user%40example.com?secret=AAAA&issuer=hauth&algorithm=SHA1&digits=6&period=30"
+        factorResp =
+            buildFactorResponse
+                UUID.nil
+                "totp"
+                (Just "My Authenticator")
+                "unverified"
+                "AAAA"
+                totpUri'
+    case Aeson.decode (Aeson.encode factorResp) of
+        Nothing ->
+            fail "FactorResponse: JSON decode failed"
+        Just (obj :: Object) -> do
+            let requiredFactorKeys = ["id", "type", "friendly_name", "totp"]
+            mapM_
+                ( \k ->
+                    if KeyMap.member k obj
+                        then pure ()
+                        else fail ("FactorResponse JSON: missing top-level key: " <> show k)
+                )
+                requiredFactorKeys
+            case KeyMap.lookup "totp" obj of
+                Nothing ->
+                    fail "FactorResponse JSON: missing totp sub-object"
+                Just (Object totpObj) -> do
+                    let requiredTotpKeys = ["qr_code", "secret", "uri"]
+                    mapM_
+                        ( \k ->
+                            if KeyMap.member k totpObj
+                                then pure ()
+                                else fail ("FactorResponse JSON: totp missing key: " <> show k)
+                        )
+                        requiredTotpKeys
+                _ ->
+                    fail "FactorResponse JSON: totp is not an object"
 
     exitSuccess
 

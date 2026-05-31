@@ -53,6 +53,8 @@ import qualified Hauth.Crypto.Password as Pwd
 import Hauth.Email (EmailSender (..), TemplateData (..), TemplateKind (..), renderEmail, sendEmail, stubSender)
 import Hauth.Env (AppEnv (..), LogLevel (..), createAppEnv, destroyAppEnv, logMessage, withDatabaseConnection)
 import qualified Hauth.Identity as Identity
+import Hauth.Mfa.Totp (encodeBase32, generateTotpSecret, otpAuthUri, unTotpSecret)
+import qualified Hauth.MfaFactor as MfaFactor
 import Hauth.OAuth (
     OAuthError (..),
     ProviderName (..),
@@ -172,8 +174,8 @@ sessionServer =
 
 mfaServer :: ServerT MfaAPI AppHandler
 mfaServer =
-    notImplemented1
-        :<|> notImplemented2
+    listFactorsHandler
+        :<|> enrollFactorHandler
         :<|> notImplemented3
         :<|> notImplemented3
         :<|> notImplemented2
@@ -1435,6 +1437,125 @@ adminUserNotFoundError =
                     , "msg" Aeson..= ("User not found" :: T.Text)
                     ]
         }
+
+-- ---------------------------------------------------------------------------
+-- MFA handlers
+-- ---------------------------------------------------------------------------
+
+{- | Handle @GET /factors@.
+
+Returns all factors for the authenticated user.  Partitions them into:
+
+- @factors@: every factor regardless of status or type.
+- @totp@: only verified TOTP factors.
+- @phone@: always empty in v0.1.
+-}
+listFactorsHandler :: SessionPrincipal -> AppHandler ListFactorsResponse
+listFactorsHandler principal = do
+    env <- ask
+    uid <- parseSessionUuid principal
+    factors <- liftIO (withDatabaseConnection env (`MfaFactor.listFactorsForUser` uid))
+    let toFactorResp f =
+            FactorResponse
+                { factorResponseId = FactorId (UUID.toText (MfaFactor.unMfaFactorId (MfaFactor.mfaFactorId f)))
+                , factorResponseType = "totp"
+                , factorResponseFriendlyName = MfaFactor.mfaFactorFriendlyName f
+                , factorResponseStatus = factorStatusText (MfaFactor.mfaFactorStatus f)
+                , factorResponseTotp = Nothing
+                }
+        allFactors = fmap toFactorResp factors
+        verifiedTotp =
+            filter
+                ( \f ->
+                    factorResponseStatus f == "verified"
+                        && factorResponseType f == "totp"
+                )
+                allFactors
+    pure
+        ListFactorsResponse
+            { listFactorsAll = allFactors
+            , listFactorsTotp = verifiedTotp
+            , listFactorsPhone = []
+            }
+
+{- | Handle @POST /factors@.
+
+Validates the enroll request, generates a fresh TOTP secret, inserts the
+factor row with status @unverified@, and returns the factor data including
+the @otpauth://@ URI the client needs to display to the user.
+-}
+enrollFactorHandler :: SessionPrincipal -> EnrollFactorRequest -> AppHandler FactorResponse
+enrollFactorHandler principal req@EnrollFactorRequest{enrollFactorFriendlyName, enrollFactorIssuer} = do
+    case validateEnrollRequest req of
+        Left (EnrollUnsupportedFactorType ft) ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("unsupported_factor_type" :: T.Text)
+                                , "error_description" Aeson..= ("Unsupported factor type: " <> ft)
+                                ]
+                    }
+        Right () -> pure ()
+    env <- ask
+    let AppEnv{appConfig} = env
+        Config{configJwt = JwtConfig{jwtIssuer}} = appConfig
+        issuer = fromMaybe jwtIssuer enrollFactorIssuer
+    uid <- parseSessionUuid principal
+    -- Look up the user to get their email for the otpauth label.
+    mUser <- liftIO (withDatabaseConnection env (`User.getUserById` User.UserId uid))
+    let label = case mUser >>= User.userEmail of
+            Just email -> email
+            Nothing -> UUID.toText uid
+    -- Generate TOTP secret and encode it.
+    secret <- liftIO generateTotpSecret
+    let secretB32 = encodeBase32 (unTotpSecret secret)
+        uri = otpAuthUri issuer label secret
+    -- Insert factor into DB.
+    let newFactor =
+            MfaFactor.NewMfaFactor
+                { MfaFactor.newMfaFactorUserId = uid
+                , MfaFactor.newMfaFactorFriendlyName = enrollFactorFriendlyName
+                , MfaFactor.newMfaFactorType = MfaFactor.FactorTypeTotp
+                , MfaFactor.newMfaFactorSecret = secretB32
+                }
+    factor <- liftIO (withDatabaseConnection env (`MfaFactor.createFactor` newFactor))
+    pure
+        FactorResponse
+            { factorResponseId = FactorId (UUID.toText (MfaFactor.unMfaFactorId (MfaFactor.mfaFactorId factor)))
+            , factorResponseType = "totp"
+            , factorResponseFriendlyName = MfaFactor.mfaFactorFriendlyName factor
+            , factorResponseStatus = factorStatusText (MfaFactor.mfaFactorStatus factor)
+            , factorResponseTotp =
+                Just
+                    FactorTotpData
+                        { factorTotpQrCode = uri
+                        , factorTotpSecret = secretB32
+                        , factorTotpUri = uri
+                        }
+            }
+
+-- | Parse the session user UUID from the 'SessionPrincipal', throwing 401 on failure.
+parseSessionUuid :: SessionPrincipal -> AppHandler UUID
+parseSessionUuid principal =
+    case UUID.fromText (sessionUserId principal) of
+        Nothing ->
+            throwError
+                err401
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "code" Aeson..= ("invalid_user_id" :: T.Text)
+                                , "msg" Aeson..= ("malformed user id in token" :: T.Text)
+                                ]
+                    }
+        Just u -> pure u
+
+-- | Convert a 'FactorStatus' to its wire-format text representation.
+factorStatusText :: MfaFactor.FactorStatus -> T.Text
+factorStatusText MfaFactor.FactorUnverified = "unverified"
+factorStatusText MfaFactor.FactorVerified = "verified"
 
 notImplemented :: AppHandler a
 notImplemented =
