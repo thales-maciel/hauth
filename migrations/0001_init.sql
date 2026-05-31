@@ -5,4 +5,4 @@
 -- this file only needs to mark the bootstrap as complete. Real auth schema
 -- content lands in issue #6.
 
-SELECT 1;
+DO $$ BEGIN END $$;

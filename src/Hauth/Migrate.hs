@@ -89,7 +89,9 @@ showStatus conn = do
 
 applyMigrations :: Connection -> IO ExitCode
 applyMigrations conn = do
-    _ <- execute_ conn "SELECT pg_advisory_lock(7401)"
+    -- pg_advisory_lock is a function call returning void via SELECT, so we use
+    -- query_ (not execute_) to swallow the single-column result row.
+    _ <- query_ conn "SELECT pg_advisory_lock(7401)" :: IO [Only ()]
     applied <- queryApplied conn
     let pending = pendingMigrations applied embeddedMigrations
     if null pending

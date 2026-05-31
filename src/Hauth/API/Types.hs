@@ -364,7 +364,13 @@ newtype RecoverRequest = RecoverRequest
     { recoverEmail :: Email
     }
     deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+
+instance FromJSON RecoverRequest where
+    parseJSON = Aeson.withObject "RecoverRequest" \o ->
+        RecoverRequest <$> o Aeson..: "email"
+
+instance ToJSON RecoverRequest where
+    toJSON (RecoverRequest email) = Aeson.object ["email" Aeson..= email]
 
 data VerifyRequest = VerifyRequest
     { verifyToken :: Text
@@ -723,7 +729,16 @@ data VerifyFactorRequest = VerifyFactorRequest
     , verifyFactorCode :: Text
     }
     deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+
+instance FromJSON VerifyFactorRequest where
+    parseJSON = Aeson.withObject "VerifyFactorRequest" \o ->
+        VerifyFactorRequest
+            <$> o Aeson..: "challenge_id"
+            <*> o Aeson..: "code"
+
+instance ToJSON VerifyFactorRequest where
+    toJSON (VerifyFactorRequest cid code) =
+        Aeson.object ["challenge_id" Aeson..= cid, "code" Aeson..= code]
 
 newtype VerifyFactorResponse = VerifyFactorResponse
     { verifyFactorSession :: SessionResponse
