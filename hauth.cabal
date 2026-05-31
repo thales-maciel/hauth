@@ -66,6 +66,7 @@ library
     Hauth.Email
     Hauth.Env
     Hauth.Migrate
+    Hauth.OAuth
     Hauth.Server
     Hauth.Session
     Hauth.User
