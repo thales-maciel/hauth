@@ -48,6 +48,7 @@ module Hauth.API.Types (
     WebhookDeliveryResponse (..),
     buildSettingsResponse,
     buildSignupResponse,
+    buildUserResponse,
     classifyRefreshTokenLookup,
     parseGrantType,
 ) where
@@ -363,10 +364,25 @@ data ResendRequest = ResendRequest
 data UpdateUserRequest = UpdateUserRequest
     { updateUserEmail :: Maybe Email
     , updateUserPassword :: Maybe Password
-    , updateUserMetadata :: Maybe Text
+    , updateUserData :: Maybe Value
+    -- ^ User metadata; replaces @raw_user_meta_data@ entirely for v0.1.
     }
     deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+
+instance FromJSON UpdateUserRequest where
+    parseJSON = Aeson.withObject "UpdateUserRequest" \obj ->
+        UpdateUserRequest
+            <$> obj Aeson..:? "email"
+            <*> obj Aeson..:? "password"
+            <*> obj Aeson..:? "data"
+
+instance ToJSON UpdateUserRequest where
+    toJSON UpdateUserRequest{updateUserEmail, updateUserPassword, updateUserData} =
+        object
+            [ "email" .= updateUserEmail
+            , "password" .= updateUserPassword
+            , "data" .= updateUserData
+            ]
 
 data SessionResponse = SessionResponse
     { sessionAccessToken :: Text
@@ -381,14 +397,64 @@ data SessionResponse = SessionResponse
 -- names.  The token endpoint returns 'TokenResponse' (hand-rolled ToJSON with
 -- snake_case keys) to match the Supabase wire format exactly.
 
+{- | Full user object matching the Supabase @/user@ response contract.
+
+The JSON serialisation uses snake_case keys to match the Supabase wire format.
+-}
 data UserResponse = UserResponse
-    { userId :: UserId
-    , userEmail :: Maybe Email
-    , userRole :: Text
-    , userCreatedAt :: UTCTime
+    { userResponseId :: UUID
+    , userResponseAud :: Text
+    , userResponseRole :: Text
+    , userResponseEmail :: Maybe Text
+    , userResponseEmailConfirmedAt :: Maybe UTCTime
+    , userResponseCreatedAt :: UTCTime
+    , userResponseUpdatedAt :: UTCTime
+    , userResponseAppMetadata :: Value
+    , userResponseUserMetadata :: Value
     }
-    deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+    deriving stock (Eq, Show)
+
+instance ToJSON UserResponse where
+    toJSON UserResponse{..} =
+        object
+            [ "id" .= userResponseId
+            , "aud" .= userResponseAud
+            , "role" .= userResponseRole
+            , "email" .= userResponseEmail
+            , "email_confirmed_at" .= userResponseEmailConfirmedAt
+            , "created_at" .= userResponseCreatedAt
+            , "updated_at" .= userResponseUpdatedAt
+            , "app_metadata" .= userResponseAppMetadata
+            , "user_metadata" .= userResponseUserMetadata
+            ]
+
+instance FromJSON UserResponse where
+    parseJSON = Aeson.withObject "UserResponse" \obj ->
+        UserResponse
+            <$> obj Aeson..: "id"
+            <*> obj Aeson..: "aud"
+            <*> obj Aeson..: "role"
+            <*> obj Aeson..:? "email"
+            <*> obj Aeson..:? "email_confirmed_at"
+            <*> obj Aeson..: "created_at"
+            <*> obj Aeson..: "updated_at"
+            <*> obj Aeson..: "app_metadata"
+            <*> obj Aeson..: "user_metadata"
+
+-- | Convert a persisted 'User.User' to a 'UserResponse'.
+buildUserResponse :: User.User -> UserResponse
+buildUserResponse User.User{..} =
+    UserResponse
+        { userResponseId = User.unUserId userId
+        , userResponseAud = userAud
+        , userResponseRole = userRole
+        , userResponseEmail = userEmail
+        , userResponseEmailConfirmedAt = userEmailConfirmedAt
+        , userResponseCreatedAt = userCreatedAt
+        , userResponseUpdatedAt = userUpdatedAt
+        , userResponseAppMetadata = userRawAppMetaData
+        , userResponseUserMetadata = userRawUserMetaData
+        }
 
 newtype MessageResponse = MessageResponse
     { message :: Text
