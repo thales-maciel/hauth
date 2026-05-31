@@ -15,3 +15,5 @@ result
 .env
 .env.*
 !.env.example
+
+.claude/
