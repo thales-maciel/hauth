@@ -19,20 +19,23 @@ import Data.Maybe (fromMaybe)
 import Data.Proxy (Proxy (Proxy))
 import Data.String (fromString)
 import qualified Data.Text as T
+import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import Database.PostgreSQL.Simple (execute_, withTransaction)
 import GHC.Clock (getMonotonicTimeNSec)
 import Hauth.API
 import Hauth.API.Auth
 import Hauth.API.Types
-import Hauth.Auth.Jwt (validateAccessToken)
+import Hauth.Auth.Jwt (AccessTokenClaims (..), validateAccessToken)
+import Hauth.Auth.Logout (LogoutError (..), resolveLogoutSession)
 import Hauth.Config (Config (..), DatabaseConfig (..), JwtConfig (..), ServerConfig (..))
 import Hauth.Crypto.Password (defaultArgon2Settings, hashPassword)
 import Hauth.Env (AppEnv (..), LogLevel (..), createAppEnv, destroyAppEnv, logMessage, withDatabaseConnection)
+import Hauth.Session (revokeSession)
 import Hauth.User (SignupError (..), generateConfirmationToken, validateSignupEmail, validateSignupPassword)
 import qualified Hauth.User as User
 import Network.Wai (Application, Request, requestHeaders)
 import qualified Network.Wai.Handler.Warp as Warp
-import Servant.API (type (:<|>) ((:<|>)))
+import Servant.API (NoContent (..), type (:<|>) ((:<|>)))
 import Servant.Server (
     Context (EmptyContext, (:.)),
     Handler,
@@ -112,7 +115,7 @@ sessionServer :: ServerT SessionAPI AppHandler
 sessionServer =
     notImplemented1
         :<|> notImplemented2
-        :<|> notImplemented2
+        :<|> logoutHandler
 
 mfaServer :: ServerT MfaAPI AppHandler
 mfaServer =
@@ -323,7 +326,7 @@ authContext ::
     AppEnv -> Context AuthContext
 authContext env =
     anonymousAuth
-        :. validSessionAuth
+        :. validSessionAuth env
         :. serviceRoleAuth env
         :. EmptyContext
 
@@ -332,16 +335,34 @@ anonymousAuth =
     mkAuthHandler \_request ->
         pure AnonymousPrincipal
 
-validSessionAuth :: AuthHandler Request SessionPrincipal
-validSessionAuth =
+validSessionAuth :: AppEnv -> AuthHandler Request SessionPrincipal
+validSessionAuth env =
     mkAuthHandler \request -> do
-        requireAuthorization request
-        pure
-            SessionPrincipal
-                { sessionUserId = "authenticated-user"
-                , sessionRole = "authenticated"
-                , sessionAccessTokenId = "authorization-header"
-                }
+        let AppEnv{appConfig} = env
+            Config{configJwt} = appConfig
+        token <- case extractBearerToken (requestHeaders request) of
+            Left msg -> throwError err401{errBody = BSLC.pack (T.unpack msg)}
+            Right t -> pure t
+        result <- liftIO (validateAccessToken configJwt token)
+        case result of
+            Left err ->
+                throwError
+                    err401
+                        { errBody =
+                            Aeson.encode
+                                ( Aeson.object
+                                    [ "code" Aeson..= ("no_authorization" :: T.Text)
+                                    , "msg" Aeson..= T.pack (show err)
+                                    ]
+                                )
+                        }
+            Right claims ->
+                pure
+                    SessionPrincipal
+                        { sessionUserId = claimSub claims
+                        , sessionRole = claimRole claims
+                        , sessionAccessTokenId = claimSessionId claims
+                        }
 
 serviceRoleAuth :: AppEnv -> AuthHandler Request ServiceRolePrincipal
 serviceRoleAuth env =
@@ -356,10 +377,63 @@ serviceRoleAuth env =
             Left msg -> throwError err401{errBody = BSLC.pack (T.unpack msg)}
             Right principal -> pure principal
 
-requireAuthorization :: Request -> Handler ()
-requireAuthorization request =
-    case lookup "Authorization" (requestHeaders request) of
-        Just value
-            | not (BS.null value) -> pure ()
-        _ ->
-            throwError err401{errBody = "Missing Authorization header"}
+{- | Handle @POST /logout@.
+
+Validates the Bearer JWT carried in the @Authorization@ header (already
+checked by 'validSessionAuth'), extracts the @session_id@ claim, and
+revokes the corresponding session row via 'revokeSession'.  Associated
+refresh tokens are removed automatically by the @ON DELETE CASCADE@
+constraint on @auth.refresh_tokens.session_id@.
+
+The optional @scope@ query parameter is accepted but ignored for v0.1
+(only the "local" scope — revoke the current session — is supported).
+-}
+logoutHandler ::
+    SessionPrincipal ->
+    Maybe T.Text ->
+    AppHandler NoContent
+logoutHandler principal _scope = do
+    env <- ask
+    -- sessionAccessTokenId carries the claimSessionId text set by
+    -- validSessionAuth; parse it directly as a UUID.
+    let sidText = sessionAccessTokenId principal
+        dummyClaims =
+            AccessTokenClaims
+                { claimSub = sessionUserId principal
+                , claimRole = sessionRole principal
+                , claimEmail = Nothing
+                , claimPhone = Nothing
+                , claimAppMetadata = Aeson.object []
+                , claimUserMetadata = Aeson.object []
+                , claimAal = "aal1"
+                , claimAmr = []
+                , claimSessionId = sidText
+                , claimIssuedAt = posixSecondsToUTCTime 0
+                , claimExpiresAt = posixSecondsToUTCTime 0
+                }
+    sid <- case resolveLogoutSession (Right dummyClaims) of
+        Left (LogoutBadSessionId msg) ->
+            throwError
+                err401
+                    { errBody =
+                        Aeson.encode
+                            ( Aeson.object
+                                [ "code" Aeson..= ("invalid_session_id" :: T.Text)
+                                , "msg" Aeson..= msg
+                                ]
+                            )
+                    }
+        Left other ->
+            throwError
+                err401
+                    { errBody =
+                        Aeson.encode
+                            ( Aeson.object
+                                [ "code" Aeson..= ("no_authorization" :: T.Text)
+                                , "msg" Aeson..= T.pack (show other)
+                                ]
+                            )
+                    }
+        Right s -> pure s
+    liftIO (withDatabaseConnection env (`revokeSession` sid))
+    pure NoContent
