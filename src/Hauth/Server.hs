@@ -29,6 +29,7 @@ import GHC.Clock (getMonotonicTimeNSec)
 import Hauth.API
 import Hauth.API.Auth
 import Hauth.API.Types
+import Hauth.Auth.AalAmr (SessionAuthState (..), buildAmrEntries, deriveSessionAuthState)
 import Hauth.Auth.Jwt (AccessTokenClaims (..), AmrEntry (..), signAccessToken, validateAccessToken)
 import Hauth.Auth.Login (LoginError (..), authorizeLogin, buildLoginClaims, extractCredentials)
 import Hauth.Auth.Logout (LogoutError (..), resolveLogoutSession)
@@ -64,6 +65,7 @@ import Hauth.Session (
     createRefreshToken,
     createSession,
     generateOpaqueToken,
+    getSession,
     lookupRefreshTokenRaw,
     revokeRefreshToken,
     revokeSession,
@@ -352,7 +354,7 @@ handleRefreshTokenGrant TokenRequest{tokenRequestRefreshToken} = do
                 uid = refreshTokenUserId rt
                 ttl = fromIntegral jwtAccessTokenTtlSeconds
                 expiry = addUTCTime ttl now
-                iatSecs = floor (utcTimeToPOSIXSeconds now) :: Integer
+                iatPosix = utcTimeToPOSIXSeconds now
             mUserVal <- liftIO (withDatabaseConnection env (`fetchMinimalUser` uid))
             userVal <- case mUserVal of
                 Nothing ->
@@ -366,7 +368,21 @@ handleRefreshTokenGrant TokenRequest{tokenRequestRefreshToken} = do
                                         ]
                             }
                 Just v -> pure v
+            mSession <- liftIO (withDatabaseConnection env (`getSession` sid))
+            sess <- case mSession of
+                Nothing ->
+                    throwError
+                        err401
+                            { errBody =
+                                Aeson.encode $
+                                    Aeson.object
+                                        [ "error" Aeson..= ("invalid_grant" :: T.Text)
+                                        , "error_description" Aeson..= ("session not found" :: T.Text)
+                                        ]
+                            }
+                Just s -> pure s
             let (userEmail', userRole') = extractEmailRole userVal
+                sas = deriveSessionAuthState Nothing sess
                 claims =
                     AccessTokenClaims
                         { claimSub = UUID.toText uid
@@ -375,13 +391,8 @@ handleRefreshTokenGrant TokenRequest{tokenRequestRefreshToken} = do
                         , claimPhone = Nothing
                         , claimAppMetadata = Aeson.object []
                         , claimUserMetadata = Aeson.object []
-                        , claimAal = "aal1"
-                        , claimAmr =
-                            [ AmrEntry
-                                { amrMethod = "token_refresh"
-                                , amrTimestamp = iatSecs
-                                }
-                            ]
+                        , claimAal = sasAal sas
+                        , claimAmr = buildAmrEntries (sasMethods sas) iatPosix
                         , claimSessionId = UUID.toText (unSessionId sid)
                         , claimIssuedAt = now
                         , claimExpiresAt = expiry

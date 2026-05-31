@@ -54,6 +54,7 @@ library
     Hauth.API
     Hauth.API.Auth
     Hauth.API.Types
+    Hauth.Auth.AalAmr
     Hauth.Auth.Admin
     Hauth.Auth.Jwt
     Hauth.Auth.Login
@@ -126,6 +127,7 @@ test-suite hauth-test
   hs-source-dirs: test
   other-modules:
     Spec.APISpec
+    Spec.Auth.AalAmrSpec
     Spec.Auth.AdminSpec
     Spec.Auth.JwtSpec
     Spec.Auth.LoginSpec

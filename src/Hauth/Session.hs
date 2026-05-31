@@ -6,6 +6,8 @@ module Hauth.Session (
     NewSession (..),
     createSession,
     getSession,
+    updateSessionAalFactor,
+    getActiveRefreshTokenForSession,
     listUserSessions,
     revokeSession,
     createRefreshToken,
@@ -149,6 +151,48 @@ getSession conn (SessionId sid) = do
             \  not_after, refreshed_at, user_agent, ip::text \
             \FROM auth.sessions \
             \WHERE id = ?"
+            (Only sid)
+    pure $ case rows of
+        [row] -> Just row
+        _ -> Nothing
+
+{- | Update the @aal@ and @factor_id@ columns for an existing session.
+
+Also touches @refreshed_at@ and @updated_at@ to @now()@.  Returns the
+updated 'Session' row, or 'Nothing' when no row with the given id exists.
+-}
+updateSessionAalFactor :: Connection -> SessionId -> Text -> Maybe UUID -> IO (Maybe Session)
+updateSessionAalFactor conn (SessionId sid) aal mFactorId = do
+    rows <-
+        query
+            conn
+            "UPDATE auth.sessions \
+            \SET aal = ?, factor_id = ?, refreshed_at = now(), updated_at = now() \
+            \WHERE id = ? \
+            \RETURNING \
+            \  id, user_id, created_at, updated_at, factor_id, aal, \
+            \  not_after, refreshed_at, user_agent, ip::text"
+            (aal, mFactorId, sid)
+    pure $ case rows of
+        [row] -> Just row
+        _ -> Nothing
+
+{- | Find the most-recent active (non-revoked) refresh token for a session.
+
+Returns 'Nothing' when the session has no active tokens.
+-}
+getActiveRefreshTokenForSession :: Connection -> SessionId -> IO (Maybe RefreshToken)
+getActiveRefreshTokenForSession conn (SessionId sid) = do
+    rows <-
+        query
+            conn
+            "SELECT \
+            \  id, token, session_id, user_id::uuid, parent, revoked, \
+            \  created_at, updated_at \
+            \FROM auth.refresh_tokens \
+            \WHERE session_id = ? AND revoked = false \
+            \ORDER BY created_at DESC \
+            \LIMIT 1"
             (Only sid)
     pure $ case rows of
         [row] -> Just row

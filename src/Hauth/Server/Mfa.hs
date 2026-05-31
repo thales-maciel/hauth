@@ -16,26 +16,26 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time.Clock (addUTCTime, getCurrentTime)
-import Data.Time.Clock.POSIX (getPOSIXTime, utcTimeToPOSIXSeconds)
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.UUID (UUID)
 import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID4
 
 import Hauth.API.Auth (SessionPrincipal (..))
 import Hauth.API.Types
-import Hauth.Auth.Jwt (AccessTokenClaims (..), AmrEntry (..), signAccessToken)
+import Hauth.Auth.AalAmr (SessionAuthState (..), buildAmrEntries, deriveSessionAuthState)
+import Hauth.Auth.Jwt (AccessTokenClaims (..), signAccessToken)
 import Hauth.Config (Config (..), JwtConfig (..))
 import Hauth.Env (AppEnv (..), withDatabaseConnection)
 import Hauth.Mfa.Totp (TotpSecret (..), decodeBase32, encodeBase32, generateTotpSecret, otpAuthUri, unTotpSecret)
 import Hauth.Mfa.TotpVerify (TotpVerificationResult (..), verifyTotpCode)
 import qualified Hauth.MfaFactor as MfaFactor
 import Hauth.Session (
-    NewSession (..),
     SessionId (..),
-    createRefreshToken,
-    createSession,
+    getActiveRefreshTokenForSession,
     refreshTokenToken,
-    sessionId,
+    unSessionId,
+    updateSessionAalFactor,
  )
 import qualified Hauth.User as User
 import Servant.Server (
@@ -170,11 +170,14 @@ challengeFactorHandler principal (FactorId factorIdText) _req = do
 {- | Verify a TOTP code against the factor secret.
 
 Steps:
-1. Look up the factor; 404 if not found, 403 if foreign.
-2. Decode the BASE32 secret; 500 if the DB row is corrupt.
-3. Verify the candidate code; 401 if invalid.
-4. On success: update status to verified (if unverified), create an aal2
-   session, sign a JWT with aal=aal2 and amr=[totp], and return the session.
+1. Parse the existing session id from the bearer JWT.
+2. Look up the factor; 404 if not found, 403 if foreign.
+3. Decode the BASE32 secret; 500 if the DB row is corrupt.
+4. Verify the candidate code; 401 if invalid.
+5. On success: update factor status to verified (if unverified), elevate the
+   existing session to aal2 via 'updateSessionAalFactor', derive AAL\/AMR
+   from the updated session, sign a new access token, and return it together
+   with the existing (unchanged) refresh token.
 -}
 verifyFactorHandler ::
     SessionPrincipal ->
@@ -187,6 +190,19 @@ verifyFactorHandler principal (FactorId factorIdText) VerifyFactorRequest{verify
         Config{configJwt} = appConfig
         JwtConfig{jwtAccessTokenTtlSeconds} = configJwt
     uid <- parseSessionUuid principal
+    -- Parse the session id carried in the bearer JWT.
+    existingSid <- case UUID.fromText (sessionAccessTokenId principal) of
+        Nothing ->
+            throwError
+                err401
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("invalid_session_id" :: Text)
+                                , "msg" Aeson..= ("malformed session id in token" :: Text)
+                                ]
+                    }
+        Just u -> pure (SessionId u)
     factor <- lookupFactorOrError env factorIdText uid
     let secretB32 = MfaFactor.mfaFactorSecret factor
     rawSecret <- case decodeBase32 secretB32 of
@@ -216,29 +232,47 @@ verifyFactorHandler principal (FactorId factorIdText) VerifyFactorRequest{verify
                     }
         TotpVerified -> do
             let factorUuid = MfaFactor.unMfaFactorId (MfaFactor.mfaFactorId factor)
+            -- Mark the factor verified if it was previously unverified.
             when (MfaFactor.mfaFactorStatus factor == MfaFactor.FactorUnverified) $
                 liftIO $
                     withDatabaseConnection env \conn ->
                         MfaFactor.updateFactorStatus conn (MfaFactor.mfaFactorId factor) MfaFactor.FactorVerified
-            let newSess =
-                    NewSession
-                        { newSessionUserId = uid
-                        , newSessionAal = "aal2"
-                        , newSessionFactorId = Just factorUuid
-                        , newSessionUserAgent = Nothing
-                        , newSessionIp = Nothing
-                        , newSessionNotAfter = Nothing
-                        }
-            (sess, refreshTok) <- liftIO $
-                withDatabaseConnection env \conn -> do
-                    s <- createSession conn newSess
-                    rt <- createRefreshToken conn (sessionId s) Nothing
-                    pure (s, rt)
+            -- Elevate the existing session to aal2.
+            mUpdatedSess <- liftIO $
+                withDatabaseConnection env \conn ->
+                    updateSessionAalFactor conn existingSid "aal2" (Just factorUuid)
+            updatedSess <- case mUpdatedSess of
+                Nothing ->
+                    throwError
+                        err401
+                            { errBody =
+                                Aeson.encode $
+                                    Aeson.object
+                                        [ "error" Aeson..= ("invalid_session" :: Text)
+                                        , "msg" Aeson..= ("session not found" :: Text)
+                                        ]
+                            }
+                Just s -> pure s
+            -- Look up the existing refresh token for this session.
+            mRefreshTok <-
+                liftIO $
+                    withDatabaseConnection env (`getActiveRefreshTokenForSession` existingSid)
+            refreshTok <- case mRefreshTok of
+                Nothing ->
+                    throwError
+                        err401
+                            { errBody =
+                                Aeson.encode $
+                                    Aeson.object
+                                        [ "error" Aeson..= ("invalid_session" :: Text)
+                                        , "msg" Aeson..= ("no active refresh token for session" :: Text)
+                                        ]
+                            }
+                Just rt -> pure rt
             nowUtc <- liftIO getCurrentTime
-            let sid = sessionId sess
+            let sas = deriveSessionAuthState Nothing updatedSess
                 ttl = fromIntegral jwtAccessTokenTtlSeconds
                 expiryUtc = addUTCTime ttl nowUtc
-                iatSecs = floor (utcTimeToPOSIXSeconds nowUtc) :: Integer
                 claims =
                     AccessTokenClaims
                         { claimSub = UUID.toText uid
@@ -247,14 +281,9 @@ verifyFactorHandler principal (FactorId factorIdText) VerifyFactorRequest{verify
                         , claimPhone = Nothing
                         , claimAppMetadata = Aeson.object []
                         , claimUserMetadata = Aeson.object []
-                        , claimAal = "aal2"
-                        , claimAmr =
-                            [ AmrEntry
-                                { amrMethod = "totp"
-                                , amrTimestamp = iatSecs
-                                }
-                            ]
-                        , claimSessionId = UUID.toText (unSessionId sid)
+                        , claimAal = sasAal sas
+                        , claimAmr = buildAmrEntries (sasMethods sas) now
+                        , claimSessionId = UUID.toText (unSessionId existingSid)
                         , claimIssuedAt = nowUtc
                         , claimExpiresAt = expiryUtc
                         }
