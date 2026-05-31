@@ -12,25 +12,39 @@ import Control.Monad.Except (throwError)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader (ReaderT, ask, asks, runReaderT)
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.Lazy.Char8 as BSLC
 import Data.Maybe (fromMaybe)
 import Data.Proxy (Proxy (Proxy))
 import Data.String (fromString)
+import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
-import Database.PostgreSQL.Simple (execute_, withTransaction)
+import Data.Time.Clock (addUTCTime, getCurrentTime)
+import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
+import Data.UUID (UUID)
+import qualified Data.UUID as UUID
+import Database.PostgreSQL.Simple (Connection, Only (..), execute_, query, withTransaction)
 import GHC.Clock (getMonotonicTimeNSec)
 import Hauth.API
 import Hauth.API.Auth
 import Hauth.API.Types
-import Hauth.Auth.Jwt (AccessTokenClaims (..), validateAccessToken)
+import Hauth.Auth.Jwt (AccessTokenClaims (..), AmrEntry (..), signAccessToken, validateAccessToken)
 import Hauth.Auth.Logout (LogoutError (..), resolveLogoutSession)
 import Hauth.Config (Config (..), DatabaseConfig (..), JwtConfig (..), ServerConfig (..))
 import Hauth.Crypto.Password (defaultArgon2Settings, hashPassword)
 import Hauth.Env (AppEnv (..), LogLevel (..), createAppEnv, destroyAppEnv, logMessage, withDatabaseConnection)
-import Hauth.Session (revokeSession)
+import Hauth.Session (
+    RefreshToken (..),
+    SessionId (..),
+    createRefreshToken,
+    lookupRefreshTokenRaw,
+    revokeRefreshToken,
+    revokeSession,
+    revokeSessionRefreshTokens,
+    touchSessionRefreshedAt,
+ )
 import Hauth.User (SignupError (..), generateConfirmationToken, validateSignupEmail, validateSignupPassword)
 import qualified Hauth.User as User
 import Network.Wai (Application, Request, requestHeaders)
@@ -104,7 +118,7 @@ publicAuthServer :: ServerT PublicAuthAPI AppHandler
 publicAuthServer =
     settingsHandler
         :<|> signupHandler
-        :<|> notImplemented3
+        :<|> tokenHandler
         :<|> notImplemented2
         :<|> notImplemented2
         :<|> notImplemented2
@@ -235,6 +249,208 @@ checkPostgres env = do
             , deepHealthCheckOutcome = outcome
             , deepHealthCheckLatencyMs = latencyMs
             }
+
+-- ---------------------------------------------------------------------------
+-- Token endpoint
+-- ---------------------------------------------------------------------------
+
+{- | Handler for @POST /token?grant_type=<grant>@.
+
+Dispatches on @grant_type@:
+
+- @refresh_token@: rotates the supplied refresh token and returns a new
+  access token + refresh token.  Implements full reuse detection: if a
+  previously-rotated (revoked) token is replayed, the entire session is
+  terminated.
+
+- @password@: placeholder — returns 400 @unsupported_grant_type@ until
+  issue #12 lands.
+
+- Anything else: 400 @unsupported_grant_type@.
+-}
+tokenHandler :: AnonymousPrincipal -> Text -> TokenRequest -> AppHandler TokenResponse
+tokenHandler _ grantType req =
+    case parseGrantType (Just grantType) of
+        GrantRefreshToken ->
+            handleRefreshTokenGrant req
+        GrantPassword ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("unsupported_grant_type" :: T.Text)
+                                , "error_description" Aeson..= ("password grant not yet implemented" :: T.Text)
+                                ]
+                    }
+        GrantUnsupported _ ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                ["error" Aeson..= ("unsupported_grant_type" :: T.Text)]
+                    }
+
+handleRefreshTokenGrant :: TokenRequest -> AppHandler TokenResponse
+handleRefreshTokenGrant TokenRequest{tokenRequestRefreshToken} = do
+    tokenText <- case tokenRequestRefreshToken of
+        Nothing ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("invalid_request" :: T.Text)
+                                , "error_description" Aeson..= ("refresh_token is required" :: T.Text)
+                                ]
+                    }
+        Just t -> pure t
+    env <- ask
+    let AppEnv{appConfig} = env
+        Config{configJwt} = appConfig
+        JwtConfig{jwtAccessTokenTtlSeconds} = configJwt
+    -- Look up the token including revoked rows so we can detect reuse.
+    mRawToken <- liftIO (withDatabaseConnection env (`lookupRefreshTokenRaw` tokenText))
+    case classifyRefreshTokenLookup mRawToken of
+        Left InvalidGrant ->
+            throwError
+                err401
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("invalid_grant" :: T.Text)
+                                , "error_description" Aeson..= ("Invalid Refresh Token" :: T.Text)
+                                ]
+                    }
+        Left RefreshTokenReuseDetected -> do
+            -- Token was already rotated. Revoke the whole family + session.
+            let sid = refreshTokenSessionId (fromMaybeRawToken mRawToken)
+            liftIO $ withDatabaseConnection env \conn -> do
+                _ <- revokeSessionRefreshTokens conn sid
+                revokeSession conn sid
+            throwError
+                err401
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("invalid_grant" :: T.Text)
+                                , "error_description" Aeson..= ("Invalid Refresh Token: reuse detected" :: T.Text)
+                                ]
+                    }
+        Right (ValidRefreshToken rt) -> do
+            now <- liftIO getCurrentTime
+            let sid = refreshTokenSessionId rt
+                uid = refreshTokenUserId rt
+                ttl = fromIntegral jwtAccessTokenTtlSeconds
+                expiry = addUTCTime ttl now
+                iatSecs = floor (utcTimeToPOSIXSeconds now) :: Integer
+            -- Look up minimal user data.
+            mUserVal <- liftIO (withDatabaseConnection env (`fetchMinimalUser` uid))
+            userVal <- case mUserVal of
+                Nothing ->
+                    throwError
+                        err401
+                            { errBody =
+                                Aeson.encode $
+                                    Aeson.object
+                                        [ "error" Aeson..= ("invalid_grant" :: T.Text)
+                                        , "error_description" Aeson..= ("user not found" :: T.Text)
+                                        ]
+                            }
+                Just v -> pure v
+            let (userEmail', userRole') = extractEmailRole userVal
+                claims =
+                    AccessTokenClaims
+                        { claimSub = UUID.toText uid
+                        , claimRole = userRole'
+                        , claimEmail = userEmail'
+                        , claimPhone = Nothing
+                        , claimAppMetadata = Aeson.object []
+                        , claimUserMetadata = Aeson.object []
+                        , claimAal = "aal1"
+                        , claimAmr =
+                            [ AmrEntry
+                                { amrMethod = "token_refresh"
+                                , amrTimestamp = iatSecs
+                                }
+                            ]
+                        , claimSessionId = UUID.toText (unSessionId sid)
+                        , claimIssuedAt = now
+                        , claimExpiresAt = expiry
+                        }
+            -- Perform rotation in one connection: revoke old, mint new, touch session.
+            newToken <- liftIO $ withDatabaseConnection env \conn -> do
+                revokeRefreshToken conn (refreshTokenId rt)
+                newRt <- createRefreshToken conn sid (Just tokenText)
+                touchSessionRefreshedAt conn sid
+                pure newRt
+            signResult <- liftIO (signAccessToken configJwt claims)
+            accessToken <- case signResult of
+                Left err ->
+                    throwError
+                        err401
+                            { errBody =
+                                Aeson.encode $
+                                    Aeson.object
+                                        [ "error" Aeson..= ("server_error" :: T.Text)
+                                        , "error_description" Aeson..= T.pack (show err)
+                                        ]
+                            }
+                Right t -> pure t
+            pure
+                TokenResponse
+                    { tokenResponseAccessToken = accessToken
+                    , tokenResponseTokenType = "bearer"
+                    , tokenResponseExpiresIn = jwtAccessTokenTtlSeconds
+                    , tokenResponseRefreshToken = refreshTokenToken newToken
+                    , tokenResponseUser = userVal
+                    }
+  where
+    -- Safe: called only in the ReuseDetected branch where mRawToken is Just.
+    fromMaybeRawToken (Just rt) = rt
+    fromMaybeRawToken Nothing = error "fromMaybeRawToken: impossible"
+
+{- | Fetch a minimal user JSON value for embedding in 'TokenResponse'.
+
+Queries @auth.users@ for the columns needed by the Supabase token response.
+Returns a JSON @Value@ so the handler can embed it without introducing a
+dedicated @User@ module dependency.
+
+TODO: Replace with @Hauth.User.getUserById@ once that module is available
+(tracked in issue #11).
+-}
+fetchMinimalUser :: Connection -> UUID -> IO (Maybe Aeson.Value)
+fetchMinimalUser conn uid = do
+    rows <-
+        query
+            conn
+            "SELECT id::text, email, aud, role \
+            \FROM auth.users \
+            \WHERE id = ?"
+            (Only uid)
+    pure $ case rows of
+        [(idText, email, aud, role) :: (T.Text, Maybe T.Text, T.Text, T.Text)] ->
+            Just $
+                Aeson.object
+                    [ "id" Aeson..= idText
+                    , "aud" Aeson..= aud
+                    , "role" Aeson..= role
+                    , "email" Aeson..= email
+                    ]
+        _ -> Nothing
+
+-- | Extract @email@ and @role@ fields from the minimal user JSON object.
+extractEmailRole :: Aeson.Value -> (Maybe T.Text, T.Text)
+extractEmailRole (Aeson.Object obj) =
+    let email = case KeyMap.lookup "email" obj of
+            Just (Aeson.String e) -> Just e
+            _ -> Nothing
+        role = case KeyMap.lookup "role" obj of
+            Just (Aeson.String r) -> r
+            _ -> "authenticated"
+     in (email, role)
+extractEmailRole _ = (Nothing, "authenticated")
 
 settingsHandler :: AnonymousPrincipal -> AppHandler SettingsResponse
 settingsHandler _ =
