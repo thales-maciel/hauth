@@ -31,14 +31,18 @@ import Hauth.API
 import Hauth.API.Auth
 import Hauth.API.Types
 import Hauth.Auth.Jwt (AccessTokenClaims (..), AmrEntry (..), signAccessToken, validateAccessToken)
+import Hauth.Auth.Login (LoginError (..), authorizeLogin, buildLoginClaims, extractCredentials)
 import Hauth.Auth.Logout (LogoutError (..), resolveLogoutSession)
 import Hauth.Config (Config (..), DatabaseConfig (..), JwtConfig (..), ServerConfig (..))
-import Hauth.Crypto.Password (defaultArgon2Settings, hashPassword)
+import Hauth.Crypto.Password (defaultArgon2Settings, hashPassword, verifyPassword)
 import Hauth.Env (AppEnv (..), LogLevel (..), createAppEnv, destroyAppEnv, logMessage, withDatabaseConnection)
 import Hauth.Session (
+    NewSession (..),
     RefreshToken (..),
+    Session (sessionId),
     SessionId (..),
     createRefreshToken,
+    createSession,
     lookupRefreshTokenRaw,
     revokeRefreshToken,
     revokeSession,
@@ -274,15 +278,7 @@ tokenHandler _ grantType req =
         GrantRefreshToken ->
             handleRefreshTokenGrant req
         GrantPassword ->
-            throwError
-                err400
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "error" Aeson..= ("unsupported_grant_type" :: T.Text)
-                                , "error_description" Aeson..= ("password grant not yet implemented" :: T.Text)
-                                ]
-                    }
+            handlePasswordGrant req
         GrantUnsupported _ ->
             throwError
                 err400
@@ -410,6 +406,126 @@ handleRefreshTokenGrant TokenRequest{tokenRequestRefreshToken} = do
     -- Safe: called only in the ReuseDetected branch where mRawToken is Just.
     fromMaybeRawToken (Just rt) = rt
     fromMaybeRawToken Nothing = error "fromMaybeRawToken: impossible"
+
+{- | Handler for @grant_type=password@: authenticate with email and password.
+
+Steps:
+1. Extract and validate credentials from the request body.
+2. Look up the user by email.
+3. Verify the stored password hash.
+4. Check email confirmation state.
+5. Create a session and refresh token.
+6. Sign an access token and return the full 'TokenResponse'.
+-}
+handlePasswordGrant :: TokenRequest -> AppHandler TokenResponse
+handlePasswordGrant req = do
+    (emailText, passwordText) <- case extractCredentials req of
+        Left LoginMissingFields ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("invalid_request" :: T.Text)
+                                , "error_description" Aeson..= ("email and password are required" :: T.Text)
+                                ]
+                    }
+        Left err ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                ["error" Aeson..= T.pack (show err)]
+                    }
+        Right creds -> pure creds
+    env <- ask
+    let AppEnv{appConfig} = env
+        Config{configJwt} = appConfig
+        JwtConfig{jwtAccessTokenTtlSeconds} = configJwt
+    -- Look up the user; not-found and wrong-password produce the same error.
+    mUser <- liftIO (withDatabaseConnection env (`User.getUserByEmail` emailText))
+    user <- case mUser of
+        Nothing -> throwError invalidGrantError
+        Just u -> pure u
+    -- Verify stored password; missing encrypted password is also invalid_grant.
+    let verified = case User.userEncryptedPassword user of
+            Nothing -> False
+            Just phc -> verifyPassword phc passwordText
+    -- Authorize: checks password result and email confirmation together.
+    case authorizeLogin verified (User.userEmailConfirmedAt user) of
+        Left LoginInvalidGrant -> throwError invalidGrantError
+        Left LoginEmailNotConfirmed ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("email_not_confirmed" :: T.Text)
+                                , "msg" Aeson..= ("Email not confirmed" :: T.Text)
+                                ]
+                    }
+        Left LoginMissingFields ->
+            throwError invalidGrantError
+        Right () -> pure ()
+    -- Create session and refresh token.
+    let User.UserId userUUID = User.userId user
+        newSess =
+            NewSession
+                { newSessionUserId = userUUID
+                , newSessionAal = "aal1"
+                , newSessionFactorId = Nothing
+                , newSessionUserAgent = Nothing
+                , newSessionIp = Nothing
+                , newSessionNotAfter = Nothing
+                }
+    (sess, refreshTok) <- liftIO $
+        withDatabaseConnection env \conn -> do
+            s <- createSession conn newSess
+            rt <- createRefreshToken conn (sessionId s) Nothing
+            pure (s, rt)
+    now <- liftIO getCurrentTime
+    let claims = buildLoginClaims configJwt user (sessionId sess) now
+    signResult <- liftIO (signAccessToken configJwt claims)
+    accessToken <- case signResult of
+        Left err ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("server_error" :: T.Text)
+                                , "error_description" Aeson..= T.pack (show err)
+                                ]
+                    }
+        Right t -> pure t
+    -- Build the user JSON for the response.
+    let userVal =
+            Aeson.object
+                [ "id" Aeson..= UUID.toText userUUID
+                , "aud" Aeson..= User.userAud user
+                , "role" Aeson..= User.userRole user
+                , "email" Aeson..= User.userEmail user
+                ]
+    pure
+        TokenResponse
+            { tokenResponseAccessToken = accessToken
+            , tokenResponseTokenType = "bearer"
+            , tokenResponseExpiresIn = jwtAccessTokenTtlSeconds
+            , tokenResponseRefreshToken = refreshTokenToken refreshTok
+            , tokenResponseUser = userVal
+            }
+  where
+    invalidGrantError :: ServerError
+    invalidGrantError =
+        err400
+            { errBody =
+                Aeson.encode $
+                    Aeson.object
+                        [ "error" Aeson..= ("invalid_grant" :: T.Text)
+                        , "error_description" Aeson..= ("Invalid login credentials" :: T.Text)
+                        ]
+            }
 
 {- | Fetch a minimal user JSON value for embedding in 'TokenResponse'.
 
