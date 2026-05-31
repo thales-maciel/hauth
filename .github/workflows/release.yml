@@ -25,14 +25,14 @@ jobs:
       - name: Update package index
         run: cabal update
 
-      - name: Test
-        run: cabal test all --project-file=cabal.project.ci
-
       - name: Build static executable
-        # `-optl-no-pie` is required because Alpine's gcc defaults to PIE, which is incompatible with `-optl-static` (crtbeginT.o vs crtbeginS.o).
+        # --disable-shared / --disable-executable-dynamic force cabal to build vanilla .a archives for every dep instead of dynamic .so (which the static linker can't consume). -optl-no-pie is needed because Alpine's gcc defaults to PIE, incompatible with -optl-static (crtbeginT.o vs crtbeginS.o). CI already runs the test suite on every PR — release skips it.
         run: |
           cabal build exe:hauth \
             --enable-executable-static \
+            --enable-library-vanilla \
+            --disable-shared \
+            --disable-executable-dynamic \
             --ghc-options="-optl-static -optl-pthread -optl-no-pie -optl-L/usr/lib"
 
       - name: Verify static
