@@ -12,6 +12,11 @@ import Data.Time.Clock (addUTCTime, getCurrentTime)
 import Data.UUID (UUID)
 import qualified Data.UUID as UUID
 import Hauth.API (hauthAPI)
+import Hauth.API.Auth (
+    ServiceRolePrincipal (..),
+    checkServiceRole,
+    extractBearerToken,
+ )
 import Hauth.Auth.Jwt (
     AccessTokenClaims (..),
     AmrEntry (..),
@@ -332,14 +337,11 @@ main = do
                                         requiredKeys
                 _ -> fail ("jwt claim-shape: expected 3 segments, got " <> show (length segments))
 
-    -- Session module: generateOpaqueToken tests (pure / IO, no live DB).
     tok1 <- generateOpaqueToken
     assertEqual "generateOpaqueToken non-empty" True (not (T.null tok1))
     assertEqual "generateOpaqueToken length is 43" 43 (T.length tok1)
     tok2 <- generateOpaqueToken
     assertEqual "two tokens differ" True (tok1 /= tok2)
-
-    -- Session and NewSession record constructor / selectors.
     let nilUUID :: UUID
         nilUUID = UUID.nil
         sid = SessionId nilUUID
@@ -380,6 +382,44 @@ main = do
     assertEqual "session refreshedAt" Nothing (sessionRefreshedAt sess)
     assertEqual "session userAgent" (Just "Mozilla/5.0") (sessionUserAgent sess)
     assertEqual "session ip" (Just "192.168.1.1") (sessionIp sess)
+    assertEqual
+        "extractBearerToken missing header"
+        (Left "Missing Authorization header")
+        (extractBearerToken [])
+    assertEqual
+        "extractBearerToken bearer token"
+        (Right "foo")
+        (extractBearerToken [("Authorization", "Bearer foo")])
+    assertEqual
+        "extractBearerToken basic scheme"
+        (Left "Authorization header is not a Bearer token")
+        (extractBearerToken [("Authorization", "Basic xxx")])
+    assertEqual
+        "extractBearerToken empty bearer"
+        (Left "Bearer token is empty")
+        (extractBearerToken [("Authorization", "Bearer ")])
+    let serviceRoleClaims = testClaims{claimRole = "service_role"}
+        authenticatedClaims = testClaims{claimRole = "authenticated"}
+    assertEqual
+        "checkServiceRole service_role claims"
+        (Right ServiceRolePrincipal{serviceRoleName = "service_role"})
+        (checkServiceRole (Right serviceRoleClaims))
+    case checkServiceRole (Right authenticatedClaims) of
+        Left _ -> pure ()
+        Right _ -> fail "checkServiceRole authenticated: expected Left"
+    case checkServiceRole (Left (JwtVerifyError "bad sig")) of
+        Left _ -> pure ()
+        Right _ -> fail "checkServiceRole JwtVerifyError: expected Left"
+    e2eSignResult <- signAccessToken testCfg serviceRoleClaims
+    case e2eSignResult of
+        Left err -> fail ("service-role e2e sign failed: " <> show err)
+        Right srToken -> do
+            srValidateResult <- validateAccessToken testCfg srToken
+            case checkServiceRole srValidateResult of
+                Right ServiceRolePrincipal{serviceRoleName} ->
+                    assertEqual "service-role e2e role name" "service_role" serviceRoleName
+                Left msg ->
+                    fail ("service-role e2e: expected Right, got Left: " <> T.unpack msg)
 
     exitSuccess
 
