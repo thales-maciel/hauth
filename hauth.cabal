@@ -118,6 +118,28 @@ test-suite hauth-test
   type: exitcode-stdio-1.0
   main-is: Main.hs
   hs-source-dirs: test
+  other-modules:
+    Spec.APISpec
+    Spec.Auth.AdminSpec
+    Spec.Auth.JwtSpec
+    Spec.Auth.LoginSpec
+    Spec.Auth.LogoutSpec
+    Spec.Auth.RecoverySpec
+    Spec.Auth.ServiceRoleSpec
+    Spec.Auth.UserUpdateSpec
+    Spec.Auth.VerifySpec
+    Spec.CLISpec
+    Spec.ConfigSpec
+    Spec.Crypto.PasswordSpec
+    Spec.EmailSpec
+    Spec.Mfa.TotpSpec
+    Spec.MigrateSpec
+    Spec.OAuthSpec
+    Spec.RefreshTokenSpec
+    Spec.ServerSpec
+    Spec.SessionSpec
+    Spec.TestUtils
+    Spec.UserSpec
   build-depends:
       base >=4.17 && <5
     , aeson >=2.2 && <2.3
