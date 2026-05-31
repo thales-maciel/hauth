@@ -33,6 +33,7 @@ import Hauth.API.Types
 import Hauth.Auth.Jwt (AccessTokenClaims (..), AmrEntry (..), signAccessToken, validateAccessToken)
 import Hauth.Auth.Login (LoginError (..), authorizeLogin, buildLoginClaims, extractCredentials)
 import Hauth.Auth.Logout (LogoutError (..), resolveLogoutSession)
+import Hauth.Auth.UserUpdate (UpdateUserError (..), validateUpdateRequest)
 import Hauth.Config (Config (..), DatabaseConfig (..), JwtConfig (..), ServerConfig (..))
 import Hauth.Crypto.Password (defaultArgon2Settings, hashPassword, verifyPassword)
 import Hauth.Env (AppEnv (..), LogLevel (..), createAppEnv, destroyAppEnv, logMessage, withDatabaseConnection)
@@ -61,6 +62,7 @@ import Servant.Server (
     ServerT,
     err400,
     err401,
+    err404,
     err422,
     err501,
     err503,
@@ -131,8 +133,8 @@ publicAuthServer =
 
 sessionServer :: ServerT SessionAPI AppHandler
 sessionServer =
-    notImplemented1
-        :<|> notImplemented2
+    getUserHandler
+        :<|> updateUserHandler
         :<|> logoutHandler
 
 mfaServer :: ServerT MfaAPI AppHandler
@@ -708,6 +710,123 @@ serviceRoleAuth env =
         case checkServiceRole result of
             Left msg -> throwError err401{errBody = BSLC.pack (T.unpack msg)}
             Right principal -> pure principal
+
+-- ---------------------------------------------------------------------------
+-- GET /user and PUT /user handlers
+-- ---------------------------------------------------------------------------
+
+{- | Handle @GET /user@.
+
+Returns the authenticated user's profile.  The 'SessionPrincipal' is already
+validated by 'validSessionAuth'; we just look up the user by id.  A missing
+user (shouldn't happen with a valid session but handled defensively) yields
+a 404.
+-}
+getUserHandler :: SessionPrincipal -> AppHandler UserResponse
+getUserHandler principal = do
+    env <- ask
+    let uidText = sessionUserId principal
+    uid <- case UUID.fromText uidText of
+        Nothing ->
+            throwError
+                err401
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "code" Aeson..= ("invalid_user_id" :: T.Text)
+                                , "msg" Aeson..= ("malformed user id in token" :: T.Text)
+                                ]
+                    }
+        Just u -> pure u
+    mUser <- liftIO (withDatabaseConnection env (`User.getUserById` User.UserId uid))
+    case mUser of
+        Nothing ->
+            throwError
+                err404
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "code" Aeson..= ("user_not_found" :: T.Text)
+                                , "msg" Aeson..= ("user not found" :: T.Text)
+                                ]
+                    }
+        Just u -> pure (buildUserResponse u)
+
+{- | Handle @PUT /user@.
+
+Validates the request body, applies all non-Nothing field updates to the
+authenticated user row, and returns the updated user profile.  Password
+changes go through policy validation and Argon2id hashing.  Email changes
+are recorded as a pending change (@email_change@ column) rather than
+immediately applied — confirmation via @\/verify@ is required.
+
+Note: @raw_user_meta_data@ is replaced entirely; merge semantics are deferred
+to v0.2.
+-}
+updateUserHandler :: SessionPrincipal -> UpdateUserRequest -> AppHandler UserResponse
+updateUserHandler principal req = do
+    env <- ask
+    let uidText = sessionUserId principal
+    uid <- case UUID.fromText uidText of
+        Nothing ->
+            throwError
+                err401
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "code" Aeson..= ("invalid_user_id" :: T.Text)
+                                , "msg" Aeson..= ("malformed user id in token" :: T.Text)
+                                ]
+                    }
+        Just u -> pure u
+    (mEmail, mPassword, mData) <- case validateUpdateRequest req of
+        Left (UpdateUserEmailInvalid e) ->
+            throwError
+                err422
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "code" Aeson..= ("invalid_email" :: T.Text)
+                                , "msg" Aeson..= ("Email address is invalid: " <> e)
+                                ]
+                    }
+        Left (UpdateUserPasswordTooShort minLen _) ->
+            throwError
+                err422
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "code" Aeson..= ("weak_password" :: T.Text)
+                                , "msg" Aeson..= ("Password must be at least " <> T.pack (show minLen) <> " characters")
+                                ]
+                    }
+        Right triple -> pure triple
+    mEncrypted <- case mPassword of
+        Nothing -> pure Nothing
+        Just pw -> liftIO (Just <$> hashPassword defaultArgon2Settings pw)
+    mToken <- case mEmail of
+        Nothing -> pure Nothing
+        Just _ -> liftIO (Just <$> generateConfirmationToken)
+    let upd =
+            User.UserUpdate
+                { User.updateEmailChange = mEmail
+                , User.updateEncryptedPassword = mEncrypted
+                , User.updateRawUserMetaData = mData
+                , User.updateEmailChangeToken = mToken
+                }
+    mUser <- liftIO (withDatabaseConnection env (\conn -> User.applyUserUpdate conn (User.UserId uid) upd))
+    case mUser of
+        Nothing ->
+            throwError
+                err404
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "code" Aeson..= ("user_not_found" :: T.Text)
+                                , "msg" Aeson..= ("user not found" :: T.Text)
+                                ]
+                    }
+        Just u -> pure (buildUserResponse u)
 
 {- | Handle @POST /logout@.
 

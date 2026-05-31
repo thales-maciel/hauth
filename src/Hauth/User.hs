@@ -2,8 +2,11 @@ module Hauth.User (
     UserId (..),
     User (..),
     NewUser (..),
+    UserUpdate (..),
     SignupError (..),
+    applyUserUpdate,
     createUser,
+    emptyUserUpdate,
     generateConfirmationToken,
     getUserByEmail,
     getUserById,
@@ -15,6 +18,9 @@ module Hauth.User (
 import qualified Crypto.Random as CR
 import Data.Aeson (Value)
 import qualified Data.ByteString.Base64.URL as B64URL
+import qualified Data.ByteString.Char8 as BSC
+import Data.List (intercalate)
+import Data.Maybe (catMaybes)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -23,7 +29,9 @@ import Data.UUID (UUID)
 import qualified Data.UUID.V4 as UUID4
 import Database.PostgreSQL.Simple (Connection, Only (..), query)
 import Database.PostgreSQL.Simple.FromRow (FromRow (..), field)
+import Database.PostgreSQL.Simple.ToField (Action, ToField (..))
 import Database.PostgreSQL.Simple.ToRow (ToRow (..))
+import Database.PostgreSQL.Simple.Types (Query (..))
 import Hauth.Crypto.Password (
     PasswordPolicyError (..),
     checkPasswordPolicy,
@@ -67,6 +75,34 @@ data SignupError
     | SignupEmailExists
     | SignupPasswordTooShort Int Int
     deriving stock (Eq, Show)
+
+{- | Describes the fields that can be updated on an existing user.
+
+All fields are optional; only the non-'Nothing' ones are written to the
+database.  The caller is responsible for hashing the password before
+putting it in 'updateEncryptedPassword'.
+-}
+data UserUpdate = UserUpdate
+    { updateEmailChange :: Maybe Text
+    -- ^ Pending email change (not yet confirmed).
+    , updateEncryptedPassword :: Maybe Text
+    -- ^ PHC-encoded Argon2id hash.
+    , updateRawUserMetaData :: Maybe Value
+    -- ^ Replaces @raw_user_meta_data@ entirely (merge semantics deferred to v0.2).
+    , updateEmailChangeToken :: Maybe Text
+    -- ^ Token used to confirm the pending email change.
+    }
+    deriving stock (Eq, Show)
+
+-- | A 'UserUpdate' with all fields set to 'Nothing'.
+emptyUserUpdate :: UserUpdate
+emptyUserUpdate =
+    UserUpdate
+        { updateEmailChange = Nothing
+        , updateEncryptedPassword = Nothing
+        , updateRawUserMetaData = Nothing
+        , updateEmailChangeToken = Nothing
+        }
 
 instance FromRow User where
     fromRow =
@@ -177,6 +213,52 @@ markEmailConfirmed conn (UserId uid) = do
             (Only uid) ::
             IO [Only UUID]
     pure ()
+
+{- | Apply a 'UserUpdate' to the user identified by 'UserId'.
+
+Only the non-'Nothing' fields in the update record are written to the
+database; @updated_at@ is always bumped to @now()@.  Returns the updated
+user row, or 'Nothing' if no row with the given id exists.
+
+If the 'UserUpdate' has all fields 'Nothing', we still issue an UPDATE to
+bump @updated_at@ and re-fetch the current row.
+-}
+applyUserUpdate :: Connection -> UserId -> UserUpdate -> IO (Maybe User)
+applyUserUpdate conn (UserId uid) upd = do
+    let assignments = buildAssignments upd
+        allClauses = assignments <> [("updated_at", toField ("now()" :: Text))]
+        setFragment =
+            BSC.pack $
+                intercalate ", " $
+                    fmap (\(col, _) -> col <> " = ?") allClauses
+        params = fmap snd allClauses <> [toField uid]
+        sqlStr =
+            "UPDATE auth.users SET "
+                <> setFragment
+                <> " WHERE id = ? AND deleted_at IS NULL \
+                   \RETURNING \
+                   \  id, email, encrypted_password, email_confirmed_at, \
+                   \  confirmation_token, confirmation_sent_at, \
+                   \  raw_app_meta_data, raw_user_meta_data, \
+                   \  role, aud, created_at, updated_at"
+    rows <- query conn (Query sqlStr) params
+    pure $ case rows of
+        [row] -> Just row
+        _ -> Nothing
+
+{- | Build a list of @(column_name_string, Action)@ pairs for the non-Nothing
+fields of a 'UserUpdate'.  When an email change is requested we also set
+@email_change_sent_at@ to @now()@.
+-}
+buildAssignments :: UserUpdate -> [(String, Action)]
+buildAssignments UserUpdate{..} =
+    catMaybes
+        [ fmap (\v -> ("email_change", toField v)) updateEmailChange
+        , fmap (\v -> ("encrypted_password", toField v)) updateEncryptedPassword
+        , fmap (\v -> ("raw_user_meta_data", toField v)) updateRawUserMetaData
+        , fmap (\v -> ("email_change_token_new", toField v)) updateEmailChangeToken
+        , fmap (const ("email_change_sent_at", toField ("now()" :: Text))) updateEmailChange
+        ]
 
 {- | Generate a cryptographically random confirmation token.
 

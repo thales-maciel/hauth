@@ -31,9 +31,11 @@ import Hauth.API.Types (
     SettingsResponse (..),
     TokenRequest (..),
     TokenResponse (..),
+    UpdateUserRequest (..),
     ValidRefreshToken (..),
     buildSettingsResponse,
     buildSignupResponse,
+    buildUserResponse,
     classifyRefreshTokenLookup,
     parseGrantType,
  )
@@ -55,6 +57,7 @@ import Hauth.Auth.Logout (
     resolveLogoutSession,
     sessionIdFromClaims,
  )
+import Hauth.Auth.UserUpdate (UpdateUserError (..), validateUpdateRequest)
 import Hauth.CLI (
     CliError (..),
     Command (..),
@@ -124,6 +127,8 @@ import Hauth.User (
     SignupError (..),
     User (..),
     UserId (..),
+    UserUpdate (..),
+    emptyUserUpdate,
     generateConfirmationToken,
     validateSignupEmail,
     validateSignupPassword,
@@ -810,11 +815,6 @@ main = do
                 Left err ->
                     fail ("logout e2e resolveLogoutSession: unexpected Left: " <> show err)
 
-    -- ---------------------------------------------------------------------------
-    -- Hauth.Auth.Login — pure unit tests
-    -- ---------------------------------------------------------------------------
-
-    -- extractCredentials: missing email field
     let noEmailReq =
             TokenRequest
                 { tokenRequestRefreshToken = Nothing
@@ -825,8 +825,6 @@ main = do
         "extractCredentials missing email"
         (Left LoginMissingFields)
         (extractCredentials noEmailReq)
-
-    -- extractCredentials: blank email
     let blankEmailReq =
             TokenRequest
                 { tokenRequestRefreshToken = Nothing
@@ -837,8 +835,6 @@ main = do
         "extractCredentials blank email"
         (Left LoginMissingFields)
         (extractCredentials blankEmailReq)
-
-    -- extractCredentials: missing password field
     let noPasswordReq =
             TokenRequest
                 { tokenRequestRefreshToken = Nothing
@@ -849,8 +845,6 @@ main = do
         "extractCredentials missing password"
         (Left LoginMissingFields)
         (extractCredentials noPasswordReq)
-
-    -- extractCredentials: blank password
     let blankPasswordReq =
             TokenRequest
                 { tokenRequestRefreshToken = Nothing
@@ -861,8 +855,6 @@ main = do
         "extractCredentials blank password"
         (Left LoginMissingFields)
         (extractCredentials blankPasswordReq)
-
-    -- extractCredentials: both fields present
     let fullCredsReq =
             TokenRequest
                 { tokenRequestRefreshToken = Nothing
@@ -873,32 +865,23 @@ main = do
         "extractCredentials both present"
         (Right ("user@example.com", "mysecret"))
         (extractCredentials fullCredsReq)
-
-    -- authorizeLogin: wrong password (False) → invalid_grant regardless of confirmation
     now4 <- getCurrentTime
     assertEqual
         "authorizeLogin wrong password + confirmed"
         (Left LoginInvalidGrant)
         (authorizeLogin False (Just now4))
-
     assertEqual
         "authorizeLogin wrong password + unconfirmed"
         (Left LoginInvalidGrant)
         (authorizeLogin False Nothing)
-
-    -- authorizeLogin: correct password + unconfirmed email
     assertEqual
         "authorizeLogin correct password + unconfirmed"
         (Left LoginEmailNotConfirmed)
         (authorizeLogin True Nothing)
-
-    -- authorizeLogin: correct password + confirmed email
     assertEqual
         "authorizeLogin correct password + confirmed"
         (Right ())
         (authorizeLogin True (Just now4))
-
-    -- buildLoginClaims: check key fields
     now5 <- getCurrentTime
     let loginSid = SessionId UUID.nil
         loginUser =
@@ -949,8 +932,6 @@ main = do
         "buildLoginClaims session_id"
         (UUID.toText UUID.nil)
         (claimSessionId loginClaims)
-
-    -- Round-trip: sign claims from buildLoginClaims, then validate
     loginSignResult <- signAccessToken loginCfg loginClaims
     case loginSignResult of
         Left err ->
@@ -985,6 +966,94 @@ main = do
                         "login round-trip session_id"
                         (claimSessionId loginClaims)
                         (claimSessionId loginClaims')
+    assertEqual
+        "validateUpdateRequest empty"
+        (Right (Nothing, Nothing, Nothing))
+        ( validateUpdateRequest
+            UpdateUserRequest
+                { updateUserEmail = Nothing
+                , updateUserPassword = Nothing
+                , updateUserData = Nothing
+                }
+        )
+    assertEqual
+        "validateUpdateRequest valid email"
+        (Right (Just "new@example.com", Nothing, Nothing))
+        ( validateUpdateRequest
+            UpdateUserRequest
+                { updateUserEmail = Just (Email "new@example.com")
+                , updateUserPassword = Nothing
+                , updateUserData = Nothing
+                }
+        )
+    case validateUpdateRequest
+        UpdateUserRequest
+            { updateUserEmail = Just (Email "invalid-no-at")
+            , updateUserPassword = Nothing
+            , updateUserData = Nothing
+            } of
+        Left (UpdateUserEmailInvalid _) -> pure ()
+        other -> fail ("validateUpdateRequest bad email: expected UpdateUserEmailInvalid, got " <> show other)
+    case validateUpdateRequest
+        UpdateUserRequest
+            { updateUserEmail = Nothing
+            , updateUserPassword = Just (Password "short")
+            , updateUserData = Nothing
+            } of
+        Left (UpdateUserPasswordTooShort _ _) -> pure ()
+        other -> fail ("validateUpdateRequest short password: expected UpdateUserPasswordTooShort, got " <> show other)
+    let testMeta = Aeson.object ["key" Aeson..= ("value" :: T.Text)]
+    case validateUpdateRequest
+        UpdateUserRequest
+            { updateUserEmail = Just (Email "all@fields.com")
+            , updateUserPassword = Just (Password "validpassword")
+            , updateUserData = Just testMeta
+            } of
+        Right (Just _, Just _, Just _) -> pure ()
+        other -> fail ("validateUpdateRequest all fields: expected Right (Just, Just, Just), got " <> show other)
+    assertEqual "emptyUserUpdate emailChange" Nothing (updateEmailChange emptyUserUpdate)
+    assertEqual "emptyUserUpdate encryptedPassword" Nothing (updateEncryptedPassword emptyUserUpdate)
+    assertEqual "emptyUserUpdate rawUserMetaData" Nothing (updateRawUserMetaData emptyUserUpdate)
+    assertEqual "emptyUserUpdate emailChangeToken" Nothing (updateEmailChangeToken emptyUserUpdate)
+    now6 <- getCurrentTime
+    let testUserForResponse =
+            User
+                { userId = UserId UUID.nil
+                , userEmail = Just "resp@example.com"
+                , userEncryptedPassword = Just "$argon2id$v=19$..."
+                , userEmailConfirmedAt = Just now6
+                , userConfirmationToken = Nothing
+                , userConfirmationSentAt = Nothing
+                , userRawAppMetaData = Aeson.object []
+                , userRawUserMetaData = Aeson.object []
+                , userRole = "authenticated"
+                , userAud = "authenticated"
+                , userCreatedAt = now6
+                , userUpdatedAt = now6
+                }
+        userResp = buildUserResponse testUserForResponse
+        userRespJson = BSL.toStrict (Aeson.encode userResp)
+    case Aeson.decodeStrict' userRespJson of
+        Nothing -> fail "UserResponse: JSON decode failed"
+        Just (obj :: Object) -> do
+            let requiredUserRespKeys =
+                    [ "id"
+                    , "aud"
+                    , "role"
+                    , "email"
+                    , "email_confirmed_at"
+                    , "created_at"
+                    , "updated_at"
+                    , "app_metadata"
+                    , "user_metadata"
+                    ]
+            mapM_
+                ( \k ->
+                    if KeyMap.member k obj
+                        then pure ()
+                        else fail ("UserResponse JSON: missing key: " <> show k)
+                )
+                requiredUserRespKeys
 
     exitSuccess
 
