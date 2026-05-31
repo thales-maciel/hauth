@@ -14,6 +14,7 @@ module Hauth.API.Types (
     FactorResponse (..),
     GenerateLinkRequest (..),
     GenerateLinkResponse (..),
+    GrantType (..),
     HealthResponse (..),
     IdentityId (..),
     InviteUserRequest (..),
@@ -25,17 +26,20 @@ module Hauth.API.Types (
     Password (..),
     ProvidersResponse (..),
     RecoverRequest (..),
+    RefreshTokenError (..),
     ResendRequest (..),
     SessionResponse (..),
     SettingsResponse (..),
     SignupRequest (..),
     SignupResponse (..),
     TokenRequest (..),
+    TokenResponse (..),
     UpdateEmailTemplatesRequest (..),
     UpdateProvidersRequest (..),
     UpdateUserRequest (..),
     UserId (..),
     UserResponse (..),
+    ValidRefreshToken (..),
     VerifyFactorRequest (..),
     VerifyFactorResponse (..),
     VerifyRequest (..),
@@ -44,9 +48,11 @@ module Hauth.API.Types (
     WebhookDeliveryResponse (..),
     buildSettingsResponse,
     buildSignupResponse,
+    classifyRefreshTokenLookup,
+    parseGrantType,
 ) where
 
-import Data.Aeson (FromJSON, ToJSON (toJSON), Value, object, (.=))
+import Data.Aeson (FromJSON (..), ToJSON (toJSON), Value, object, withObject, (.:?), (.=))
 import qualified Data.Aeson as Aeson
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -56,6 +62,7 @@ import Data.Time (UTCTime)
 import Data.UUID (UUID)
 import GHC.Generics (Generic)
 import Hauth.Config (Config (..), OAuthConfig (..), OAuthProviderConfig (..))
+import Hauth.Session (RefreshToken (..))
 import qualified Hauth.User as User
 import Web.HttpApiData (FromHttpApiData, ToHttpApiData)
 
@@ -249,14 +256,89 @@ buildSignupResponse User.User{..} =
         , signupResponseUserMetadata = userRawUserMetaData
         }
 
+{- | Unified request body for the @/token@ endpoint across all grant types.
+
+Fields are all optional at the type level; the handler inspects @grant_type@
+and validates that the required fields for the chosen grant are present.
+Unknown JSON keys are silently ignored for forward compatibility.
+-}
 data TokenRequest = TokenRequest
-    { tokenEmail :: Maybe Email
-    , tokenPassword :: Maybe Password
-    , tokenRefreshToken :: Maybe Text
-    , tokenCode :: Maybe Text
+    { tokenRequestRefreshToken :: Maybe Text
+    -- ^ Used by @grant_type=refresh_token@.
+    , tokenRequestEmail :: Maybe Email
+    -- ^ Used by @grant_type=password@ (handled in issue #12).
+    , tokenRequestPassword :: Maybe Password
+    -- ^ Used by @grant_type=password@ (handled in issue #12).
     }
-    deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+    deriving stock (Eq, Show)
+
+instance FromJSON TokenRequest where
+    parseJSON = withObject "TokenRequest" \o ->
+        TokenRequest
+            <$> o .:? "refresh_token"
+            <*> o .:? "email"
+            <*> o .:? "password"
+
+-- | Discriminated grant type parsed from the @grant_type@ query parameter.
+data GrantType
+    = GrantRefreshToken
+    | GrantPassword
+    | GrantUnsupported Text
+    deriving stock (Eq, Show)
+
+-- | Parse the @grant_type@ query parameter into a 'GrantType'.
+parseGrantType :: Maybe Text -> GrantType
+parseGrantType (Just "refresh_token") = GrantRefreshToken
+parseGrantType (Just "password") = GrantPassword
+parseGrantType (Just other) = GrantUnsupported other
+parseGrantType Nothing = GrantUnsupported ""
+
+-- | Error outcomes from inspecting a looked-up refresh token.
+data RefreshTokenError
+    = -- | Token was not found in the database at all.
+      InvalidGrant
+    | -- | Token was found but is already revoked — reuse attack detected.
+      RefreshTokenReuseDetected
+    deriving stock (Eq, Show)
+
+-- | A refresh token that has been verified as valid (present and not revoked).
+newtype ValidRefreshToken = ValidRefreshToken {unValidRefreshToken :: RefreshToken}
+    deriving stock (Eq, Show)
+
+{- | Classify the result of a raw refresh token lookup into either an error or
+a valid token.
+
+- 'Nothing' → 'Left' 'InvalidGrant' (token not found).
+- 'Just' rt where 'refreshTokenRevoked' is 'True' → 'Left' 'RefreshTokenReuseDetected'.
+- 'Just' rt where 'refreshTokenRevoked' is 'False' → 'Right' ('ValidRefreshToken' rt).
+-}
+classifyRefreshTokenLookup :: Maybe RefreshToken -> Either RefreshTokenError ValidRefreshToken
+classifyRefreshTokenLookup Nothing = Left InvalidGrant
+classifyRefreshTokenLookup (Just rt)
+    | refreshTokenRevoked rt = Left RefreshTokenReuseDetected
+    | otherwise = Right (ValidRefreshToken rt)
+
+-- | Response body for a successful token rotation (and password grant).
+data TokenResponse = TokenResponse
+    { tokenResponseAccessToken :: Text
+    , tokenResponseTokenType :: Text
+    -- ^ Always @"bearer"@.
+    , tokenResponseExpiresIn :: Int
+    , tokenResponseRefreshToken :: Text
+    , tokenResponseUser :: Value
+    -- ^ Embedded user object; shape matches Supabase contract.
+    }
+    deriving stock (Eq, Show)
+
+instance ToJSON TokenResponse where
+    toJSON TokenResponse{..} =
+        object
+            [ "access_token" .= tokenResponseAccessToken
+            , "token_type" .= tokenResponseTokenType
+            , "expires_in" .= tokenResponseExpiresIn
+            , "refresh_token" .= tokenResponseRefreshToken
+            , "user" .= tokenResponseUser
+            ]
 
 newtype RecoverRequest = RecoverRequest
     { recoverEmail :: Email
@@ -294,6 +376,10 @@ data SessionResponse = SessionResponse
     }
     deriving stock (Eq, Generic, Show)
     deriving anyclass (FromJSON, ToJSON)
+
+-- Note: SessionResponse uses generic ToJSON which produces camelCase field
+-- names.  The token endpoint returns 'TokenResponse' (hand-rolled ToJSON with
+-- snake_case keys) to match the Supabase wire format exactly.
 
 data UserResponse = UserResponse
     { userId :: UserId

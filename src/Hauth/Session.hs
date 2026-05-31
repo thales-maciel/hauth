@@ -10,7 +10,10 @@ module Hauth.Session (
     revokeSession,
     createRefreshToken,
     lookupRefreshToken,
+    lookupRefreshTokenRaw,
     revokeRefreshToken,
+    revokeSessionRefreshTokens,
+    touchSessionRefreshedAt,
     generateOpaqueToken,
 ) where
 
@@ -228,6 +231,25 @@ lookupRefreshToken conn token = do
         [row] -> Just row
         _ -> Nothing
 
+{- | Look up a refresh token by its token value, returning the row even if
+revoked.  Callers are responsible for inspecting 'refreshTokenRevoked' and
+deciding how to respond.  Used by the rotation flow for reuse-detection.
+-}
+lookupRefreshTokenRaw :: Connection -> Text -> IO (Maybe RefreshToken)
+lookupRefreshTokenRaw conn token = do
+    rows <-
+        query
+            conn
+            "SELECT \
+            \  id, token, session_id, user_id::uuid, parent, revoked, \
+            \  created_at, updated_at \
+            \FROM auth.refresh_tokens \
+            \WHERE token = ?"
+            (Only token)
+    pure $ case rows of
+        [row] -> Just row
+        _ -> Nothing
+
 -- | Mark a refresh token as revoked.
 revokeRefreshToken :: Connection -> RefreshTokenId -> IO ()
 revokeRefreshToken conn (RefreshTokenId tid) = do
@@ -238,6 +260,33 @@ revokeRefreshToken conn (RefreshTokenId tid) = do
             \SET revoked = true, updated_at = now() \
             \WHERE id = ?"
             (Only tid)
+    pure ()
+
+{- | Revoke all refresh tokens belonging to a session.
+
+Used during reuse-detection: when a previously-rotated token is replayed,
+every token in the family (all tokens sharing the same @session_id@) is
+revoked to prevent any further use.  Returns the number of rows updated.
+-}
+revokeSessionRefreshTokens :: Connection -> SessionId -> IO Int64
+revokeSessionRefreshTokens conn (SessionId sid) =
+    execute
+        conn
+        "UPDATE auth.refresh_tokens \
+        \SET revoked = true, updated_at = now() \
+        \WHERE session_id = ? AND revoked = false"
+        (Only sid)
+
+-- | Update the @refreshed_at@ timestamp for a session to @now()@.
+touchSessionRefreshedAt :: Connection -> SessionId -> IO ()
+touchSessionRefreshedAt conn (SessionId sid) = do
+    _ <-
+        execute
+            conn
+            "UPDATE auth.sessions \
+            \SET refreshed_at = now(), updated_at = now() \
+            \WHERE id = ?"
+            (Only sid)
     pure ()
 
 {- | Generate a cryptographically random opaque token.
