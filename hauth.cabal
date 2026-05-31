@@ -67,6 +67,8 @@ library
     Hauth.Email
     Hauth.Env
     Hauth.Identity
+    Hauth.Mfa.Totp
+    Hauth.MfaFactor
     Hauth.Migrate
     Hauth.OAuth
     Hauth.Server
