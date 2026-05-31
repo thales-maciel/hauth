@@ -3,6 +3,8 @@ module Hauth.API.Types (
     AdminUpdateUserRequest (..),
     ChallengeFactorRequest (..),
     ChallengeFactorResponse (..),
+    CheckOutcome (..),
+    DeepHealthCheck (..),
     DeepHealthResponse (..),
     DeletedUserResponse (..),
     Email (..),
@@ -41,7 +43,8 @@ module Hauth.API.Types (
     WebhookDeliveryResponse (..),
 ) where
 
-import Data.Aeson (FromJSON, ToJSON)
+import Data.Aeson (FromJSON, ToJSON, object, toJSON, (.=))
+import qualified Data.Aeson as Aeson
 import Data.Text (Text)
 import Data.Time (UTCTime)
 import GHC.Generics (Generic)
@@ -74,15 +77,59 @@ newtype WebhookDeliveryId = WebhookDeliveryId {unWebhookDeliveryId :: Text}
 newtype HealthResponse = HealthResponse
     { healthStatus :: Text
     }
-    deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+    deriving stock (Eq, Show)
+
+instance ToJSON HealthResponse where
+    toJSON HealthResponse{healthStatus} =
+        object ["status" .= healthStatus]
+
+data CheckOutcome
+    = CheckOk
+    | CheckFailed Text
+    deriving stock (Eq, Show)
+
+instance ToJSON CheckOutcome where
+    toJSON CheckOk =
+        Aeson.String "ok"
+    toJSON (CheckFailed reason) =
+        object
+            [ "status" .= ("failed" :: Text)
+            , "reason" .= reason
+            ]
+
+data DeepHealthCheck = DeepHealthCheck
+    { deepHealthCheckName :: Text
+    , deepHealthCheckOutcome :: CheckOutcome
+    , deepHealthCheckLatencyMs :: Maybe Int
+    }
+    deriving stock (Eq, Show)
+
+instance ToJSON DeepHealthCheck where
+    toJSON DeepHealthCheck{deepHealthCheckName, deepHealthCheckOutcome, deepHealthCheckLatencyMs} =
+        let base =
+                [ "name" .= deepHealthCheckName
+                , "latency_ms" .= deepHealthCheckLatencyMs
+                ]
+            statusFields = case deepHealthCheckOutcome of
+                CheckOk -> ["status" .= ("ok" :: Text)]
+                CheckFailed reason ->
+                    [ "status" .= ("failed" :: Text)
+                    , "reason" .= reason
+                    ]
+         in object (base <> statusFields)
 
 data DeepHealthResponse = DeepHealthResponse
     { deepHealthStatus :: Text
-    , deepHealthChecks :: [Text]
+    , deepHealthChecks :: [DeepHealthCheck]
     }
-    deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+    deriving stock (Eq, Show)
+
+instance ToJSON DeepHealthResponse where
+    toJSON DeepHealthResponse{deepHealthStatus, deepHealthChecks} =
+        object
+            [ "status" .= deepHealthStatus
+            , "checks" .= deepHealthChecks
+            ]
 
 data SettingsResponse = SettingsResponse
     { settingsExternalProviders :: [Text]

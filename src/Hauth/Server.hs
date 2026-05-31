@@ -1,24 +1,30 @@
 module Hauth.Server (
+    aggregateStatus,
     app,
+    isUnhealthy,
     runServer,
     server,
 ) where
 
-import Control.Exception (bracket)
+import Control.Exception (SomeException, bracket, try)
+import Control.Monad (when)
 import Control.Monad.Except (throwError)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader (ReaderT, ask, runReaderT)
+import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy.Char8 as BSLC
 import Data.Proxy (Proxy (Proxy))
 import Data.String (fromString)
 import qualified Data.Text as T
+import Database.PostgreSQL.Simple (execute_)
+import GHC.Clock (getMonotonicTimeNSec)
 import Hauth.API
 import Hauth.API.Auth
 import Hauth.API.Types
 import Hauth.Auth.Jwt (validateAccessToken)
-import Hauth.Config (Config (..), ServerConfig (..))
-import Hauth.Env (AppEnv (..), LogLevel (..), createAppEnv, destroyAppEnv, logMessage)
+import Hauth.Config (Config (..), DatabaseConfig (..), JwtConfig (..), ServerConfig (..))
+import Hauth.Env (AppEnv (..), LogLevel (..), createAppEnv, destroyAppEnv, logMessage, withDatabaseConnection)
 import Network.Wai (Application, Request, requestHeaders)
 import qualified Network.Wai.Handler.Warp as Warp
 import Servant.API (type (:<|>) ((:<|>)))
@@ -29,10 +35,12 @@ import Servant.Server (
     ServerT,
     err401,
     err501,
+    err503,
     hoistServerWithContext,
     serveWithContext,
  )
 import Servant.Server.Experimental.Auth (AuthHandler, mkAuthHandler)
+import System.Timeout (timeout)
 
 type AppHandler = ReaderT AppEnv Handler
 
@@ -139,17 +147,83 @@ adminWebhookServer =
         :<|> notImplemented2
 
 healthHandler :: AnonymousPrincipal -> AppHandler HealthResponse
-healthHandler _ = do
-    _env <- ask
+healthHandler _ =
     pure HealthResponse{healthStatus = "ok"}
 
 deepHealthHandler :: AnonymousPrincipal -> AppHandler DeepHealthResponse
 deepHealthHandler _ = do
-    _env <- ask
+    env <- ask
+    checks <- liftIO (runDeepChecks env)
+    let response =
+            DeepHealthResponse
+                { deepHealthStatus = aggregateStatus (fmap deepHealthCheckOutcome checks)
+                , deepHealthChecks = checks
+                }
+    when (isUnhealthy response) $
+        throwError err503{errBody = Aeson.encode response}
+    pure response
+
+aggregateStatus :: [CheckOutcome] -> T.Text
+aggregateStatus outcomes =
+    if any isFailed outcomes
+        then "unhealthy"
+        else "ok"
+  where
+    isFailed (CheckFailed _) = True
+    isFailed CheckOk = False
+
+isUnhealthy :: DeepHealthResponse -> Bool
+isUnhealthy DeepHealthResponse{deepHealthStatus} =
+    deepHealthStatus /= "ok"
+
+runDeepChecks :: AppEnv -> IO [DeepHealthCheck]
+runDeepChecks env = do
+    processCheck <- checkProcess
+    configCheck <- checkConfig env
+    postgresCheck <- checkPostgres env
+    pure [processCheck, configCheck, postgresCheck]
+
+checkProcess :: IO DeepHealthCheck
+checkProcess =
     pure
-        DeepHealthResponse
-            { deepHealthStatus = "ok"
-            , deepHealthChecks = ["process", "config", "postgres-pool"]
+        DeepHealthCheck
+            { deepHealthCheckName = "process"
+            , deepHealthCheckOutcome = CheckOk
+            , deepHealthCheckLatencyMs = Nothing
+            }
+
+checkConfig :: AppEnv -> IO DeepHealthCheck
+checkConfig AppEnv{appConfig} =
+    let Config{configDatabase = DatabaseConfig{databaseUrl}, configJwt = JwtConfig{jwtSecret}} = appConfig
+        outcome =
+            if T.null databaseUrl || T.null jwtSecret
+                then CheckFailed "config fields are empty"
+                else CheckOk
+     in pure
+            DeepHealthCheck
+                { deepHealthCheckName = "config"
+                , deepHealthCheckOutcome = outcome
+                , deepHealthCheckLatencyMs = Nothing
+                }
+
+checkPostgres :: AppEnv -> IO DeepHealthCheck
+checkPostgres env = do
+    startNs <- getMonotonicTimeNSec
+    result <- try (timeout 2000000 (withDatabaseConnection env (`execute_` "SELECT 1")))
+    endNs <- getMonotonicTimeNSec
+    let latencyMs = Just (fromIntegral ((endNs - startNs) `div` 1000000))
+    let outcome = case result of
+            Left (err :: SomeException) ->
+                CheckFailed (T.pack (show err))
+            Right Nothing ->
+                CheckFailed "postgres check timed out"
+            Right (Just _) ->
+                CheckOk
+    pure
+        DeepHealthCheck
+            { deepHealthCheckName = "postgres"
+            , deepHealthCheckOutcome = outcome
+            , deepHealthCheckLatencyMs = latencyMs
             }
 
 notImplemented :: AppHandler a
