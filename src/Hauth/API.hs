@@ -44,7 +44,7 @@ type OperatorAPI =
 
 type PublicAuthAPI =
     RequireAuth 'Anonymous :> "settings" :> Get '[JSON] SettingsResponse
-        :<|> RequireAuth 'Anonymous :> "signup" :> ReqBody '[JSON] SignupRequest :> Post '[JSON] SessionResponse
+        :<|> RequireAuth 'Anonymous :> "signup" :> ReqBody '[JSON] SignupRequest :> Post '[JSON] SignupResponse
         :<|> RequireAuth 'Anonymous :> "token" :> QueryParam' '[Required, Strict] "grant_type" Text :> ReqBody '[JSON] TokenRequest :> Post '[JSON] SessionResponse
         :<|> RequireAuth 'Anonymous :> "recover" :> ReqBody '[JSON] RecoverRequest :> Post '[JSON] MessageResponse
         :<|> RequireAuth 'Anonymous :> "verify" :> ReqBody '[JSON] VerifyRequest :> Post '[JSON] SessionResponse

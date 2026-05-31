@@ -29,6 +29,7 @@ module Hauth.API.Types (
     SessionResponse (..),
     SettingsResponse (..),
     SignupRequest (..),
+    SignupResponse (..),
     TokenRequest (..),
     UpdateEmailTemplatesRequest (..),
     UpdateProvidersRequest (..),
@@ -42,17 +43,20 @@ module Hauth.API.Types (
     WebhookDeliveryId (..),
     WebhookDeliveryResponse (..),
     buildSettingsResponse,
+    buildSignupResponse,
 ) where
 
-import Data.Aeson (FromJSON, ToJSON (toJSON), object, (.=))
+import Data.Aeson (FromJSON, ToJSON (toJSON), Value, object, (.=))
 import qualified Data.Aeson as Aeson
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time (UTCTime)
+import Data.UUID (UUID)
 import GHC.Generics (Generic)
 import Hauth.Config (Config (..), OAuthConfig (..), OAuthProviderConfig (..))
+import qualified Hauth.User as User
 import Web.HttpApiData (FromHttpApiData, ToHttpApiData)
 
 newtype UserId = UserId {unUserId :: Text}
@@ -183,10 +187,67 @@ buildSettingsResponse Config{configOAuth = OAuthConfig{oauthProviders}} =
 data SignupRequest = SignupRequest
     { signupEmail :: Email
     , signupPassword :: Password
-    , signupUserMetadata :: Maybe Text
+    , signupData :: Maybe Value
     }
     deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+
+instance FromJSON SignupRequest where
+    parseJSON = Aeson.withObject "SignupRequest" \obj ->
+        SignupRequest
+            <$> obj Aeson..: "email"
+            <*> obj Aeson..: "password"
+            <*> obj Aeson..:? "data"
+
+instance ToJSON SignupRequest where
+    toJSON SignupRequest{signupEmail, signupPassword, signupData} =
+        object
+            [ "email" .= signupEmail
+            , "password" .= signupPassword
+            , "data" .= signupData
+            ]
+
+-- | Response body for a successful signup (unconfirmed user, no session).
+data SignupResponse = SignupResponse
+    { signupResponseId :: UUID
+    , signupResponseAud :: Text
+    , signupResponseRole :: Text
+    , signupResponseEmail :: Maybe Text
+    , signupResponseConfirmationSentAt :: Maybe UTCTime
+    , signupResponseCreatedAt :: UTCTime
+    , signupResponseUpdatedAt :: UTCTime
+    , signupResponseAppMetadata :: Value
+    , signupResponseUserMetadata :: Value
+    }
+    deriving stock (Eq, Show)
+
+instance ToJSON SignupResponse where
+    toJSON SignupResponse{..} =
+        object
+            [ "id" .= signupResponseId
+            , "aud" .= signupResponseAud
+            , "role" .= signupResponseRole
+            , "email" .= signupResponseEmail
+            , "confirmation_sent_at" .= signupResponseConfirmationSentAt
+            , "created_at" .= signupResponseCreatedAt
+            , "updated_at" .= signupResponseUpdatedAt
+            , "app_metadata" .= signupResponseAppMetadata
+            , "user_metadata" .= signupResponseUserMetadata
+            ]
+
+-- | Convert a persisted 'User.User' to a 'SignupResponse'.
+buildSignupResponse :: User.User -> SignupResponse
+buildSignupResponse User.User{..} =
+    SignupResponse
+        { signupResponseId = User.unUserId userId
+        , signupResponseAud = userAud
+        , signupResponseRole = userRole
+        , signupResponseEmail = userEmail
+        , signupResponseConfirmationSentAt = userConfirmationSentAt
+        , signupResponseCreatedAt = userCreatedAt
+        , signupResponseUpdatedAt = userUpdatedAt
+        , signupResponseAppMetadata = userRawAppMetaData
+        , signupResponseUserMetadata = userRawUserMetaData
+        }
 
 data TokenRequest = TokenRequest
     { tokenEmail :: Maybe Email

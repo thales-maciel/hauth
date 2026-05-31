@@ -13,18 +13,23 @@ import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader (ReaderT, ask, asks, runReaderT)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.Lazy.Char8 as BSLC
+import Data.Maybe (fromMaybe)
 import Data.Proxy (Proxy (Proxy))
 import Data.String (fromString)
 import qualified Data.Text as T
-import Database.PostgreSQL.Simple (execute_)
+import Database.PostgreSQL.Simple (execute_, withTransaction)
 import GHC.Clock (getMonotonicTimeNSec)
 import Hauth.API
 import Hauth.API.Auth
 import Hauth.API.Types
 import Hauth.Auth.Jwt (validateAccessToken)
 import Hauth.Config (Config (..), DatabaseConfig (..), JwtConfig (..), ServerConfig (..))
+import Hauth.Crypto.Password (defaultArgon2Settings, hashPassword)
 import Hauth.Env (AppEnv (..), LogLevel (..), createAppEnv, destroyAppEnv, logMessage, withDatabaseConnection)
+import Hauth.User (SignupError (..), generateConfirmationToken, validateSignupEmail, validateSignupPassword)
+import qualified Hauth.User as User
 import Network.Wai (Application, Request, requestHeaders)
 import qualified Network.Wai.Handler.Warp as Warp
 import Servant.API (type (:<|>) ((:<|>)))
@@ -33,7 +38,9 @@ import Servant.Server (
     Handler,
     ServerError (errBody),
     ServerT,
+    err400,
     err401,
+    err422,
     err501,
     err503,
     hoistServerWithContext,
@@ -93,7 +100,7 @@ operatorServer =
 publicAuthServer :: ServerT PublicAuthAPI AppHandler
 publicAuthServer =
     settingsHandler
-        :<|> notImplemented2
+        :<|> signupHandler
         :<|> notImplemented3
         :<|> notImplemented2
         :<|> notImplemented2
@@ -229,6 +236,72 @@ checkPostgres env = do
 settingsHandler :: AnonymousPrincipal -> AppHandler SettingsResponse
 settingsHandler _ =
     asks (buildSettingsResponse . appConfig)
+
+signupHandler :: AnonymousPrincipal -> SignupRequest -> AppHandler SignupResponse
+signupHandler _ SignupRequest{signupEmail, signupPassword, signupData} = do
+    env <- ask
+    let emailText = unEmail signupEmail
+        passwordText = unPassword signupPassword
+    validatedEmail <- case validateSignupEmail emailText of
+        Left _ ->
+            throwError
+                err400
+                    { errBody = signupErrorBody "invalid_email" "Email address is invalid"
+                    }
+        Right e -> pure e
+    validatedPassword <- case validateSignupPassword passwordText of
+        Left (SignupPasswordTooShort minLen _) ->
+            throwError
+                err422
+                    { errBody =
+                        signupErrorBody
+                            "weak_password"
+                            ("Password must be at least " <> T.pack (show minLen) <> " characters")
+                    }
+        Left _ ->
+            throwError
+                err422{errBody = signupErrorBody "weak_password" "Password is too weak"}
+        Right p -> pure p
+    user <- liftIO $
+        withDatabaseConnection env \conn ->
+            withTransaction conn do
+                existing <- User.getUserByEmail conn validatedEmail
+                case existing of
+                    Just _ ->
+                        pure (Left SignupEmailExists)
+                    Nothing -> do
+                        encrypted <- hashPassword defaultArgon2Settings validatedPassword
+                        token <- generateConfirmationToken
+                        let metadata = fromMaybe (Aeson.object []) signupData
+                            newUser =
+                                User.NewUser
+                                    { User.newUserEmail = validatedEmail
+                                    , User.newUserEncryptedPassword = encrypted
+                                    , User.newUserConfirmationToken = Just token
+                                    , User.newUserUserMetadata = metadata
+                                    , User.newUserAud = "authenticated"
+                                    }
+                        created <- User.createUser conn newUser
+                        pure (Right created)
+    case user of
+        Left SignupEmailExists ->
+            throwError
+                err422
+                    { errBody = signupErrorBody "email_exists" "Email address already in use"
+                    }
+        Left _ ->
+            throwError
+                err400{errBody = signupErrorBody "signup_failed" "Signup failed"}
+        Right created ->
+            pure (buildSignupResponse created)
+
+signupErrorBody :: T.Text -> T.Text -> BSL.ByteString
+signupErrorBody code msg =
+    Aeson.encode $
+        Aeson.object
+            [ "code" Aeson..= code
+            , "msg" Aeson..= msg
+            ]
 
 notImplemented :: AppHandler a
 notImplemented =
