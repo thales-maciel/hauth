@@ -71,6 +71,7 @@ library
     Hauth.MfaFactor
     Hauth.Migrate
     Hauth.OAuth
+    Hauth.OAuth.Github
     Hauth.OAuth.Google
     Hauth.Server
     Hauth.Server.Admin
@@ -137,6 +138,7 @@ test-suite hauth-test
     Spec.EmailSpec
     Spec.Mfa.TotpSpec
     Spec.MigrateSpec
+    Spec.OAuth.GithubSpec
     Spec.OAuth.GoogleSpec
     Spec.OAuthSpec
     Spec.RefreshTokenSpec

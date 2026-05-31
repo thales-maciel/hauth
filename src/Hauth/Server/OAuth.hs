@@ -13,12 +13,18 @@ import Data.Time.Clock (addUTCTime, getCurrentTime)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import qualified Data.UUID as UUID
 import Hauth.API.Auth (AnonymousPrincipal)
-import Hauth.API.Types (OAuthAuthorizeResponse (..), SessionResponse (..), buildUserResponse)
+import Hauth.API.Types (
+    OAuthAuthorizeResponse (..),
+    SessionResponse (..),
+    buildSessionResponse,
+    buildUserResponse,
+ )
 import Hauth.Auth.Jwt (AccessTokenClaims (..), AmrEntry (..), signAccessToken)
 import Hauth.Config (Config (..), JwtConfig (..), SiteConfig (..))
 import Hauth.Env (AppEnv (..), withDatabaseConnection)
 import Hauth.OAuth (
     FlowState (..),
+    IdentityClaims,
     OAuthError (..),
     ProviderName (..),
     buildStubAuthorizeUrl,
@@ -28,6 +34,11 @@ import Hauth.OAuth (
     generateState,
     lookupProvider,
     validateRedirectTo,
+ )
+import Hauth.OAuth.Github (
+    GithubExchangeError (..),
+    githubExchangeCode,
+    githubProviderName,
  )
 import Hauth.OAuth.Google (
     GoogleExchangeError (..),
@@ -172,6 +183,8 @@ callbackHandler _ mCode mState = do
                 p
                     | p == googleProviderName ->
                         handleGoogleCallback env code flowState
+                    | p == githubProviderName ->
+                        handleGithubCallback env code flowState
                 other ->
                     throwError (unsupportedProviderError other)
 
@@ -185,6 +198,10 @@ unsupportedProviderError providerName =
                     , "msg" Aeson..= ("OAuth code exchange not yet implemented for provider: " <> providerName)
                     ]
         }
+
+-- ---------------------------------------------------------------------------
+-- Google callback
+-- ---------------------------------------------------------------------------
 
 handleGoogleCallback ::
     AppEnv ->
@@ -212,78 +229,129 @@ handleGoogleCallback env code flowState = do
         Right cfg -> pure cfg
     claimsResult <- liftIO (googleExchangeCode providerCfg callbackUrl code)
     identityClaims <- case claimsResult of
-        Left (GoogleHttpError msg) ->
+        Left err ->
             throwError
                 err401
                     { errBody =
                         Aeson.encode $
                             Aeson.object
                                 [ "error" Aeson..= ("oauth_exchange_failed" :: T.Text)
-                                , "msg" Aeson..= msg
-                                ]
-                    }
-        Left (GoogleTokenResponseInvalid msg) ->
-            throwError
-                err401
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "error" Aeson..= ("oauth_exchange_failed" :: T.Text)
-                                , "msg" Aeson..= msg
-                                ]
-                    }
-        Left (GoogleUserinfoInvalid msg) ->
-            throwError
-                err401
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "error" Aeson..= ("oauth_exchange_failed" :: T.Text)
-                                , "msg" Aeson..= msg
-                                ]
-                    }
-        Left GoogleMissingSub ->
-            throwError
-                err401
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "error" Aeson..= ("oauth_exchange_failed" :: T.Text)
-                                , "msg" Aeson..= ("Google userinfo response missing sub claim" :: T.Text)
+                                , "msg" Aeson..= googleErrorMessage err
                                 ]
                     }
         Right ic -> pure ic
+    issueOAuthSession env configJwt jwtAccessTokenTtlSeconds identityClaims
+
+googleErrorMessage :: GoogleExchangeError -> T.Text
+googleErrorMessage = \case
+    GoogleHttpError msg -> msg
+    GoogleTokenResponseInvalid msg -> msg
+    GoogleUserinfoInvalid msg -> msg
+    GoogleMissingSub -> "Google userinfo response missing sub claim"
+
+-- ---------------------------------------------------------------------------
+-- GitHub callback
+-- ---------------------------------------------------------------------------
+
+handleGithubCallback ::
+    AppEnv ->
+    T.Text ->
+    FlowState ->
+    AppHandler SessionResponse
+handleGithubCallback env code _flowState = do
+    let AppEnv{appConfig} = env
+        Config{configOAuth, configSite = SiteConfig{siteUrl}, configJwt} = appConfig
+        JwtConfig{jwtAccessTokenTtlSeconds} = configJwt
+    providerCfg <- case lookupProvider configOAuth githubProviderName of
+        Left _ ->
+            throwError
+                err401
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("oauth_exchange_failed" :: T.Text)
+                                , "msg" Aeson..= ("GitHub provider not configured" :: T.Text)
+                                ]
+                    }
+        Right cfg -> pure cfg
+    let callbackUrl = siteUrl <> "/auth/v1/callback"
+    claimsResult <- liftIO (githubExchangeCode providerCfg callbackUrl code)
+    claims <- case claimsResult of
+        Left err ->
+            throwError
+                err401
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("oauth_exchange_failed" :: T.Text)
+                                , "msg" Aeson..= githubErrorMessage err
+                                ]
+                    }
+        Right c -> pure c
+    issueOAuthSession env configJwt jwtAccessTokenTtlSeconds claims
+
+githubErrorMessage :: GithubExchangeError -> T.Text
+githubErrorMessage = \case
+    GithubHttpError msg -> msg
+    GithubTokenResponseInvalid msg -> msg
+    GithubUserInvalid msg -> msg
+    GithubEmailsInvalid msg -> msg
+    GithubMissingId -> "GitHub user has no id"
+
+-- ---------------------------------------------------------------------------
+-- Shared session-issuance for OAuth providers
+-- ---------------------------------------------------------------------------
+
+issueOAuthSession ::
+    AppEnv ->
+    JwtConfig ->
+    Int ->
+    IdentityClaims ->
+    AppHandler SessionResponse
+issueOAuthSession env configJwt jwtAccessTokenTtlSeconds claims = do
     (userId, _isNewUser) <-
-        liftIO (withDatabaseConnection env (`findOrCreateIdentity` identityClaims))
-    let uid = User.unUserId userId
+        liftIO (withDatabaseConnection env (`findOrCreateIdentity` claims))
+    mUser <- liftIO (withDatabaseConnection env (`User.getUserById` userId))
+    user <- case mUser of
+        Nothing ->
+            throwError
+                err401
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("oauth_exchange_failed" :: T.Text)
+                                , "msg" Aeson..= ("user not found after identity creation" :: T.Text)
+                                ]
+                    }
+        Just u -> pure u
+    let User.UserId userUUID = User.userId user
         newSess =
             NewSession
-                { newSessionUserId = uid
+                { newSessionUserId = userUUID
                 , newSessionAal = "aal1"
                 , newSessionFactorId = Nothing
                 , newSessionUserAgent = Nothing
                 , newSessionIp = Nothing
                 , newSessionNotAfter = Nothing
                 }
-    (sess, refreshTok) <-
-        liftIO $
-            withDatabaseConnection env \conn -> do
-                s <- createSession conn newSess
-                rt <- createRefreshToken conn (sessionId s) Nothing
-                pure (s, rt)
+    (sess, refreshTok) <- liftIO $
+        withDatabaseConnection env \conn -> do
+            s <- createSession conn newSess
+            rt <- createRefreshToken conn (sessionId s) Nothing
+            pure (s, rt)
     now <- liftIO getCurrentTime
-    let sid = sessionId sess
+    let iatSecs = floor (utcTimeToPOSIXSeconds now) :: Integer
         ttl = fromIntegral jwtAccessTokenTtlSeconds
         expiry = addUTCTime ttl now
-        iatSecs = floor (utcTimeToPOSIXSeconds now) :: Integer
-        claims =
+        SessionId sid = sessionId sess
+        accessClaims =
             AccessTokenClaims
-                { claimSub = UUID.toText uid
+                { claimSub = UUID.toText userUUID
                 , claimRole = "authenticated"
-                , claimEmail = Nothing
+                , claimEmail = User.userEmail user
                 , claimPhone = Nothing
-                , claimAppMetadata = Aeson.object []
-                , claimUserMetadata = Aeson.object []
+                , claimAppMetadata = User.userRawAppMetaData user
+                , claimUserMetadata = User.userRawUserMetaData user
                 , claimAal = "aal1"
                 , claimAmr =
                     [ AmrEntry
@@ -291,11 +359,11 @@ handleGoogleCallback env code flowState = do
                         , amrTimestamp = iatSecs
                         }
                     ]
-                , claimSessionId = UUID.toText (unSessionId sid)
+                , claimSessionId = UUID.toText sid
                 , claimIssuedAt = now
                 , claimExpiresAt = expiry
                 }
-    signResult <- liftIO (signAccessToken configJwt claims)
+    signResult <- liftIO (signAccessToken configJwt accessClaims)
     accessToken <- case signResult of
         Left err ->
             throwError
@@ -307,33 +375,10 @@ handleGoogleCallback env code flowState = do
                                 , "msg" Aeson..= T.pack (show err)
                                 ]
                     }
-        Right tok -> pure tok
-    mUser <- liftIO (withDatabaseConnection env (`User.getUserById` userId))
-    let userResp = case mUser of
-            Just u -> buildUserResponse u
-            Nothing ->
-                -- Fallback: build a minimal response from what we know.
-                -- This should not happen since findOrCreateIdentity ensures
-                -- the user row exists.
-                buildUserResponse
-                    User.User
-                        { User.userId = userId
-                        , User.userEmail = Nothing
-                        , User.userEncryptedPassword = Nothing
-                        , User.userEmailConfirmedAt = Nothing
-                        , User.userConfirmationToken = Nothing
-                        , User.userConfirmationSentAt = Nothing
-                        , User.userRawAppMetaData = Aeson.object []
-                        , User.userRawUserMetaData = Aeson.object []
-                        , User.userRole = "authenticated"
-                        , User.userAud = "authenticated"
-                        , User.userCreatedAt = now
-                        , User.userUpdatedAt = now
-                        }
-    pure
-        SessionResponse
-            { sessionAccessToken = accessToken
-            , sessionExpiresIn = jwtAccessTokenTtlSeconds
-            , sessionRefreshToken = refreshTokenToken refreshTok
-            , sessionUser = userResp
-            }
+        Right t -> pure t
+    pure $
+        buildSessionResponse
+            accessToken
+            (refreshTokenToken refreshTok)
+            jwtAccessTokenTtlSeconds
+            (buildUserResponse user)
