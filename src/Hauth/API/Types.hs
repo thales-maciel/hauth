@@ -41,13 +41,18 @@ module Hauth.API.Types (
     WebhookDeliveriesResponse (..),
     WebhookDeliveryId (..),
     WebhookDeliveryResponse (..),
+    buildSettingsResponse,
 ) where
 
-import Data.Aeson (FromJSON, ToJSON, object, toJSON, (.=))
+import Data.Aeson (FromJSON, ToJSON (toJSON), object, (.=))
 import qualified Data.Aeson as Aeson
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Time (UTCTime)
 import GHC.Generics (Generic)
+import Hauth.Config (Config (..), OAuthConfig (..), OAuthProviderConfig (..))
 import Web.HttpApiData (FromHttpApiData, ToHttpApiData)
 
 newtype UserId = UserId {unUserId :: Text}
@@ -132,11 +137,48 @@ instance ToJSON DeepHealthResponse where
             ]
 
 data SettingsResponse = SettingsResponse
-    { settingsExternalProviders :: [Text]
+    { settingsExternal :: Map Text Bool
+    , settingsExternalEmailEnabled :: Bool
+    , settingsExternalPhoneEnabled :: Bool
     , settingsDisableSignup :: Bool
+    , settingsMailerAutoconfirm :: Bool
+    , settingsPhoneAutoconfirm :: Bool
+    , settingsSmsProvider :: Text
     }
-    deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+    deriving stock (Eq, Show)
+
+instance ToJSON SettingsResponse where
+    toJSON SettingsResponse{..} =
+        object
+            [ "external" .= settingsExternal
+            , "external_email_enabled" .= settingsExternalEmailEnabled
+            , "external_phone_enabled" .= settingsExternalPhoneEnabled
+            , "disable_signup" .= settingsDisableSignup
+            , "mailer_autoconfirm" .= settingsMailerAutoconfirm
+            , "phone_autoconfirm" .= settingsPhoneAutoconfirm
+            , "sms_provider" .= settingsSmsProvider
+            ]
+
+buildSettingsResponse :: Config -> SettingsResponse
+buildSettingsResponse Config{configOAuth = OAuthConfig{oauthProviders}} =
+    SettingsResponse
+        { settingsExternal = externalMap
+        , settingsExternalEmailEnabled = True
+        , settingsExternalPhoneEnabled = False
+        , settingsDisableSignup = False
+        , settingsMailerAutoconfirm = False
+        , settingsPhoneAutoconfirm = False
+        , settingsSmsProvider = ""
+        }
+  where
+    providerEntries =
+        fmap
+            (\OAuthProviderConfig{oauthProviderName} -> (T.toLower oauthProviderName, True))
+            oauthProviders
+    externalMap =
+        Map.fromList $
+            [("email", True), ("phone", False)]
+                <> providerEntries
 
 data SignupRequest = SignupRequest
     { signupEmail :: Email
