@@ -8,9 +8,11 @@ module Hauth.User (
     createUser,
     emptyUserUpdate,
     generateConfirmationToken,
+    getUserByConfirmationToken,
     getUserByEmail,
     getUserById,
     markEmailConfirmed,
+    setConfirmationToken,
     validateSignupEmail,
     validateSignupPassword,
 ) where
@@ -200,6 +202,41 @@ getUserById conn (UserId uid) = do
         [row] -> Just row
         _ -> Nothing
 
+-- | Look up a user by their @confirmation_token@ value, excluding soft-deleted rows.
+getUserByConfirmationToken :: Connection -> Text -> IO (Maybe User)
+getUserByConfirmationToken conn token = do
+    rows <-
+        query
+            conn
+            "SELECT \
+            \  id, email, encrypted_password, email_confirmed_at, \
+            \  confirmation_token, confirmation_sent_at, \
+            \  raw_app_meta_data, raw_user_meta_data, \
+            \  role, aud, created_at, updated_at \
+            \FROM auth.users \
+            \WHERE confirmation_token = ? AND deleted_at IS NULL"
+            (Only token)
+    pure $ case rows of
+        [row] -> Just row
+        _ -> Nothing
+
+{- | Update @confirmation_token@ and set @confirmation_sent_at@ to @now()@.
+
+Used by the resend flow to issue a fresh token.
+-}
+setConfirmationToken :: Connection -> UserId -> Text -> IO ()
+setConfirmationToken conn (UserId uid) token = do
+    _ <-
+        query
+            conn
+            "UPDATE auth.users \
+            \SET confirmation_token = ?, confirmation_sent_at = now(), updated_at = now() \
+            \WHERE id = ? \
+            \RETURNING id"
+            (token, uid) ::
+            IO [Only UUID]
+    pure ()
+
 -- | Set @email_confirmed_at@ to the current time for a user.
 markEmailConfirmed :: Connection -> UserId -> IO ()
 markEmailConfirmed conn (UserId uid) = do
@@ -207,7 +244,7 @@ markEmailConfirmed conn (UserId uid) = do
         query
             conn
             "UPDATE auth.users \
-            \SET email_confirmed_at = now(), updated_at = now() \
+            \SET email_confirmed_at = now(), confirmation_token = NULL, updated_at = now() \
             \WHERE id = ? \
             \RETURNING id"
             (Only uid) ::

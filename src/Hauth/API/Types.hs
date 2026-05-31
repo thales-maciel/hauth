@@ -46,6 +46,7 @@ module Hauth.API.Types (
     WebhookDeliveriesResponse (..),
     WebhookDeliveryId (..),
     WebhookDeliveryResponse (..),
+    buildSessionResponse,
     buildSettingsResponse,
     buildSignupResponse,
     buildUserResponse,
@@ -61,6 +62,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time (UTCTime)
 import Data.UUID (UUID)
+import qualified Data.UUID as UUID
 import GHC.Generics (Generic)
 import Hauth.Config (Config (..), OAuthConfig (..), OAuthProviderConfig (..))
 import Hauth.Session (RefreshToken (..))
@@ -257,6 +259,16 @@ buildSignupResponse User.User{..} =
         , signupResponseUserMetadata = userRawUserMetaData
         }
 
+-- | Assemble a 'SessionResponse' from its components.
+buildSessionResponse :: Text -> Text -> Int -> UserResponse -> SessionResponse
+buildSessionResponse accessToken refreshToken expiresIn userResp =
+    SessionResponse
+        { sessionAccessToken = accessToken
+        , sessionRefreshToken = refreshToken
+        , sessionExpiresIn = expiresIn
+        , sessionUser = userResp
+        }
+
 {- | Unified request body for the @/token@ endpoint across all grant types.
 
 Fields are all optional at the type level; the handler inspects @grant_type@
@@ -350,9 +362,24 @@ newtype RecoverRequest = RecoverRequest
 data VerifyRequest = VerifyRequest
     { verifyToken :: Text
     , verifyType :: Text
+    , verifyEmail :: Maybe Text
     }
     deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+
+instance FromJSON VerifyRequest where
+    parseJSON = Aeson.withObject "VerifyRequest" \o ->
+        VerifyRequest
+            <$> o Aeson..: "token"
+            <*> o Aeson..: "type"
+            <*> o Aeson..:? "email"
+
+instance ToJSON VerifyRequest where
+    toJSON VerifyRequest{verifyToken, verifyType, verifyEmail} =
+        object
+            [ "token" .= verifyToken
+            , "type" .= verifyType
+            , "email" .= verifyEmail
+            ]
 
 data ResendRequest = ResendRequest
     { resendEmail :: Email
@@ -391,11 +418,24 @@ data SessionResponse = SessionResponse
     , sessionUser :: UserResponse
     }
     deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
 
--- Note: SessionResponse uses generic ToJSON which produces camelCase field
--- names.  The token endpoint returns 'TokenResponse' (hand-rolled ToJSON with
--- snake_case keys) to match the Supabase wire format exactly.
+instance ToJSON SessionResponse where
+    toJSON SessionResponse{..} =
+        object
+            [ "access_token" .= sessionAccessToken
+            , "token_type" .= ("bearer" :: Text)
+            , "expires_in" .= sessionExpiresIn
+            , "refresh_token" .= sessionRefreshToken
+            , "user" .= sessionUser
+            ]
+
+instance FromJSON SessionResponse where
+    parseJSON = Aeson.withObject "SessionResponse" \o ->
+        SessionResponse
+            <$> o Aeson..: "access_token"
+            <*> o Aeson..: "refresh_token"
+            <*> o Aeson..: "expires_in"
+            <*> o Aeson..: "user"
 
 {- | Full user object matching the Supabase @/user@ response contract.
 
@@ -412,7 +452,7 @@ data UserResponse = UserResponse
     , userResponseAppMetadata :: Value
     , userResponseUserMetadata :: Value
     }
-    deriving stock (Eq, Show)
+    deriving stock (Eq, Generic, Show)
 
 instance ToJSON UserResponse where
     toJSON UserResponse{..} =
@@ -441,7 +481,6 @@ instance FromJSON UserResponse where
             <*> obj Aeson..: "app_metadata"
             <*> obj Aeson..: "user_metadata"
 
--- | Convert a persisted 'User.User' to a 'UserResponse'.
 buildUserResponse :: User.User -> UserResponse
 buildUserResponse User.User{..} =
     UserResponse
@@ -460,7 +499,14 @@ newtype MessageResponse = MessageResponse
     { message :: Text
     }
     deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+
+instance ToJSON MessageResponse where
+    toJSON MessageResponse{message} =
+        object ["message" .= message]
+
+instance FromJSON MessageResponse where
+    parseJSON = Aeson.withObject "MessageResponse" \o ->
+        MessageResponse <$> o Aeson..: "message"
 
 newtype OAuthAuthorizeResponse = OAuthAuthorizeResponse
     { oauthAuthorizeUrl :: Text

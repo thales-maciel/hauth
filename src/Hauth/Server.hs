@@ -16,7 +16,7 @@ import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.Lazy.Char8 as BSLC
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Proxy (Proxy (Proxy))
 import Data.String (fromString)
 import Data.Text (Text)
@@ -34,8 +34,10 @@ import Hauth.Auth.Jwt (AccessTokenClaims (..), AmrEntry (..), signAccessToken, v
 import Hauth.Auth.Login (LoginError (..), authorizeLogin, buildLoginClaims, extractCredentials)
 import Hauth.Auth.Logout (LogoutError (..), resolveLogoutSession)
 import Hauth.Auth.UserUpdate (UpdateUserError (..), validateUpdateRequest)
-import Hauth.Config (Config (..), DatabaseConfig (..), JwtConfig (..), ServerConfig (..))
+import Hauth.Auth.Verify (OtpType (..), VerifyError (..), classifyVerifyRequest, parseOtpType)
+import Hauth.Config (Config (..), DatabaseConfig (..), EmailConfig (..), JwtConfig (..), ServerConfig (..), SiteConfig (..))
 import Hauth.Crypto.Password (defaultArgon2Settings, hashPassword, verifyPassword)
+import Hauth.Email (TemplateData (..), TemplateKind (..), renderEmail, sendEmail, stubSender)
 import Hauth.Env (AppEnv (..), LogLevel (..), createAppEnv, destroyAppEnv, logMessage, withDatabaseConnection)
 import Hauth.Session (
     NewSession (..),
@@ -48,9 +50,15 @@ import Hauth.Session (
     revokeRefreshToken,
     revokeSession,
     revokeSessionRefreshTokens,
+    sessionId,
     touchSessionRefreshedAt,
  )
-import Hauth.User (SignupError (..), generateConfirmationToken, validateSignupEmail, validateSignupPassword)
+import Hauth.User (
+    SignupError (..),
+    generateConfirmationToken,
+    validateSignupEmail,
+    validateSignupPassword,
+ )
 import qualified Hauth.User as User
 import Network.Wai (Application, Request, requestHeaders)
 import qualified Network.Wai.Handler.Warp as Warp
@@ -126,8 +134,8 @@ publicAuthServer =
         :<|> signupHandler
         :<|> tokenHandler
         :<|> notImplemented2
-        :<|> notImplemented2
-        :<|> notImplemented2
+        :<|> verifyHandler
+        :<|> resendHandler
         :<|> notImplemented3
         :<|> notImplemented3
 
@@ -639,6 +647,242 @@ signupErrorBody code msg =
             [ "code" Aeson..= code
             , "msg" Aeson..= msg
             ]
+
+-- ---------------------------------------------------------------------------
+-- Verify endpoint
+-- ---------------------------------------------------------------------------
+
+{- | Handler for @POST /verify@.
+
+Dispatches on the @type@ field of 'VerifyRequest':
+
+- @signup@: confirms the user's email address, creates a session, and
+  returns a 'SessionResponse'.  Idempotent: if the email is already
+  confirmed a fresh session is still issued.
+- Any other type that is recognised but not yet implemented: 400.
+- An unrecognised type string: 400 @unsupported_otp_type@.
+-}
+verifyHandler :: AnonymousPrincipal -> VerifyRequest -> AppHandler SessionResponse
+verifyHandler _ req =
+    case classifyVerifyRequest req of
+        Left VerifyMissingToken ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("otp_expired" :: T.Text)
+                                , "msg" Aeson..= ("Token has expired or is invalid" :: T.Text)
+                                ]
+                    }
+        Left (VerifyUnsupportedOtpType t) ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("unsupported_otp_type" :: T.Text)
+                                , "msg" Aeson..= ("Unsupported OTP type: " <> t)
+                                ]
+                    }
+        Left VerifyOtpExpired ->
+            throwError
+                err401
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("otp_expired" :: T.Text)
+                                , "msg" Aeson..= ("Token has expired or is invalid" :: T.Text)
+                                ]
+                    }
+        Right OtpSignup ->
+            handleSignupVerify req
+        Right _ ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("unsupported_otp_type" :: T.Text)
+                                , "msg" Aeson..= ("OTP type not yet implemented" :: T.Text)
+                                ]
+                    }
+
+handleSignupVerify :: VerifyRequest -> AppHandler SessionResponse
+handleSignupVerify VerifyRequest{verifyToken} = do
+    env <- ask
+    let AppEnv{appConfig} = env
+        Config{configJwt} = appConfig
+        JwtConfig{jwtAccessTokenTtlSeconds} = configJwt
+    -- Look up the user by confirmation token.
+    mUser <- liftIO (withDatabaseConnection env (`User.getUserByConfirmationToken` verifyToken))
+    user <- case mUser of
+        Nothing ->
+            throwError
+                err401
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("otp_expired" :: T.Text)
+                                , "msg" Aeson..= ("Token has expired or is invalid" :: T.Text)
+                                ]
+                    }
+        Just u -> pure u
+    -- Mark confirmed (idempotent: update even if already confirmed, and also
+    -- clears the confirmation_token to prevent replay).
+    liftIO (withDatabaseConnection env (`User.markEmailConfirmed` User.userId user))
+    -- Create session and tokens.
+    now <- liftIO getCurrentTime
+    let uid = User.unUserId (User.userId user)
+        ttl = fromIntegral jwtAccessTokenTtlSeconds
+        expiry = addUTCTime ttl now
+        iatSecs = floor (utcTimeToPOSIXSeconds now) :: Integer
+        newSess =
+            NewSession
+                { newSessionUserId = uid
+                , newSessionAal = "aal1"
+                , newSessionFactorId = Nothing
+                , newSessionUserAgent = Nothing
+                , newSessionIp = Nothing
+                , newSessionNotAfter = Nothing
+                }
+    session <- liftIO (withDatabaseConnection env (`createSession` newSess))
+    let sid = sessionId session
+    refreshTok <- liftIO (withDatabaseConnection env (\conn -> createRefreshToken conn sid Nothing))
+    let claims =
+            AccessTokenClaims
+                { claimSub = UUID.toText uid
+                , claimRole = User.userRole user
+                , claimEmail = User.userEmail user
+                , claimPhone = Nothing
+                , claimAppMetadata = User.userRawAppMetaData user
+                , claimUserMetadata = User.userRawUserMetaData user
+                , claimAal = "aal1"
+                , claimAmr =
+                    [ AmrEntry
+                        { amrMethod = "otp"
+                        , amrTimestamp = iatSecs
+                        }
+                    ]
+                , claimSessionId = UUID.toText (unSessionId sid)
+                , claimIssuedAt = now
+                , claimExpiresAt = expiry
+                }
+    signResult <- liftIO (signAccessToken configJwt claims)
+    accessToken <- case signResult of
+        Left err ->
+            throwError
+                err401
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("server_error" :: T.Text)
+                                , "error_description" Aeson..= T.pack (show err)
+                                ]
+                    }
+        Right t -> pure t
+    pure
+        SessionResponse
+            { sessionAccessToken = accessToken
+            , sessionExpiresIn = jwtAccessTokenTtlSeconds
+            , sessionRefreshToken = refreshTokenToken refreshTok
+            , sessionUser = buildUserResponse user
+            }
+
+-- ---------------------------------------------------------------------------
+-- Resend endpoint
+-- ---------------------------------------------------------------------------
+
+{- | Handler for @POST /resend@.
+
+Dispatches on the @type@ field of 'ResendRequest':
+
+- @signup@: if the user exists and is unconfirmed, regenerates the
+  confirmation token and calls 'stubSender'.  Always returns 200 with the
+  same message regardless of whether the user was found (anti-enumeration).
+- Any other type: 400 @unsupported_otp_type@.
+-}
+resendHandler :: AnonymousPrincipal -> ResendRequest -> AppHandler MessageResponse
+resendHandler _ ResendRequest{resendEmail, resendType} =
+    case parseOtpType resendType of
+        Left (VerifyUnsupportedOtpType t) ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("unsupported_otp_type" :: T.Text)
+                                , "msg" Aeson..= ("Unsupported OTP type: " <> t)
+                                ]
+                    }
+        Left _ ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("unsupported_otp_type" :: T.Text)
+                                ]
+                    }
+        Right OtpSignup ->
+            handleSignupResend (unEmail resendEmail)
+        Right _ ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("unsupported_otp_type" :: T.Text)
+                                , "msg" Aeson..= ("OTP type not yet implemented" :: T.Text)
+                                ]
+                    }
+
+handleSignupResend :: T.Text -> AppHandler MessageResponse
+handleSignupResend emailText = do
+    env <- ask
+    let AppEnv{appConfig, appLogger} = env
+        Config{configEmail, configSite} = appConfig
+        antiEnumMsg = MessageResponse "Verification email sent if needed"
+    mUser <- liftIO (withDatabaseConnection env (`User.getUserByEmail` emailText))
+    case mUser of
+        Nothing ->
+            -- Anti-enumeration: return success regardless.
+            pure antiEnumMsg
+        Just user
+            | isJust (User.userEmailConfirmedAt user) ->
+                -- Already confirmed: return success silently.
+                pure antiEnumMsg
+            | otherwise -> do
+                -- Generate a fresh token and attempt delivery.
+                newToken <- liftIO generateConfirmationToken
+                liftIO $
+                    withDatabaseConnection env \conn ->
+                        User.setConfirmationToken conn (User.userId user) newToken
+                let tdata =
+                        TemplateData
+                            { templateRecipientEmail = emailText
+                            , templateActionUrl =
+                                siteUrl configSite
+                                    <> "/auth/confirm?token="
+                                    <> newToken
+                            , templateSiteUrl = siteUrl configSite
+                            , templateTokenHash = newToken
+                            }
+                case renderEmail Confirmation (emailFrom configEmail) tdata of
+                    Left _ ->
+                        -- Template error: log and continue.
+                        liftIO (logMessage appLogger LogWarn "resend: failed to render confirmation email")
+                    Right msg -> do
+                        sendResult <- liftIO (sendEmail stubSender msg)
+                        case sendResult of
+                            Left err ->
+                                liftIO $
+                                    logMessage
+                                        appLogger
+                                        LogWarn
+                                        ("resend: email delivery failed: " <> T.pack (show err))
+                            Right () -> pure ()
+                pure antiEnumMsg
 
 notImplemented :: AppHandler a
 notImplemented =

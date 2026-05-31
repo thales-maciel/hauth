@@ -58,6 +58,7 @@ library
     Hauth.Auth.Login
     Hauth.Auth.Logout
     Hauth.Auth.UserUpdate
+    Hauth.Auth.Verify
     Hauth.CLI
     Hauth.Config
     Hauth.Crypto.Password
