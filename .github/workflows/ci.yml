@@ -21,6 +21,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Reject unresolved conflict markers
+        # `=======` is too generic to match safely (appears in ASCII art / comments); only check the angle-bracket markers.
+        run: |
+          if grep -rnE '^(<<<<<<<|>>>>>>>) ' app src test 2>/dev/null; then
+            echo "::error::Unresolved conflict markers found." >&2
+            exit 1
+          fi
+
       - name: Install fourmolu
         run: |
           set -euo pipefail

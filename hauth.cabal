@@ -72,6 +72,8 @@ library
     Hauth.Migrate
     Hauth.OAuth
     Hauth.Server
+    Hauth.Server.Admin
+    Hauth.Server.OAuth
     Hauth.Session
     Hauth.User
   hs-source-dirs: src

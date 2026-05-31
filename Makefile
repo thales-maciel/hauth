@@ -1,4 +1,4 @@
-.PHONY: build ci coverage format format-check lint run test
+.PHONY: build ci clean-local coverage format format-check lint rebase-check run test
 
 build:
 	cabal build all
@@ -23,3 +23,11 @@ coverage:
 	@find dist-newstyle -type f -path '*hpc/vanilla/html/hpc_index.html' -print
 
 ci: format-check lint build test
+
+clean-local:
+	rm -rf dist-newstyle/build/*/ghc-*/hauth-*
+
+rebase-check:
+	@! grep -rnE '^(<<<<<<<|>>>>>>>) ' app src test 2>/dev/null || (echo "ERROR: unresolved conflict markers" >&2; exit 1)
+	fourmolu --mode check app src test
+	hlint app src test
