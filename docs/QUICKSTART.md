@@ -1,0 +1,148 @@
+# Quickstart
+
+Go from zero to a running hauth with signup and login in about ten minutes.
+This guide targets operators self-hosting hauth against their own Postgres on
+Linux. It does not cover OAuth providers, MFA enrollment UX, or production
+hardening — those will get dedicated docs in v0.2.
+
+## Prerequisites
+
+- **Linux x86_64** host (any distro — the binary is fully static, no glibc).
+- **Postgres 13 or newer** reachable from the host. You need permission to
+  create a database and a role.
+- **`curl`** and **`psql`** on the host.
+- **An SMTP target** for outbound email. For a local trial run you can use
+  MailHog — `docker run -d -p 1025:1025 -p 8025:8025 mailhog/mailhog` brings
+  up an SMTP server on `:1025` and a web inbox on `http://localhost:8025`. For
+  the smoke test below we skip email entirely by flipping the confirmation
+  flag in SQL.
+
+No language tooling required.
+
+## 1. Install
+
+Grab the static release binary from the
+[Releases page](https://github.com/thales-maciel/hauth/releases). Pick the
+latest tag, then:
+
+```sh
+VERSION=v0.1.0  # replace with the latest release tag
+ARCH=linux-x86_64
+
+curl -LO "https://github.com/thales-maciel/hauth/releases/download/${VERSION}/hauth-${VERSION}-${ARCH}.tar.gz"
+curl -LO "https://github.com/thales-maciel/hauth/releases/download/${VERSION}/hauth-${VERSION}-${ARCH}.tar.gz.sha256"
+sha256sum -c "hauth-${VERSION}-${ARCH}.tar.gz.sha256"
+
+tar -xzf "hauth-${VERSION}-${ARCH}.tar.gz"
+sudo install -m 0755 "hauth-${VERSION}-${ARCH}" /usr/local/bin/hauth
+
+hauth --help
+```
+
+## 2. Create the database
+
+```sql
+CREATE ROLE hauth LOGIN PASSWORD 'change-me';
+CREATE DATABASE hauth OWNER hauth;
+```
+
+hauth owns and manages the `auth` schema inside this database. The migration
+runner creates the schema on first run; the `hauth` role needs `CREATE` on
+the database, which the ownership above grants.
+
+## 3. Write `config.json`
+
+Minimal config to get running:
+
+```json
+{
+  "database": {
+    "url": "postgresql://hauth:change-me@localhost:5432/hauth",
+    "pool_size": 5
+  },
+  "jwt": {
+    "secret": "REPLACE-WITH-32-RANDOM-BYTES-HEX",
+    "issuer": "hauth",
+    "audience": "authenticated",
+    "access_token_ttl_seconds": 3600,
+    "refresh_token_ttl_seconds": 2592000
+  },
+  "site": {
+    "url": "http://localhost:3000",
+    "allowed_redirect_urls": ["http://localhost:3000/auth/callback"]
+  },
+  "email": {
+    "from": "noreply@example.com",
+    "smtp_host": "localhost",
+    "smtp_port": 1025
+  },
+  "oauth": { "providers": [] },
+  "server": { "host": "127.0.0.1", "port": 8080 }
+}
+```
+
+The three fields you **must** change before exposing this to anything beyond
+`localhost`:
+
+- `database.url` — point at your real Postgres.
+- `jwt.secret` — generate fresh entropy (`openssl rand -hex 32`). Tokens are
+  signed with this; rotating it invalidates every issued session.
+- `site.url` and `site.allowed_redirect_urls` — your frontend's origin and
+  the redirect URLs you trust for email/OAuth callbacks.
+
+See [`config.example.json`](../config.example.json) for the full schema,
+including OAuth provider blocks.
+
+## 4. Migrate and serve
+
+```sh
+hauth migrate up   --config config.json
+hauth serve        --config config.json
+```
+
+Health endpoints are available at `http://127.0.0.1:8080/healthz` (process up)
+and `http://127.0.0.1:8080/healthz/deep` (database reachable, migrations
+applied).
+
+## 5. Smoke test
+
+In a second shell, with `hauth serve` still running:
+
+```sh
+# Sign a user up. Returns the new user; no session yet (email unconfirmed).
+curl -sS -X POST http://127.0.0.1:8080/signup \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"alice@example.com","password":"correct horse battery staple"}'
+
+# Confirm the email by hand (skips needing real SMTP for this trial).
+# In real use the user clicks the verification link emailed via your SMTP.
+psql "postgresql://hauth:change-me@localhost:5432/hauth" \
+  -c "UPDATE auth.users SET email_confirmed_at = now(), confirmation_token = NULL WHERE email = 'alice@example.com';"
+
+# Log in. Returns access_token + refresh_token + user.
+ACCESS=$(curl -sS -X POST 'http://127.0.0.1:8080/token?grant_type=password' \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"alice@example.com","password":"correct horse battery staple"}' \
+  | jq -r .access_token)
+
+# Read the authenticated user with the bearer token.
+curl -sS http://127.0.0.1:8080/user -H "Authorization: Bearer ${ACCESS}"
+```
+
+The last call should return JSON for `alice@example.com` with `aud:
+"authenticated"` and `email_confirmed_at` populated. If that works, the
+service is running end-to-end against your Postgres.
+
+## Next steps
+
+- [`docs/v0.1-compatibility.md`](v0.1-compatibility.md) — the Supabase-compat
+  contract: which endpoints exist, which fields are emitted, and which v0.1
+  intentionally omits.
+- [`PROJECT.md`](../PROJECT.md) — product direction, milestone scope, and
+  what's deferred to v0.2 and beyond.
+- [Open issues](https://github.com/thales-maciel/hauth/issues) — production
+  concerns (TLS termination, secret rotation, backups, systemd units) and
+  per-feature docs land here.
+
+OAuth, MFA enrollment, and webhook delivery are implemented but not covered
+here — they will get dedicated docs in v0.2.

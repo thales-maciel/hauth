@@ -9,6 +9,12 @@ and release.
 The v0.1 Supabase compatibility target is documented in
 [docs/v0.1-compatibility.md](docs/v0.1-compatibility.md).
 
+## Running hauth
+
+See [docs/QUICKSTART.md](docs/QUICKSTART.md) for the operator quickstart:
+download the static release binary, point it at Postgres, run `hauth migrate
+up && hauth serve`, verify with curl.
+
 ## Development
 
 Required tools:
