@@ -41,6 +41,16 @@ import Hauth.Crypto.Password (defaultArgon2Settings, hashPassword)
 import qualified Hauth.Crypto.Password as Pwd
 import Hauth.Email (EmailSender (..), TemplateData (..), TemplateKind (..), renderEmail, sendEmail, stubSender)
 import Hauth.Env (AppEnv (..), LogLevel (..), createAppEnv, destroyAppEnv, logMessage, withDatabaseConnection)
+import Hauth.OAuth (
+    OAuthError (..),
+    ProviderName (..),
+    buildStubAuthorizeUrl,
+    consumeFlowState,
+    createFlowState,
+    generateState,
+    lookupProvider,
+    validateRedirectTo,
+ )
 import Hauth.Session (
     NewSession (..),
     RefreshToken (..),
@@ -140,8 +150,8 @@ publicAuthServer =
         :<|> recoverHandler
         :<|> verifyHandler
         :<|> resendHandler
-        :<|> notImplemented3
-        :<|> notImplemented3
+        :<|> authorizeHandler
+        :<|> callbackHandler
 
 sessionServer :: ServerT SessionAPI AppHandler
 sessionServer =
@@ -971,6 +981,163 @@ handleSignupResend emailText = do
                                         ("resend: email delivery failed: " <> T.pack (show err))
                             Right () -> pure ()
                 pure antiEnumMsg
+
+-- ---------------------------------------------------------------------------
+-- OAuth authorize and callback handlers
+-- ---------------------------------------------------------------------------
+
+{- | Handle @GET /authorize?provider=<name>&redirect_to=<url>@.
+
+1. Validate the @provider@ query parameter against configured OAuth providers.
+2. Validate @redirect_to@ against the site's allowed redirect URLs.
+3. Generate a state token and persist it as a flow state row.
+4. Build a stub authorization URL and return it.
+
+The actual OIDC discovery-document fetch and provider-specific authorization
+endpoint construction are deferred to issues #19 and #20.
+-}
+authorizeHandler ::
+    AnonymousPrincipal ->
+    Maybe T.Text ->
+    Maybe T.Text ->
+    AppHandler OAuthAuthorizeResponse
+authorizeHandler _ mProvider mRedirectTo = do
+    env <- ask
+    let AppEnv{appConfig} = env
+        Config{configOAuth, configSite} = appConfig
+        SiteConfig{siteUrl} = configSite
+    providerText <- case mProvider of
+        Nothing ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object ["error" Aeson..= ("missing_provider" :: T.Text)]
+                    }
+        Just p -> pure p
+    providerCfg <- case lookupProvider configOAuth providerText of
+        Left _ ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object ["error" Aeson..= ("unsupported_provider" :: T.Text)]
+                    }
+        Right cfg -> pure cfg
+    redirectTo <- case mRedirectTo of
+        Nothing ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object ["error" Aeson..= ("invalid_redirect_to" :: T.Text)]
+                    }
+        Just r -> pure r
+    case validateRedirectTo configSite redirectTo of
+        Left _ ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object ["error" Aeson..= ("invalid_redirect_to" :: T.Text)]
+                    }
+        Right _ -> pure ()
+    stateToken <- liftIO generateState
+    let callbackUrl = siteUrl <> "/auth/v1/callback"
+    _ <- liftIO $
+        withDatabaseConnection env \conn ->
+            createFlowState conn (ProviderName providerText) stateToken
+    let authorizeUrl = buildStubAuthorizeUrl providerCfg stateToken callbackUrl redirectTo
+    pure
+        OAuthAuthorizeResponse
+            { oauthAuthorizeUrl = authorizeUrl
+            , oauthAuthorizeState = stateToken
+            }
+
+{- | Handle @GET /callback?code=<provider_code>&state=<state_token>@.
+
+1. Validate the state token by consuming the corresponding flow state row.
+2. Provider-specific code-to-userinfo exchange is out of scope for #18.
+   Returns 501 with a clear error message after consuming the state.
+
+The full callback flow (identity linking, session creation) will be wired
+when issues #19 and #20 merge.
+-}
+callbackHandler ::
+    AnonymousPrincipal ->
+    Maybe T.Text ->
+    Maybe T.Text ->
+    AppHandler SessionResponse
+callbackHandler _ mCode mState = do
+    env <- ask
+    stateToken <- case mState of
+        Nothing ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("invalid_request" :: T.Text)
+                                , "msg" Aeson..= ("state parameter is required" :: T.Text)
+                                ]
+                    }
+        Just s -> pure s
+    _ <- case mCode of
+        Nothing ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("invalid_request" :: T.Text)
+                                , "msg" Aeson..= ("code parameter is required" :: T.Text)
+                                ]
+                    }
+        Just c -> pure c
+    result <-
+        liftIO $
+            withDatabaseConnection env (`consumeFlowState` stateToken)
+    case result of
+        Left OAuthStateInvalid ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("invalid_state" :: T.Text)
+                                , "msg" Aeson..= ("OAuth state is invalid or already consumed" :: T.Text)
+                                ]
+                    }
+        Left OAuthStateExpired ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("state_expired" :: T.Text)
+                                , "msg" Aeson..= ("OAuth state has expired" :: T.Text)
+                                ]
+                    }
+        Left _ ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object ["error" Aeson..= ("invalid_state" :: T.Text)]
+                    }
+        Right _ ->
+            -- State consumed successfully.
+            -- TODO (#19/#20): exchange the provider code for userinfo here,
+            -- then call findOrCreateIdentity and issue a session.
+            throwError
+                err501
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("provider_not_implemented" :: T.Text)
+                                , "msg" Aeson..= ("OAuth code exchange not yet wired for this provider" :: T.Text)
+                                ]
+                    }
 
 notImplemented :: AppHandler a
 notImplemented =

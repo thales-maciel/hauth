@@ -511,11 +511,24 @@ instance FromJSON MessageResponse where
     parseJSON = Aeson.withObject "MessageResponse" \o ->
         MessageResponse <$> o Aeson..: "message"
 
-newtype OAuthAuthorizeResponse = OAuthAuthorizeResponse
+data OAuthAuthorizeResponse = OAuthAuthorizeResponse
     { oauthAuthorizeUrl :: Text
+    , oauthAuthorizeState :: Text
     }
     deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+
+instance ToJSON OAuthAuthorizeResponse where
+    toJSON OAuthAuthorizeResponse{oauthAuthorizeUrl, oauthAuthorizeState} =
+        object
+            [ "url" .= oauthAuthorizeUrl
+            , "state" .= oauthAuthorizeState
+            ]
+
+instance FromJSON OAuthAuthorizeResponse where
+    parseJSON = Aeson.withObject "OAuthAuthorizeResponse" \o ->
+        OAuthAuthorizeResponse
+            <$> o Aeson..: "url"
+            <*> o Aeson..: "state"
 
 newtype ListFactorsResponse = ListFactorsResponse
     { listFactors :: [FactorResponse]
