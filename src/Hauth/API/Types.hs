@@ -363,6 +363,7 @@ data VerifyRequest = VerifyRequest
     { verifyToken :: Text
     , verifyType :: Text
     , verifyEmail :: Maybe Text
+    , verifyPassword :: Maybe Text
     }
     deriving stock (Eq, Generic, Show)
 
@@ -372,13 +373,15 @@ instance FromJSON VerifyRequest where
             <$> o Aeson..: "token"
             <*> o Aeson..: "type"
             <*> o Aeson..:? "email"
+            <*> o Aeson..:? "password"
 
 instance ToJSON VerifyRequest where
-    toJSON VerifyRequest{verifyToken, verifyType, verifyEmail} =
+    toJSON VerifyRequest{verifyToken, verifyType, verifyEmail, verifyPassword} =
         object
             [ "token" .= verifyToken
             , "type" .= verifyType
             , "email" .= verifyEmail
+            , "password" .= verifyPassword
             ]
 
 data ResendRequest = ResendRequest

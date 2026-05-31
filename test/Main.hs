@@ -28,6 +28,7 @@ import Hauth.API.Types (
     GrantType (..),
     MessageResponse (..),
     Password (..),
+    RecoverRequest (..),
     RefreshTokenError (..),
     SettingsResponse (..),
     TokenRequest (..),
@@ -58,6 +59,12 @@ import Hauth.Auth.Logout (
     LogoutError (..),
     resolveLogoutSession,
     sessionIdFromClaims,
+ )
+import Hauth.Auth.Recovery (
+    RecoveryError (..),
+    recoverySentMessage,
+    validateRecoverRequest,
+    validateRecoveryVerify,
  )
 import Hauth.Auth.UserUpdate (UpdateUserError (..), validateUpdateRequest)
 import Hauth.Auth.Verify (
@@ -99,8 +106,8 @@ import Hauth.Crypto.Password (
     defaultArgon2Settings,
     defaultPasswordPolicy,
     hashPassword,
-    verifyPassword,
  )
+import qualified Hauth.Crypto.Password as Password
 import Hauth.Email (
     EmailError (..),
     EmailMessage (..),
@@ -269,11 +276,11 @@ main = do
                 , argon2Parallelism = 1
                 }
     hash1 <- hashPassword cheapSettings "correct horse"
-    assertEqual "verify correct password" True (verifyPassword hash1 "correct horse")
-    assertEqual "verify wrong password" False (verifyPassword hash1 "wrong")
+    assertEqual "verify correct password" True (Password.verifyPassword hash1 "correct horse")
+    assertEqual "verify wrong password" False (Password.verifyPassword hash1 "wrong")
     hash2 <- hashPassword cheapSettings "correct horse"
     assertEqual "different salts produce different hashes" True (hash1 /= hash2)
-    assertEqual "bad phc string" False (verifyPassword "not a phc string" "anything")
+    assertEqual "bad phc string" False (Password.verifyPassword "not a phc string" "anything")
     assertEqual
         "policy rejects empty password"
         (Left (PasswordTooShort 8 0))
@@ -677,7 +684,7 @@ main = do
                 , argon2Parallelism = 1
                 }
     hash3 <- hashPassword cheapSettings2 "correct horse"
-    assertEqual "signup hash+verify roundtrip" True (verifyPassword hash3 "correct horse")
+    assertEqual "signup hash+verify roundtrip" True (Password.verifyPassword hash3 "correct horse")
     assertEqual
         "classify Nothing → InvalidGrant"
         (Left InvalidGrant)
@@ -1096,6 +1103,7 @@ main = do
                 { verifyToken = ""
                 , verifyType = "signup"
                 , verifyEmail = Nothing
+                , verifyPassword = Nothing
                 }
     assertEqual
         "classifyVerifyRequest empty token"
@@ -1107,6 +1115,7 @@ main = do
                 { verifyToken = "some-token"
                 , verifyType = "unknown_type"
                 , verifyEmail = Nothing
+                , verifyPassword = Nothing
                 }
     case classifyVerifyRequest unsupportedTypeReq of
         Left (VerifyUnsupportedOtpType _) -> pure ()
@@ -1121,6 +1130,7 @@ main = do
                 { verifyToken = "valid-token-abc"
                 , verifyType = "signup"
                 , verifyEmail = Nothing
+                , verifyPassword = Nothing
                 }
     assertEqual
         "classifyVerifyRequest valid signup"
@@ -1143,6 +1153,49 @@ main = do
                 "MessageResponse message value"
                 (Just (String "Verification email sent if needed"))
                 (KeyMap.lookup "message" obj)
+    assertEqual
+        "validateRecoverRequest empty email"
+        (Left RecoveryMissingEmail)
+        (validateRecoverRequest (RecoverRequest (Email "")))
+    assertEqual
+        "validateRecoverRequest whitespace email"
+        (Left RecoveryMissingEmail)
+        (validateRecoverRequest (RecoverRequest (Email "   ")))
+    assertEqual
+        "validateRecoverRequest valid email"
+        (Right "user@example.com")
+        (validateRecoverRequest (RecoverRequest (Email "user@example.com")))
+    assertEqual
+        "validateRecoveryVerify empty token"
+        (Left RecoveryMissingToken)
+        ( validateRecoveryVerify
+            VerifyRequest{verifyToken = "", verifyType = "recovery", verifyEmail = Nothing, verifyPassword = Just "abcdefgh"}
+        )
+    case validateRecoveryVerify
+        VerifyRequest{verifyToken = "sometoken", verifyType = "recovery", verifyEmail = Nothing, verifyPassword = Nothing} of
+        Left (RecoveryPasswordTooShort _ _) -> pure ()
+        other -> fail ("validateRecoveryVerify no password: expected RecoveryPasswordTooShort, got " <> show other)
+    case validateRecoveryVerify
+        VerifyRequest{verifyToken = "sometoken", verifyType = "recovery", verifyEmail = Nothing, verifyPassword = Just "short"} of
+        Left (RecoveryPasswordTooShort _ _) -> pure ()
+        other -> fail ("validateRecoveryVerify short password: expected RecoveryPasswordTooShort, got " <> show other)
+    assertEqual
+        "validateRecoveryVerify valid token + password"
+        (Right ("sometoken", "abcdefgh"))
+        ( validateRecoveryVerify
+            VerifyRequest{verifyToken = "sometoken", verifyType = "recovery", verifyEmail = Nothing, verifyPassword = Just "abcdefgh"}
+        )
+    assertEqual
+        "recoverySentMessage exact text"
+        "If an account exists for this email, a recovery email has been sent."
+        recoverySentMessage
+    let recoveryMsgResp = MessageResponse{message = recoverySentMessage}
+    case Aeson.decode (Aeson.encode recoveryMsgResp) of
+        Nothing -> fail "MessageResponse: JSON decode failed"
+        Just (obj :: Object) ->
+            if KeyMap.member "message" obj
+                then pure ()
+                else fail "MessageResponse JSON: missing 'message' key"
 
     exitSuccess
 
