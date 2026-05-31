@@ -6,6 +6,7 @@ module Hauth.User (
     SignupError (..),
     applyPasswordReset,
     applyUserUpdate,
+    countUsers,
     createUser,
     emptyUserUpdate,
     generateConfirmationToken,
@@ -13,9 +14,11 @@ module Hauth.User (
     getUserByEmail,
     getUserById,
     getUserByRecoveryToken,
+    listUsers,
     markEmailConfirmed,
     setConfirmationToken,
     setRecoveryToken,
+    softDeleteUser,
     validateSignupEmail,
     validateSignupPassword,
 ) where
@@ -86,6 +89,10 @@ data SignupError
 All fields are optional; only the non-'Nothing' ones are written to the
 database.  The caller is responsible for hashing the password before
 putting it in 'updateEncryptedPassword'.
+
+The outer 'Maybe' means "is this field included in the update"; the inner
+'Maybe' on admin-only nullable fields means "set to this value (possibly
+NULL)".
 -}
 data UserUpdate = UserUpdate
     { updateEmailChange :: Maybe Text
@@ -96,6 +103,14 @@ data UserUpdate = UserUpdate
     -- ^ Replaces @raw_user_meta_data@ entirely (merge semantics deferred to v0.2).
     , updateEmailChangeToken :: Maybe Text
     -- ^ Token used to confirm the pending email change.
+    , updateRawAppMetaData :: Maybe Value
+    -- ^ Admin-only: replaces @raw_app_meta_data@ entirely.
+    , updateEmailConfirmedAt :: Maybe (Maybe UTCTime)
+    -- ^ Admin-only: @Just (Just t)@ confirms at @t@; @Just Nothing@ un-confirms.
+    , updateBannedUntil :: Maybe (Maybe UTCTime)
+    -- ^ Admin-only: @Just (Just t)@ bans until @t@; @Just Nothing@ lifts ban.
+    , updateRole :: Maybe Text
+    -- ^ Admin-only: override the user role column.
     }
     deriving stock (Eq, Show)
 
@@ -107,6 +122,10 @@ emptyUserUpdate =
         , updateEncryptedPassword = Nothing
         , updateRawUserMetaData = Nothing
         , updateEmailChangeToken = Nothing
+        , updateRawAppMetaData = Nothing
+        , updateEmailConfirmedAt = Nothing
+        , updateBannedUntil = Nothing
+        , updateRole = Nothing
         }
 
 instance FromRow User where
@@ -298,6 +317,11 @@ buildAssignments UserUpdate{..} =
         , fmap (\v -> ("raw_user_meta_data", toField v)) updateRawUserMetaData
         , fmap (\v -> ("email_change_token_new", toField v)) updateEmailChangeToken
         , fmap (const ("email_change_sent_at", toField ("now()" :: Text))) updateEmailChange
+        , -- Admin-only fields:
+          fmap (\v -> ("raw_app_meta_data", toField v)) updateRawAppMetaData
+        , fmap (\mv -> ("email_confirmed_at", toField mv)) updateEmailConfirmedAt
+        , fmap (\mv -> ("banned_until", toField mv)) updateBannedUntil
+        , fmap (\v -> ("role", toField v)) updateRole
         ]
 
 {- | Generate a cryptographically random confirmation token.
@@ -377,6 +401,53 @@ applyPasswordReset conn (UserId uid) phc = do
             \WHERE id = ?"
             (phc, uid)
     pure ()
+
+-- | List users with pagination. Returns up to @limit@ rows, offset by @offset@.
+listUsers :: Connection -> Int -> Int -> IO [User]
+listUsers conn lim off =
+    query
+        conn
+        "SELECT \
+        \  id, email, encrypted_password, email_confirmed_at, \
+        \  confirmation_token, confirmation_sent_at, \
+        \  raw_app_meta_data, raw_user_meta_data, \
+        \  role, aud, created_at, updated_at \
+        \FROM auth.users \
+        \WHERE deleted_at IS NULL \
+        \ORDER BY created_at ASC \
+        \LIMIT ? OFFSET ?"
+        (lim, off)
+
+-- | Count all non-deleted users.
+countUsers :: Connection -> IO Int
+countUsers conn = do
+    rows <- query conn "SELECT COUNT(*) FROM auth.users WHERE deleted_at IS NULL" ()
+    pure $ case rows of
+        [Only n] -> n
+        _ -> 0
+
+{- | Soft-delete a user by setting @deleted_at = now()@.
+
+Returns the (now soft-deleted) user row if found, 'Nothing' if no live user
+with that id existed.
+-}
+softDeleteUser :: Connection -> UserId -> IO (Maybe User)
+softDeleteUser conn (UserId uid) = do
+    rows <-
+        query
+            conn
+            "UPDATE auth.users \
+            \SET deleted_at = now(), updated_at = now() \
+            \WHERE id = ? AND deleted_at IS NULL \
+            \RETURNING \
+            \  id, email, encrypted_password, email_confirmed_at, \
+            \  confirmation_token, confirmation_sent_at, \
+            \  raw_app_meta_data, raw_user_meta_data, \
+            \  role, aud, created_at, updated_at"
+            (Only uid)
+    pure $ case rows of
+        [row] -> Just row
+        _ -> Nothing
 
 -- | Minimal email validation: non-empty local and domain parts around @\@@.
 isEmailLike :: Text -> Bool

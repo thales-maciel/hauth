@@ -11,9 +11,10 @@ import Control.Monad (unless, when)
 import Control.Monad.Except (throwError)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader (ReaderT, ask, asks, runReaderT)
+import qualified Crypto.Random as CR
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
-import qualified Data.ByteString as BS
+import qualified Data.ByteString.Base64.URL as B64URL
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.ByteString.Lazy.Char8 as BSLC
 import Data.Maybe (fromMaybe, isJust)
@@ -21,6 +22,7 @@ import Data.Proxy (Proxy (Proxy))
 import Data.String (fromString)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import Data.Time.Clock (addUTCTime, getCurrentTime)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
 import Data.UUID (UUID)
@@ -30,6 +32,15 @@ import GHC.Clock (getMonotonicTimeNSec)
 import Hauth.API
 import Hauth.API.Auth
 import Hauth.API.Types
+import Hauth.Auth.Admin (
+    AdminError (..),
+    Pagination (..),
+    computeNextPage,
+    parsePagination,
+    validateAdminCreate,
+    validateAdminUpdate,
+    validateInvite,
+ )
 import Hauth.Auth.Jwt (AccessTokenClaims (..), AmrEntry (..), signAccessToken, validateAccessToken)
 import Hauth.Auth.Login (LoginError (..), authorizeLogin, buildLoginClaims, extractCredentials)
 import Hauth.Auth.Logout (LogoutError (..), resolveLogoutSession)
@@ -41,6 +52,7 @@ import Hauth.Crypto.Password (defaultArgon2Settings, hashPassword)
 import qualified Hauth.Crypto.Password as Pwd
 import Hauth.Email (EmailSender (..), TemplateData (..), TemplateKind (..), renderEmail, sendEmail, stubSender)
 import Hauth.Env (AppEnv (..), LogLevel (..), createAppEnv, destroyAppEnv, logMessage, withDatabaseConnection)
+import qualified Hauth.Identity as Identity
 import Hauth.OAuth (
     OAuthError (..),
     ProviderName (..),
@@ -66,7 +78,6 @@ import Hauth.Session (
     sessionId,
     touchSessionRefreshedAt,
  )
-import qualified Hauth.Session as Session
 import Hauth.User (
     SignupError (..),
     generateConfirmationToken,
@@ -175,15 +186,15 @@ adminServer =
 
 adminUsersServer :: ServerT AdminUsersAPI AppHandler
 adminUsersServer =
-    notImplemented3
-        :<|> notImplemented2
-        :<|> notImplemented2
+    adminListUsersHandler
+        :<|> adminCreateUserHandler
+        :<|> adminGetUserHandler
+        :<|> adminUpdateUserHandler
+        :<|> adminDeleteUserHandler
+        :<|> adminListIdentitiesHandler
         :<|> notImplemented3
         :<|> notImplemented2
-        :<|> notImplemented2
-        :<|> notImplemented3
-        :<|> notImplemented2
-        :<|> notImplemented2
+        :<|> adminInviteUserHandler
 
 adminConfigServer :: ServerT AdminConfigAPI AppHandler
 adminConfigServer =
@@ -765,9 +776,6 @@ verifyHandler _ req =
 handleSignupVerify :: VerifyRequest -> AppHandler SessionResponse
 handleSignupVerify VerifyRequest{verifyToken} = do
     env <- ask
-    let AppEnv{appConfig} = env
-        Config{configJwt} = appConfig
-        JwtConfig{jwtAccessTokenTtlSeconds} = configJwt
     mUser <- liftIO (withDatabaseConnection env (`User.getUserByConfirmationToken` verifyToken))
     user <- case mUser of
         Nothing ->
@@ -986,16 +994,6 @@ handleSignupResend emailText = do
 -- OAuth authorize and callback handlers
 -- ---------------------------------------------------------------------------
 
-{- | Handle @GET /authorize?provider=<name>&redirect_to=<url>@.
-
-1. Validate the @provider@ query parameter against configured OAuth providers.
-2. Validate @redirect_to@ against the site's allowed redirect URLs.
-3. Generate a state token and persist it as a flow state row.
-4. Build a stub authorization URL and return it.
-
-The actual OIDC discovery-document fetch and provider-specific authorization
-endpoint construction are deferred to issues #19 and #20.
--}
 authorizeHandler ::
     AnonymousPrincipal ->
     Maybe T.Text ->
@@ -1054,15 +1052,6 @@ authorizeHandler _ mProvider mRedirectTo = do
             , oauthAuthorizeState = stateToken
             }
 
-{- | Handle @GET /callback?code=<provider_code>&state=<state_token>@.
-
-1. Validate the state token by consuming the corresponding flow state row.
-2. Provider-specific code-to-userinfo exchange is out of scope for #18.
-   Returns 501 with a clear error message after consuming the state.
-
-The full callback flow (identity linking, session creation) will be wired
-when issues #19 and #20 merge.
--}
 callbackHandler ::
     AnonymousPrincipal ->
     Maybe T.Text ->
@@ -1126,9 +1115,6 @@ callbackHandler _ mCode mState = do
                             Aeson.object ["error" Aeson..= ("invalid_state" :: T.Text)]
                     }
         Right _ ->
-            -- State consumed successfully.
-            -- TODO (#19/#20): exchange the provider code for userinfo here,
-            -- then call findOrCreateIdentity and issue a session.
             throwError
                 err501
                     { errBody =
@@ -1138,6 +1124,317 @@ callbackHandler _ mCode mState = do
                                 , "msg" Aeson..= ("OAuth code exchange not yet wired for this provider" :: T.Text)
                                 ]
                     }
+
+-- ---------------------------------------------------------------------------
+-- Admin user handlers
+-- ---------------------------------------------------------------------------
+
+adminListUsersHandler :: ServiceRolePrincipal -> Maybe Int -> Maybe Int -> AppHandler ListUsersResponse
+adminListUsersHandler _ mPage mPerPage = do
+    env <- ask
+    let pag = parsePagination mPage mPerPage
+        lim = pagPerPage pag
+        off = (pagPage pag - 1) * pagPerPage pag
+    (users, total) <- liftIO $ withDatabaseConnection env \conn -> do
+        us <- User.listUsers conn lim off
+        n <- User.countUsers conn
+        pure (us, n)
+    let nextPage = computeNextPage pag total
+    pure
+        ListUsersResponse
+            { listUsers = fmap buildUserResponse users
+            , listUsersAud = "authenticated"
+            , listUsersNextPage = nextPage
+            }
+
+adminCreateUserHandler :: ServiceRolePrincipal -> AdminCreateUserRequest -> AppHandler UserResponse
+adminCreateUserHandler _ req = do
+    case validateAdminCreate req of
+        Left AdminEmailRequired ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("email_required" :: T.Text)
+                                , "msg" Aeson..= ("Email is required" :: T.Text)
+                                ]
+                    }
+        Left (AdminEmailInvalid e) ->
+            throwError
+                err422
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("invalid_email" :: T.Text)
+                                , "msg" Aeson..= ("Email address is invalid: " <> e)
+                                ]
+                    }
+        Left (AdminPasswordPolicy minLen _) ->
+            throwError
+                err422
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("weak_password" :: T.Text)
+                                , "msg" Aeson..= ("Password must be at least " <> T.pack (show minLen) <> " characters")
+                                ]
+                    }
+        Left AdminUserNotFound ->
+            throwError err404
+        Right () -> pure ()
+    env <- ask
+    let emailText = unEmail (adminCreateUserEmail req)
+        mPassword = fmap unPassword (adminCreateUserPassword req)
+        confirmEmail = adminCreateUserConfirmed req
+        userMeta = fromMaybe (Aeson.object []) (adminCreateUserUserMetadata req)
+        appMeta = adminCreateUserAppMetadata req
+    passwordText <- case mPassword of
+        Just pw -> pure pw
+        Nothing -> do
+            bytes <- liftIO (CR.getRandomBytes 24)
+            pure $ TE.decodeUtf8 (B64URL.encodeUnpadded bytes)
+    encrypted <- liftIO (hashPassword defaultArgon2Settings passwordText)
+    let newUser =
+            User.NewUser
+                { User.newUserEmail = emailText
+                , User.newUserEncryptedPassword = encrypted
+                , User.newUserConfirmationToken = Nothing
+                , User.newUserUserMetadata = userMeta
+                , User.newUserAud = "authenticated"
+                }
+    user <- liftIO $
+        withDatabaseConnection env \conn ->
+            withTransaction conn do
+                existing <- User.getUserByEmail conn emailText
+                case existing of
+                    Just _ -> pure (Left ())
+                    Nothing -> Right <$> User.createUser conn newUser
+    created <- case user of
+        Left () ->
+            throwError
+                err422
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("email_exists" :: T.Text)
+                                , "msg" Aeson..= ("Email address already in use" :: T.Text)
+                                ]
+                    }
+        Right u -> pure u
+    let needsUpdate = confirmEmail || isJust appMeta
+    nowCreate <- liftIO getCurrentTime
+    finalUser <-
+        if needsUpdate
+            then do
+                let upd =
+                        User.emptyUserUpdate
+                            { User.updateEmailConfirmedAt =
+                                if confirmEmail
+                                    then Just (Just nowCreate)
+                                    else Nothing
+                            , User.updateRawAppMetaData = appMeta
+                            }
+                mUpdated <- liftIO $ withDatabaseConnection env \conn ->
+                    User.applyUserUpdate conn (User.userId created) upd
+                pure (fromMaybe created mUpdated)
+            else pure created
+    pure (buildUserResponse finalUser)
+
+adminGetUserHandler :: ServiceRolePrincipal -> UserId -> AppHandler UserResponse
+adminGetUserHandler _ (UserId uidText) = do
+    uid <- parseUserId uidText
+    env <- ask
+    mUser <- liftIO $ withDatabaseConnection env (`User.getUserById` User.UserId uid)
+    case mUser of
+        Nothing -> throwError adminUserNotFoundError
+        Just u -> pure (buildUserResponse u)
+
+adminUpdateUserHandler :: ServiceRolePrincipal -> UserId -> AdminUpdateUserRequest -> AppHandler UserResponse
+adminUpdateUserHandler _ (UserId uidText) req = do
+    case validateAdminUpdate req of
+        Left AdminEmailRequired ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("email_required" :: T.Text)
+                                , "msg" Aeson..= ("Email is required" :: T.Text)
+                                ]
+                    }
+        Left (AdminEmailInvalid e) ->
+            throwError
+                err422
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("invalid_email" :: T.Text)
+                                , "msg" Aeson..= ("Email address is invalid: " <> e)
+                                ]
+                    }
+        Left (AdminPasswordPolicy minLen _) ->
+            throwError
+                err422
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("weak_password" :: T.Text)
+                                , "msg" Aeson..= ("Password must be at least " <> T.pack (show minLen) <> " characters")
+                                ]
+                    }
+        Left AdminUserNotFound ->
+            throwError adminUserNotFoundError
+        Right () -> pure ()
+    uid <- parseUserId uidText
+    env <- ask
+    mEncrypted <- case adminUpdateUserPassword req of
+        Nothing -> pure Nothing
+        Just (Password pw) -> liftIO (Just <$> hashPassword defaultArgon2Settings pw)
+    now <- liftIO getCurrentTime
+    let resolvedEmailConfirmedAt = case adminUpdateUserEmailConfirm req of
+            Nothing -> Nothing
+            Just True -> Just (Just now)
+            Just False -> Just Nothing
+        upd =
+            User.emptyUserUpdate
+                { User.updateEmailChange = fmap unEmail (adminUpdateUserEmail req)
+                , User.updateEncryptedPassword = mEncrypted
+                , User.updateRawUserMetaData = adminUpdateUserUserMetadata req
+                , User.updateRawAppMetaData = adminUpdateUserAppMetadata req
+                , User.updateEmailConfirmedAt = resolvedEmailConfirmedAt
+                , User.updateBannedUntil = fmap Just (adminUpdateUserBannedUntil req)
+                , User.updateRole = adminUpdateUserRole req
+                }
+    mUser <- liftIO $ withDatabaseConnection env \conn ->
+        User.applyUserUpdate conn (User.UserId uid) upd
+    case mUser of
+        Nothing -> throwError adminUserNotFoundError
+        Just u -> pure (buildUserResponse u)
+
+adminDeleteUserHandler :: ServiceRolePrincipal -> UserId -> AppHandler DeletedUserResponse
+adminDeleteUserHandler _ (UserId uidText) = do
+    uid <- parseUserId uidText
+    env <- ask
+    mUser <- liftIO $ withDatabaseConnection env \conn ->
+        User.softDeleteUser conn (User.UserId uid)
+    case mUser of
+        Nothing -> throwError adminUserNotFoundError
+        Just u -> pure DeletedUserResponse{deletedUser = buildUserResponse u}
+
+adminListIdentitiesHandler :: ServiceRolePrincipal -> UserId -> AppHandler ListIdentitiesResponse
+adminListIdentitiesHandler _ (UserId uidText) = do
+    uid <- parseUserId uidText
+    env <- ask
+    mUser <- liftIO $ withDatabaseConnection env (`User.getUserById` User.UserId uid)
+    case mUser of
+        Nothing -> throwError adminUserNotFoundError
+        Just _ -> do
+            identities <- liftIO $ withDatabaseConnection env (`Identity.listUserIdentities` uid)
+            pure
+                ListIdentitiesResponse
+                    { listIdentities = fmap buildIdentityResponse identities
+                    }
+
+adminInviteUserHandler :: ServiceRolePrincipal -> InviteUserRequest -> AppHandler MessageResponse
+adminInviteUserHandler _ req = do
+    case validateInvite req of
+        Left AdminEmailRequired ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("email_required" :: T.Text)
+                                , "msg" Aeson..= ("Email is required" :: T.Text)
+                                ]
+                    }
+        Left (AdminEmailInvalid e) ->
+            throwError
+                err422
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("invalid_email" :: T.Text)
+                                , "msg" Aeson..= ("Email address is invalid: " <> e)
+                                ]
+                    }
+        Left _ -> throwError err400
+        Right () -> pure ()
+    env <- ask
+    let AppEnv{appConfig, appLogger} = env
+        Config{configEmail, configSite = SiteConfig{siteUrl}} = appConfig
+        EmailConfig{emailFrom} = configEmail
+        emailText = unEmail (inviteUserEmail req)
+        userMeta = fromMaybe (Aeson.object []) (inviteUserData req)
+    token <- liftIO generateConfirmationToken
+    let newUser =
+            User.NewUser
+                { User.newUserEmail = emailText
+                , User.newUserEncryptedPassword = ""
+                , User.newUserConfirmationToken = Just token
+                , User.newUserUserMetadata = userMeta
+                , User.newUserAud = "authenticated"
+                }
+    _created <- liftIO $
+        withDatabaseConnection env \conn ->
+            withTransaction conn do
+                existing <- User.getUserByEmail conn emailText
+                case existing of
+                    Just u -> pure u
+                    Nothing -> User.createUser conn newUser
+    let actionUrl = siteUrl <> "/auth/v1/verify?token=" <> token <> "&type=invite"
+        tdata =
+            TemplateData
+                { templateRecipientEmail = emailText
+                , templateActionUrl = actionUrl
+                , templateSiteUrl = siteUrl
+                , templateTokenHash = token
+                }
+    case renderEmail Invite emailFrom tdata of
+        Left err ->
+            liftIO $
+                logMessage appLogger LogWarn $
+                    "adminInviteUserHandler: renderEmail failed: " <> T.pack (show err)
+        Right msg -> do
+            result <- liftIO (sendEmail stubSender msg)
+            case result of
+                Left err ->
+                    liftIO $
+                        logMessage appLogger LogWarn $
+                            "adminInviteUserHandler: email send failed: " <> T.pack (show err)
+                Right () -> pure ()
+    pure MessageResponse{message = "Invite email sent"}
+
+-- ---------------------------------------------------------------------------
+-- Admin helpers
+-- ---------------------------------------------------------------------------
+
+parseUserId :: T.Text -> AppHandler UUID
+parseUserId uidText =
+    case UUID.fromText uidText of
+        Nothing ->
+            throwError
+                err400
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("invalid_user_id" :: T.Text)
+                                , "msg" Aeson..= ("malformed user id" :: T.Text)
+                                ]
+                    }
+        Just uid -> pure uid
+
+adminUserNotFoundError :: ServerError
+adminUserNotFoundError =
+    err404
+        { errBody =
+            Aeson.encode $
+                Aeson.object
+                    [ "error" Aeson..= ("user_not_found" :: T.Text)
+                    , "msg" Aeson..= ("User not found" :: T.Text)
+                    ]
+        }
 
 notImplemented :: AppHandler a
 notImplemented =
@@ -1307,7 +1604,7 @@ updateUserHandler principal req = do
         Nothing -> pure Nothing
         Just _ -> liftIO (Just <$> generateConfirmationToken)
     let upd =
-            User.UserUpdate
+            User.emptyUserUpdate
                 { User.updateEmailChange = mEmail
                 , User.updateEncryptedPassword = mEncrypted
                 , User.updateRawUserMetaData = mData

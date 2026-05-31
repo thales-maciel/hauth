@@ -17,6 +17,7 @@ module Hauth.API.Types (
     GrantType (..),
     HealthResponse (..),
     IdentityId (..),
+    IdentityResponse (..),
     InviteUserRequest (..),
     ListFactorsResponse (..),
     ListIdentitiesResponse (..),
@@ -46,6 +47,7 @@ module Hauth.API.Types (
     WebhookDeliveriesResponse (..),
     WebhookDeliveryId (..),
     WebhookDeliveryResponse (..),
+    buildIdentityResponse,
     buildSessionResponse,
     buildSettingsResponse,
     buildSignupResponse,
@@ -62,9 +64,9 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Time (UTCTime)
 import Data.UUID (UUID)
-import qualified Data.UUID as UUID
 import GHC.Generics (Generic)
 import Hauth.Config (Config (..), OAuthConfig (..), OAuthProviderConfig (..))
+import qualified Hauth.Identity as Identity
 import Hauth.Session (RefreshToken (..))
 import qualified Hauth.User as User
 import Web.HttpApiData (FromHttpApiData, ToHttpApiData)
@@ -75,7 +77,7 @@ newtype UserId = UserId {unUserId :: Text}
 
 newtype Email = Email {unEmail :: Text}
     deriving stock (Eq, Generic, Ord, Show)
-    deriving newtype (FromJSON, ToJSON)
+    deriving newtype (FromJSON, ToJSON, FromHttpApiData, ToHttpApiData)
 
 newtype Password = Password {unPassword :: Text}
     deriving stock (Eq, Generic, Show)
@@ -577,39 +579,174 @@ newtype VerifyFactorResponse = VerifyFactorResponse
     deriving stock (Eq, Generic, Show)
     deriving anyclass (FromJSON, ToJSON)
 
-newtype ListUsersResponse = ListUsersResponse
+data ListUsersResponse = ListUsersResponse
     { listUsers :: [UserResponse]
+    , listUsersAud :: Text
+    , listUsersNextPage :: Maybe Int
     }
     deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+
+instance ToJSON ListUsersResponse where
+    toJSON ListUsersResponse{listUsers, listUsersAud, listUsersNextPage} =
+        object
+            [ "users" .= listUsers
+            , "aud" .= listUsersAud
+            , "next_page" .= listUsersNextPage
+            ]
+
+instance FromJSON ListUsersResponse where
+    parseJSON = Aeson.withObject "ListUsersResponse" \o ->
+        ListUsersResponse
+            <$> o Aeson..: "users"
+            <*> o Aeson..: "aud"
+            <*> o Aeson..:? "next_page"
 
 data AdminCreateUserRequest = AdminCreateUserRequest
     { adminCreateUserEmail :: Email
     , adminCreateUserPassword :: Maybe Password
+    -- ^ Optional: if absent a random temporary password is generated.
     , adminCreateUserConfirmed :: Bool
+    -- ^ If 'True', set @email_confirmed_at = now()@.
+    , adminCreateUserUserMetadata :: Maybe Value
+    , adminCreateUserAppMetadata :: Maybe Value
     }
     deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+
+instance FromJSON AdminCreateUserRequest where
+    parseJSON = Aeson.withObject "AdminCreateUserRequest" \o ->
+        AdminCreateUserRequest
+            <$> o Aeson..: "email"
+            <*> o Aeson..:? "password"
+            <*> (o Aeson..:? "email_confirm" Aeson..!= False)
+            <*> o Aeson..:? "user_metadata"
+            <*> o Aeson..:? "app_metadata"
+
+instance ToJSON AdminCreateUserRequest where
+    toJSON AdminCreateUserRequest{..} =
+        object
+            [ "email" .= adminCreateUserEmail
+            , "password" .= adminCreateUserPassword
+            , "email_confirm" .= adminCreateUserConfirmed
+            , "user_metadata" .= adminCreateUserUserMetadata
+            , "app_metadata" .= adminCreateUserAppMetadata
+            ]
 
 data AdminUpdateUserRequest = AdminUpdateUserRequest
     { adminUpdateUserEmail :: Maybe Email
     , adminUpdateUserPassword :: Maybe Password
+    , adminUpdateUserEmailConfirm :: Maybe Bool
+    -- ^ If 'Just True', confirm email; 'Just False' un-confirms; 'Nothing' leaves untouched.
     , adminUpdateUserBannedUntil :: Maybe UTCTime
+    , adminUpdateUserRole :: Maybe Text
+    , adminUpdateUserUserMetadata :: Maybe Value
+    , adminUpdateUserAppMetadata :: Maybe Value
     }
     deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+
+instance FromJSON AdminUpdateUserRequest where
+    parseJSON = Aeson.withObject "AdminUpdateUserRequest" \o ->
+        AdminUpdateUserRequest
+            <$> o Aeson..:? "email"
+            <*> o Aeson..:? "password"
+            <*> o Aeson..:? "email_confirm"
+            <*> o Aeson..:? "banned_until"
+            <*> o Aeson..:? "role"
+            <*> o Aeson..:? "user_metadata"
+            <*> o Aeson..:? "app_metadata"
+
+instance ToJSON AdminUpdateUserRequest where
+    toJSON AdminUpdateUserRequest{..} =
+        object
+            [ "email" .= adminUpdateUserEmail
+            , "password" .= adminUpdateUserPassword
+            , "email_confirm" .= adminUpdateUserEmailConfirm
+            , "banned_until" .= adminUpdateUserBannedUntil
+            , "role" .= adminUpdateUserRole
+            , "user_metadata" .= adminUpdateUserUserMetadata
+            , "app_metadata" .= adminUpdateUserAppMetadata
+            ]
 
 newtype DeletedUserResponse = DeletedUserResponse
-    { deletedUserId :: UserId
+    { deletedUser :: UserResponse
     }
     deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+
+instance ToJSON DeletedUserResponse where
+    toJSON DeletedUserResponse{deletedUser} =
+        object ["user" .= deletedUser]
+
+instance FromJSON DeletedUserResponse where
+    parseJSON = Aeson.withObject "DeletedUserResponse" \o ->
+        DeletedUserResponse <$> o Aeson..: "user"
+
+-- | Wire representation of an identity row for API responses.
+data IdentityResponse = IdentityResponse
+    { identityResponseId :: Text
+    , identityResponseUserId :: UUID
+    , identityResponseProvider :: Text
+    , identityResponseProviderId :: Text
+    , identityResponseIdentityData :: Value
+    , identityResponseEmail :: Maybe Text
+    , identityResponseCreatedAt :: UTCTime
+    , identityResponseUpdatedAt :: UTCTime
+    , identityResponseLastSignInAt :: Maybe UTCTime
+    }
+    deriving stock (Eq, Show)
+
+instance ToJSON IdentityResponse where
+    toJSON IdentityResponse{..} =
+        object
+            [ "id" .= identityResponseId
+            , "user_id" .= identityResponseUserId
+            , "provider" .= identityResponseProvider
+            , "provider_id" .= identityResponseProviderId
+            , "identity_data" .= identityResponseIdentityData
+            , "email" .= identityResponseEmail
+            , "created_at" .= identityResponseCreatedAt
+            , "updated_at" .= identityResponseUpdatedAt
+            , "last_sign_in_at" .= identityResponseLastSignInAt
+            ]
+
+instance FromJSON IdentityResponse where
+    parseJSON = Aeson.withObject "IdentityResponse" \o ->
+        IdentityResponse
+            <$> o Aeson..: "id"
+            <*> o Aeson..: "user_id"
+            <*> o Aeson..: "provider"
+            <*> o Aeson..: "provider_id"
+            <*> o Aeson..: "identity_data"
+            <*> o Aeson..:? "email"
+            <*> o Aeson..: "created_at"
+            <*> o Aeson..: "updated_at"
+            <*> o Aeson..:? "last_sign_in_at"
+
+-- | Build an 'IdentityResponse' from the domain 'Identity.Identity'.
+buildIdentityResponse :: Identity.Identity -> IdentityResponse
+buildIdentityResponse Identity.Identity{..} =
+    IdentityResponse
+        { identityResponseId = Identity.unIdentityId identityIdentityId
+        , identityResponseUserId = identityUserId
+        , identityResponseProvider = identityProvider
+        , identityResponseProviderId = identityProviderId
+        , identityResponseIdentityData = identityIdentityData
+        , identityResponseEmail = identityEmail
+        , identityResponseCreatedAt = identityCreatedAt
+        , identityResponseUpdatedAt = identityUpdatedAt
+        , identityResponseLastSignInAt = identityLastSignInAt
+        }
 
 newtype ListIdentitiesResponse = ListIdentitiesResponse
-    { listIdentities :: [Text]
+    { listIdentities :: [IdentityResponse]
     }
     deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+
+instance ToJSON ListIdentitiesResponse where
+    toJSON ListIdentitiesResponse{listIdentities} =
+        object ["identities" .= listIdentities]
+
+instance FromJSON ListIdentitiesResponse where
+    parseJSON = Aeson.withObject "ListIdentitiesResponse" \o ->
+        ListIdentitiesResponse <$> o Aeson..: "identities"
 
 data GenerateLinkRequest = GenerateLinkRequest
     { generateLinkEmail :: Email
@@ -624,11 +761,25 @@ newtype GenerateLinkResponse = GenerateLinkResponse
     deriving stock (Eq, Generic, Show)
     deriving anyclass (FromJSON, ToJSON)
 
-newtype InviteUserRequest = InviteUserRequest
+data InviteUserRequest = InviteUserRequest
     { inviteUserEmail :: Email
+    , inviteUserData :: Maybe Value
+    -- ^ Optional metadata to attach to the invited user.
     }
     deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+
+instance FromJSON InviteUserRequest where
+    parseJSON = Aeson.withObject "InviteUserRequest" \o ->
+        InviteUserRequest
+            <$> o Aeson..: "email"
+            <*> o Aeson..:? "data"
+
+instance ToJSON InviteUserRequest where
+    toJSON InviteUserRequest{inviteUserEmail, inviteUserData} =
+        object
+            [ "email" .= inviteUserEmail
+            , "data" .= inviteUserData
+            ]
 
 newtype ProvidersResponse = ProvidersResponse
     { providers :: [Text]

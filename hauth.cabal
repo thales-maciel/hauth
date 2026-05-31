@@ -54,6 +54,7 @@ library
     Hauth.API
     Hauth.API.Auth
     Hauth.API.Types
+    Hauth.Auth.Admin
     Hauth.Auth.Jwt
     Hauth.Auth.Login
     Hauth.Auth.Logout
@@ -65,6 +66,7 @@ library
     Hauth.Crypto.Password
     Hauth.Email
     Hauth.Env
+    Hauth.Identity
     Hauth.Migrate
     Hauth.OAuth
     Hauth.Server
