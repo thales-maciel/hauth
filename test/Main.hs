@@ -15,6 +15,7 @@ import qualified Spec.ConfigSpec
 import qualified Spec.Crypto.PasswordSpec
 import qualified Spec.Email.TemplatesSchemaSpec
 import qualified Spec.EmailSpec
+import qualified Spec.Hooks.RunnerSpec
 import qualified Spec.Hooks.TypesSpec
 import qualified Spec.Mfa.TotpSpec
 import qualified Spec.Mfa.VerifySpec
@@ -47,6 +48,7 @@ main = do
     Spec.Auth.AdminSpec.runSpec
     Spec.Email.TemplatesSchemaSpec.runSpec
     Spec.EmailSpec.runSpec
+    Spec.Hooks.RunnerSpec.runSpec
     Spec.Hooks.TypesSpec.runSpec
     Spec.SessionSpec.runSpec
     Spec.UserSpec.runSpec
