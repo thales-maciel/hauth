@@ -8,6 +8,7 @@ import qualified E2E.MfaSpec
 import qualified E2E.OAuthSpec
 import qualified E2E.RecoverySpec
 import qualified E2E.UserSpec
+import qualified E2E.VerifyDatabaseSpec
 import qualified E2E.WebhookOutboxSpec
 import Test.Hspec (SpecWith, aroundAll, beforeWith, describe, hspec)
 
@@ -25,4 +26,5 @@ allSpecs = do
     describe "admin users API" E2E.AdminSpec.spec
     describe "OAuth (limited)" E2E.OAuthSpec.spec
     describe "hooks types (loadHookConfig)" E2E.HooksTypesSpec.spec
+    describe "verify database checks" E2E.VerifyDatabaseSpec.spec
     describe "webhook outbox" E2E.WebhookOutboxSpec.spec

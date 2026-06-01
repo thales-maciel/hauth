@@ -84,6 +84,8 @@ library
     Hauth.Session
     Hauth.User
     Hauth.Verify
+    Hauth.Verify.Database
+    Hauth.Verify.Types
     Hauth.Webhooks.Events
     Hauth.Webhooks.Outbox
     Hauth.Webhooks.Signing
@@ -166,6 +168,7 @@ test-suite hauth-test
     Spec.SessionSpec
     Spec.TestUtils
     Spec.UserSpec
+    Spec.Verify.DatabaseSpec
     Spec.VerifySpec
     Spec.Webhooks.SigningSpec
   build-depends:
@@ -202,6 +205,7 @@ test-suite hauth-e2e
     E2E.OAuthSpec
     E2E.RecoverySpec
     E2E.UserSpec
+    E2E.VerifyDatabaseSpec
     E2E.WebhookOutboxSpec
   build-depends:
       base >=4.17 && <5

@@ -27,6 +27,7 @@ import qualified Spec.RefreshTokenSpec
 import qualified Spec.ServerSpec
 import qualified Spec.SessionSpec
 import qualified Spec.UserSpec
+import qualified Spec.Verify.DatabaseSpec
 import qualified Spec.VerifySpec
 import qualified Spec.Webhooks.SigningSpec
 import System.Exit (exitSuccess)
@@ -60,6 +61,7 @@ main = do
     Spec.Mfa.VerifySpec.runSpec
     Spec.RefreshTokenSpec.runSpec
     Spec.ServerSpec.runSpec
+    Spec.Verify.DatabaseSpec.runSpec
     Spec.VerifySpec.runSpec
     Spec.Webhooks.SigningSpec.runSpec
     exitSuccess
