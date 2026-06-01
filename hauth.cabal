@@ -67,6 +67,7 @@ library
     Hauth.Crypto.Password
     Hauth.Email
     Hauth.Env
+    Hauth.Hooks.Types
     Hauth.Identity
     Hauth.Mfa.Totp
     Hauth.Mfa.TotpVerify
@@ -143,6 +144,7 @@ test-suite hauth-test
     Spec.ConfigSpec
     Spec.Crypto.PasswordSpec
     Spec.EmailSpec
+    Spec.Hooks.TypesSpec
     Spec.Mfa.TotpSpec
     Spec.Mfa.VerifySpec
     Spec.MigrateSpec
@@ -163,6 +165,7 @@ test-suite hauth-test
     , containers >=0.6 && <0.8
     , hauth
     , http-types >=0.12 && <0.13
+    , postgresql-simple >=0.7 && <0.8
     , text >=2.0 && <2.2
     , time >=1.12 && <1.15
     , uuid >=1.3 && <1.4

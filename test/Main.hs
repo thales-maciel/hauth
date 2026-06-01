@@ -14,6 +14,7 @@ import qualified Spec.CLISpec
 import qualified Spec.ConfigSpec
 import qualified Spec.Crypto.PasswordSpec
 import qualified Spec.EmailSpec
+import qualified Spec.Hooks.TypesSpec
 import qualified Spec.Mfa.TotpSpec
 import qualified Spec.Mfa.VerifySpec
 import qualified Spec.MigrateSpec
@@ -44,6 +45,7 @@ main = do
     Spec.Auth.UserUpdateSpec.runSpec
     Spec.Auth.AdminSpec.runSpec
     Spec.EmailSpec.runSpec
+    Spec.Hooks.TypesSpec.runSpec
     Spec.SessionSpec.runSpec
     Spec.UserSpec.runSpec
     Spec.OAuth.GoogleSpec.runSpec
