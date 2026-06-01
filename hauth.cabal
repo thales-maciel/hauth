@@ -83,6 +83,8 @@ library
     Hauth.Session
     Hauth.User
     Hauth.Verify
+    Hauth.Webhooks.Events
+    Hauth.Webhooks.Outbox
   hs-source-dirs: src
   build-depends:
       aeson >=2.2 && <2.3
@@ -187,6 +189,7 @@ test-suite hauth-e2e
     E2E.OAuthSpec
     E2E.RecoverySpec
     E2E.UserSpec
+    E2E.WebhookOutboxSpec
   build-depends:
       base >=4.17 && <5
     , aeson >=2.2 && <2.3
