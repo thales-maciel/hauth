@@ -50,6 +50,12 @@ import Hauth.Server.Admin (
     adminListUsersHandler,
     adminUpdateUserHandler,
  )
+import Hauth.Server.EmailTemplates (
+    deleteEmailTemplateHandler,
+    getEmailTemplateHandler,
+    listEmailTemplatesHandler,
+    putEmailTemplateHandler,
+ )
 import Hauth.Server.Mfa (
     challengeFactorHandler,
     enrollFactorHandler,
@@ -178,6 +184,7 @@ adminServer =
     adminUsersServer
         :<|> adminConfigServer
         :<|> adminWebhookServer
+        :<|> adminEmailTemplateServer
 
 adminUsersServer :: ServerT AdminUsersAPI AppHandler
 adminUsersServer =
@@ -203,6 +210,15 @@ adminWebhookServer =
     notImplemented2
         :<|> notImplemented2
         :<|> notImplemented2
+
+adminEmailTemplateServer :: ServerT AdminEmailTemplateAPI AppHandler
+adminEmailTemplateServer =
+    listEmailTemplatesHandler
+        :<|> getEmailTemplateHandler
+        :<|> putEmailTemplateHandler
+        :<|> deleteAndNoContent
+  where
+    deleteAndNoContent p name = deleteEmailTemplateHandler p name >> pure NoContent
 
 healthHandler :: AnonymousPrincipal -> AppHandler HealthResponse
 healthHandler _ =

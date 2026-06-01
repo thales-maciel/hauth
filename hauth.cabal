@@ -66,6 +66,7 @@ library
     Hauth.Config
     Hauth.Crypto.Password
     Hauth.Email
+    Hauth.Email.Templates
     Hauth.Env
     Hauth.Hooks.Runner
     Hauth.Hooks.Types
@@ -79,6 +80,7 @@ library
     Hauth.OAuth.Google
     Hauth.Server
     Hauth.Server.Admin
+    Hauth.Server.EmailTemplates
     Hauth.Server.Mfa
     Hauth.Server.OAuth
     Hauth.Session
@@ -199,6 +201,7 @@ test-suite hauth-e2e
   other-modules:
     E2E.AdminSpec
     E2E.AuthSpec
+    E2E.EmailTemplatesCrudSpec
     E2E.Helpers
     E2E.HooksTypesSpec
     E2E.MfaSpec

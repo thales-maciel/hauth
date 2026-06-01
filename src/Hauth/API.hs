@@ -1,6 +1,7 @@
 module Hauth.API (
     AdminAPI,
     AdminConfigAPI,
+    AdminEmailTemplateAPI,
     AdminUsersAPI,
     AdminWebhookAPI,
     HauthAPI,
@@ -18,6 +19,7 @@ import Hauth.API.Types
 import Servant.API (
     Capture,
     Delete,
+    DeleteNoContent,
     Get,
     JSON,
     Post,
@@ -70,6 +72,7 @@ type AdminAPI =
         :> ( AdminUsersAPI
                 :<|> AdminConfigAPI
                 :<|> AdminWebhookAPI
+                :<|> AdminEmailTemplateAPI
            )
 
 type AdminUsersAPI =
@@ -93,6 +96,12 @@ type AdminWebhookAPI =
     RequireAuth 'ServiceRole :> "webhook_deliveries" :> QueryParam "status" Text :> Get '[JSON] WebhookDeliveriesResponse
         :<|> RequireAuth 'ServiceRole :> "webhook_deliveries" :> Capture "delivery_id" WebhookDeliveryId :> Get '[JSON] WebhookDeliveryResponse
         :<|> RequireAuth 'ServiceRole :> "webhook_deliveries" :> Capture "delivery_id" WebhookDeliveryId :> "retry" :> Post '[JSON] WebhookDeliveryResponse
+
+type AdminEmailTemplateAPI =
+    RequireAuth 'ServiceRole :> "email-templates" :> Get '[JSON] EmailTemplatesListResponse
+        :<|> RequireAuth 'ServiceRole :> "email-templates" :> Capture "name" Text :> Get '[JSON] EmailTemplateRow
+        :<|> RequireAuth 'ServiceRole :> "email-templates" :> Capture "name" Text :> ReqBody '[JSON] EmailTemplateCrudRequest :> Put '[JSON] EmailTemplateRow
+        :<|> RequireAuth 'ServiceRole :> "email-templates" :> Capture "name" Text :> DeleteNoContent
 
 hauthAPI :: Proxy HauthAPI
 hauthAPI = Proxy
