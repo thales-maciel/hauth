@@ -2,6 +2,7 @@ module Main (main) where
 
 import qualified E2E.AdminSpec
 import qualified E2E.AuthSpec
+import qualified E2E.EmailTemplatesCrudSpec
 import E2E.Helpers (TestEnv, truncateAll, withTestEnv)
 import qualified E2E.HooksTypesSpec
 import qualified E2E.MfaSpec
@@ -26,3 +27,4 @@ allSpecs = do
     describe "OAuth (limited)" E2E.OAuthSpec.spec
     describe "hooks types (loadHookConfig)" E2E.HooksTypesSpec.spec
     describe "webhook outbox" E2E.WebhookOutboxSpec.spec
+    describe "email templates CRUD" E2E.EmailTemplatesCrudSpec.spec
