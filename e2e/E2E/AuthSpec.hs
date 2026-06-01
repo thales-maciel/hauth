@@ -317,29 +317,31 @@ slowApp _ _req respond = do
     threadDelay 500000
     respond (responseLBS status200 [("Content-Type", "application/json")] allowResponse)
 
--- | Run a Wai app on a free port, invoke action with that port, close after.
+{- | Run a Wai app on a free port, invoke action with that port, close after.
+Lets Warp bind+listen+accept on its own; a pre-bound socket shared between
+the parent and the Warp thread proved racey (NoResponseDataReceived
+under any load). We discover a free port by binding a throwaway socket,
+read the kernel-assigned port, close, then hand the port to Warp.
+-}
 withHookServer :: Application -> TestEnv -> HookPoint -> (Int -> IO a) -> IO a
 withHookServer hookApp env hp action = do
     ready <- newEmptyMVar
-    sock <- openFreeSocket
-    port <- fromIntegral <$> socketPort sock
-    _ <- forkIO $ do
-        putMVar ready ()
-        Warp.runSettingsSocket
-            (Warp.setPort port Warp.defaultSettings)
-            sock
-            hookApp
+    probe <- openFreeSocket
+    port <- fromIntegral <$> socketPort probe
+    close probe
+    let settings =
+            Warp.setPort port
+                . Warp.setHost "127.0.0.1"
+                . Warp.setBeforeMainLoop (putMVar ready ())
+                $ Warp.defaultSettings
+    _ <- forkIO (Warp.runSettings settings hookApp)
     takeMVar ready
-    threadDelay 250000
-    result <-
-        bracket_
-            (pure ())
-            ( withDatabaseConnection (testAppEnv env) \conn ->
-                execute conn "DELETE FROM auth.hooks WHERE hook_point = ?" (Only (hookPointName hp))
-            )
-            (action port)
-    close sock
-    pure result
+    bracket_
+        (pure ())
+        ( withDatabaseConnection (testAppEnv env) \conn ->
+            execute conn "DELETE FROM auth.hooks WHERE hook_point = ?" (Only (hookPointName hp))
+        )
+        (action port)
 
 seedHook :: TestEnv -> HookPoint -> Int -> IO ()
 seedHook env hp port = seedHookWithOpts env hp port 2000 False

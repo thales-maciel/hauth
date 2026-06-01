@@ -300,25 +300,22 @@ slowApp _ _req respond = do
 withMfaHookServer :: Application -> TestEnv -> (Int -> IO a) -> IO a
 withMfaHookServer hookApp env action = do
     ready <- newEmptyMVar
-    sock <- openFreeSocket
-    port <- fromIntegral <$> socketPort sock
-    _ <- forkIO $ do
-        putMVar ready ()
-        Warp.runSettingsSocket
-            (Warp.setPort port Warp.defaultSettings)
-            sock
-            hookApp
+    probe <- openFreeSocket
+    port <- fromIntegral <$> socketPort probe
+    close probe
+    let settings =
+            Warp.setPort port
+                . Warp.setHost "127.0.0.1"
+                . Warp.setBeforeMainLoop (putMVar ready ())
+                $ Warp.defaultSettings
+    _ <- forkIO (Warp.runSettings settings hookApp)
     takeMVar ready
-    threadDelay 250000
-    result <-
-        bracket_
-            (pure ())
-            ( withDatabaseConnection (testAppEnv env) \conn ->
-                execute conn "DELETE FROM auth.hooks WHERE hook_point = ?" (Only (hookPointName HookMfaVerificationAttempt))
-            )
-            (action port)
-    close sock
-    pure result
+    bracket_
+        (pure ())
+        ( withDatabaseConnection (testAppEnv env) \conn ->
+            execute conn "DELETE FROM auth.hooks WHERE hook_point = ?" (Only (hookPointName HookMfaVerificationAttempt))
+        )
+        (action port)
 
 seedMfaHook :: TestEnv -> Int -> Int -> Bool -> IO ()
 seedMfaHook env port timeoutMs failOpen =
