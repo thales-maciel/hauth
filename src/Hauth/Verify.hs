@@ -13,25 +13,8 @@ import qualified Data.ByteString.Char8 as BSC
 import Data.Text (Text)
 import qualified Data.Text as T
 import Hauth.Env (AppEnv)
-
-data CheckOutcome
-    = CheckOk
-    | CheckWarn Text
-    | CheckFail Text
-    deriving stock (Eq, Show)
-
-data Check = Check
-    { checkName :: Text
-    , checkLabel :: Text
-    , checkRun :: AppEnv -> IO CheckOutcome
-    }
-
-data Report = Report
-    { reportResults :: [(Check, CheckOutcome)]
-    , reportPassed :: Int
-    , reportWarned :: Int
-    , reportFailed :: Int
-    }
+import qualified Hauth.Verify.Database as Database
+import Hauth.Verify.Types (Check (..), CheckOutcome (..), Report (..))
 
 defaultChecks :: [Check]
 defaultChecks =
@@ -41,6 +24,7 @@ defaultChecks =
         , checkRun = \_env -> pure CheckOk
         }
     ]
+        ++ Database.checks
 
 runChecks :: AppEnv -> [Check] -> IO Report
 runChecks env checks = do
