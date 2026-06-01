@@ -3,6 +3,7 @@ module Main (main) where
 import qualified E2E.AdminSpec
 import qualified E2E.AuthSpec
 import qualified E2E.EmailTemplatesCrudSpec
+import qualified E2E.EmailTemplatesLoaderSpec
 import E2E.Helpers (TestEnv, truncateAll, withTestEnv)
 import qualified E2E.HooksCrudSpec
 import qualified E2E.HooksTypesSpec
@@ -34,3 +35,4 @@ allSpecs = do
     describe "email templates CRUD" E2E.EmailTemplatesCrudSpec.spec
     describe "webhook subscriptions CRUD" E2E.WebhookSubscriptionsSpec.spec
     describe "hooks CRUD API" E2E.HooksCrudSpec.spec
+    describe "email template cache" E2E.EmailTemplatesLoaderSpec.spec

@@ -7,6 +7,7 @@ module Hauth.Email (
     EmailError (..),
     EmailSender (..),
     renderEmail,
+    renderEmailCached,
     stubSender,
     substituteVars,
 ) where
@@ -16,6 +17,7 @@ import Data.FileEmbed (embedDir)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import Hauth.Email.TemplateCache (Template (..), TemplateCache, lookupTemplate)
 
 -- | A fully-rendered email message ready for delivery.
 data EmailMessage = EmailMessage
@@ -60,8 +62,8 @@ embeddedTemplates :: [(FilePath, ByteString)]
 embeddedTemplates = $(embedDir "templates")
 
 -- | Look up an embedded template by filename.
-lookupTemplate :: FilePath -> Either EmailError Text
-lookupTemplate name =
+lookupEmbeddedTemplate :: FilePath -> Either EmailError Text
+lookupEmbeddedTemplate name =
     case lookup name embeddedTemplates of
         Nothing ->
             Left (EmailTemplateError ("missing embedded template: " <> T.pack name))
@@ -103,9 +105,9 @@ renderEmail ::
     Either EmailError EmailMessage
 renderEmail kind from tdata = do
     let prefix = kindPrefix kind
-    rawSubject <- lookupTemplate (prefix <> ".subject")
-    rawTxt <- lookupTemplate (prefix <> ".txt")
-    rawHtml <- lookupTemplate (prefix <> ".html")
+    rawSubject <- lookupEmbeddedTemplate (prefix <> ".subject")
+    rawTxt <- lookupEmbeddedTemplate (prefix <> ".txt")
+    rawHtml <- lookupEmbeddedTemplate (prefix <> ".html")
     let subst = substituteVars tdata
         subject0 = subst rawSubject
         -- Strip a single trailing newline added by text editors
@@ -131,3 +133,31 @@ stubSender =
         { sendEmail = \_msg ->
             pure (Left (EmailSendError "smtp not wired"))
         }
+
+{- | Render an email via the 'TemplateCache', falling back to embedded templates
+when no DB row exists for the given kind.
+-}
+renderEmailCached ::
+    TemplateCache ->
+    TemplateKind ->
+    -- | Sender address
+    Text ->
+    TemplateData ->
+    IO (Either EmailError EmailMessage)
+renderEmailCached cache kind from tdata = do
+    let name = kindPrefix kind
+    t <- lookupTemplate cache (T.pack name)
+    let subst = substituteVars tdata
+        subject0 = subst (templateSubject t)
+    if T.any (== '\n') subject0
+        then pure (Left (EmailTemplateError "subject contains newline"))
+        else
+            pure $
+                Right
+                    EmailMessage
+                        { emailTo = templateRecipientEmail tdata
+                        , emailFrom = from
+                        , emailSubject = subject0
+                        , emailTextBody = subst (templateBodyText t)
+                        , emailHtmlBody = Just (subst (templateBodyHtml t))
+                        }
