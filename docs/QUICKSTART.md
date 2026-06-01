@@ -31,7 +31,7 @@ Grab the static release binary from the
 latest tag, then:
 
 ```sh
-VERSION=v0.1.0  # replace with the latest release tag
+VERSION=v0.1.1  # replace with the latest release tag
 ARCH=linux-x86_64
 
 curl -LO "https://github.com/thales-maciel/hauth/releases/download/${VERSION}/hauth-${VERSION}-${ARCH}.tar.gz"
