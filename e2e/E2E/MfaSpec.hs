@@ -2,11 +2,16 @@
 
 module E2E.MfaSpec (spec) where
 
+import Control.Exception (bracket_)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Data.Time.Clock.POSIX (getPOSIXTime)
+import Data.UUID (UUID)
+import qualified Data.UUID.V4 as UUID4
+import Database.PostgreSQL.Simple (Connection, Only (..), execute, query)
+import Database.PostgreSQL.Simple.Types (PGArray (..))
 import E2E.Helpers (
     TestEnv (..),
     decodeBody,
@@ -72,6 +77,61 @@ spec = do
             (verifyObj :: Aeson.Object) <- decodeBody verifyResp
             KeyMap.member "access_token" verifyObj `shouldBe` True
 
+    describe "enroll emits mfa.enrolled delivery" $
+        it "wildcard subscription receives one delivery" \env ->
+            withDatabaseConnection (testAppEnv env) \conn -> do
+                withWildcardSubscription conn \_ -> do
+                    access <- bootstrapVerifiedUser env "webhook-enroll@example.com" "correct horse"
+                    _ <-
+                        runApp env $
+                            jsonPost
+                                "/factors"
+                                (Aeson.object ["factor_type" Aeson..= ("totp" :: T.Text)])
+                                (Just access)
+                    n <- countDeliveriesByType conn "mfa.enrolled"
+                    n `shouldBe` (1 :: Int)
+
+    describe "verify emits mfa.verified delivery" $
+        it "wildcard subscription receives one delivery" \env ->
+            withDatabaseConnection (testAppEnv env) \conn -> do
+                withWildcardSubscription conn \_ -> do
+                    access <- bootstrapVerifiedUser env "webhook-verify@example.com" "correct horse"
+                    enrollResp <-
+                        runApp env $
+                            jsonPost
+                                "/factors"
+                                (Aeson.object ["factor_type" Aeson..= ("totp" :: T.Text)])
+                                (Just access)
+                    (enrollObj :: Aeson.Object) <- decodeBody enrollResp
+                    factorId <- extractString "id" enrollObj
+                    totp <- case KeyMap.lookup "totp" enrollObj of
+                        Just (Aeson.Object t) -> pure t
+                        other -> error ("expected totp object; got " <> show other)
+                    secretB32 <- extractString "secret" totp
+                    secretBytes <- case decodeBase32 secretB32 of
+                        Just bs -> pure bs
+                        Nothing -> error ("could not decode TOTP secret: " <> T.unpack secretB32)
+                    _ <-
+                        runApp env $
+                            jsonPost
+                                ("/factors/" <> TE.encodeUtf8 factorId <> "/challenge")
+                                (Aeson.object [])
+                                (Just access)
+                    now <- getPOSIXTime
+                    let code = totpCodeAtStep (TotpSecret secretBytes) (currentTimeStep now)
+                    _ <-
+                        runApp env $
+                            jsonPost
+                                ("/factors/" <> TE.encodeUtf8 factorId <> "/verify")
+                                ( Aeson.object
+                                    [ "challenge_id" Aeson..= ("unused" :: T.Text)
+                                    , "code" Aeson..= code
+                                    ]
+                                )
+                                (Just access)
+                    n <- countDeliveriesByType conn "mfa.verified"
+                    n `shouldBe` (1 :: Int)
+
     describe "verify with wrong code" $
         it "returns 401 invalid_code" \env -> do
             access <- bootstrapVerifiedUser env "henry@example.com" "correct horse"
@@ -132,3 +192,32 @@ extractString :: Aeson.Key -> Aeson.Object -> IO T.Text
 extractString k obj = case KeyMap.lookup k obj of
     Just (Aeson.String t) -> pure t
     other -> error ("expected string at " <> show k <> "; got " <> show other)
+
+-- Insert a wildcard subscription, run action, then delete it (and its deliveries).
+withWildcardSubscription :: Connection -> (UUID -> IO a) -> IO a
+withWildcardSubscription conn action = do
+    subId <- UUID4.nextRandom
+    bracket_
+        ( execute
+            conn
+            "INSERT INTO auth.webhook_subscriptions (id, url, secret, events) \
+            \VALUES (?, ?, ?, ?)"
+            ( subId
+            , "https://example.com/webhook" :: String
+            , "test-secret" :: String
+            , PGArray ([] :: [String])
+            )
+        )
+        ( execute
+            conn
+            "DELETE FROM auth.webhook_subscriptions WHERE id = ?"
+            (Only subId)
+        )
+        (action subId)
+
+countDeliveriesByType :: Connection -> T.Text -> IO Int
+countDeliveriesByType conn evtType = do
+    rows <- query conn "SELECT COUNT(*) FROM auth.webhook_deliveries WHERE event_type = ?" (Only evtType)
+    pure $ case rows of
+        [Only n] -> n
+        _ -> 0

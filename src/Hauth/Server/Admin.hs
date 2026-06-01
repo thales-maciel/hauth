@@ -55,6 +55,8 @@ import Hauth.Env (AppEnv (..), LogLevel (..), logMessage, withDatabaseConnection
 import qualified Hauth.Identity as Identity
 import Hauth.User (generateConfirmationToken)
 import qualified Hauth.User as User
+import qualified Hauth.Webhooks.Events as Events
+import qualified Hauth.Webhooks.Outbox as Outbox
 import Servant.Server (Handler, ServerError (errBody), err400, err404, err422)
 
 type AppHandler = ReaderT AppEnv Handler
@@ -169,6 +171,15 @@ adminCreateUserHandler _ req = do
                     User.applyUserUpdate conn (User.userId created) upd
                 pure (fromMaybe created mUpdated)
             else pure created
+    liftIO $
+        withDatabaseConnection env \conn ->
+            Outbox.enqueue conn $
+                Events.UserAdminCreated
+                    Events.UserPayload
+                        { Events.upUserId = User.unUserId (User.userId finalUser)
+                        , Events.upEmail = User.userEmail finalUser
+                        , Events.upCreatedAt = User.userCreatedAt finalUser
+                        }
     pure (buildUserResponse finalUser)
 
 adminGetUserHandler :: ServiceRolePrincipal -> UserId -> AppHandler UserResponse
@@ -240,7 +251,17 @@ adminUpdateUserHandler _ (UserId uidText) req = do
         User.applyUserUpdate conn (User.UserId uid) upd
     case mUser of
         Nothing -> throwError adminUserNotFoundError
-        Just u -> pure (buildUserResponse u)
+        Just u -> do
+            liftIO $
+                withDatabaseConnection env \conn ->
+                    Outbox.enqueue conn $
+                        Events.UserAdminUpdated
+                            Events.UserPayload
+                                { Events.upUserId = User.unUserId (User.userId u)
+                                , Events.upEmail = User.userEmail u
+                                , Events.upCreatedAt = User.userCreatedAt u
+                                }
+            pure (buildUserResponse u)
 
 adminDeleteUserHandler :: ServiceRolePrincipal -> UserId -> AppHandler DeletedUserResponse
 adminDeleteUserHandler _ (UserId uidText) = do
@@ -250,7 +271,17 @@ adminDeleteUserHandler _ (UserId uidText) = do
         User.softDeleteUser conn (User.UserId uid)
     case mUser of
         Nothing -> throwError adminUserNotFoundError
-        Just u -> pure DeletedUserResponse{deletedUser = buildUserResponse u}
+        Just u -> do
+            liftIO $
+                withDatabaseConnection env \conn ->
+                    Outbox.enqueue conn $
+                        Events.UserDeleted
+                            Events.UserPayload
+                                { Events.upUserId = User.unUserId (User.userId u)
+                                , Events.upEmail = User.userEmail u
+                                , Events.upCreatedAt = User.userCreatedAt u
+                                }
+            pure DeletedUserResponse{deletedUser = buildUserResponse u}
 
 adminListIdentitiesHandler :: ServiceRolePrincipal -> UserId -> AppHandler ListIdentitiesResponse
 adminListIdentitiesHandler _ (UserId uidText) = do

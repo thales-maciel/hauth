@@ -38,6 +38,8 @@ import Hauth.Session (
     updateSessionAalFactor,
  )
 import qualified Hauth.User as User
+import qualified Hauth.Webhooks.Events as Events
+import qualified Hauth.Webhooks.Outbox as Outbox
 import Servant.Server (
     Handler,
     ServerError (errBody),
@@ -120,6 +122,15 @@ enrollFactorHandler principal req@EnrollFactorRequest{enrollFactorFriendlyName, 
                 , MfaFactor.newMfaFactorSecret = secretB32
                 }
     factor <- liftIO (withDatabaseConnection env (`MfaFactor.createFactor` newFactor))
+    let factorUuidEnroll = MfaFactor.unMfaFactorId (MfaFactor.mfaFactorId factor)
+    liftIO $
+        withDatabaseConnection env \conn ->
+            Outbox.enqueue conn $
+                Events.MfaEnrolled
+                    Events.MfaPayload
+                        { Events.mpFactorId = factorUuidEnroll
+                        , Events.mpUserId = uid
+                        }
     pure
         FactorResponse
             { factorResponseId = FactorId (UUID.toText (MfaFactor.unMfaFactorId (MfaFactor.mfaFactorId factor)))
@@ -320,6 +331,14 @@ verifyFactorHandler principal (FactorId factorIdText) VerifyFactorRequest{verify
                         , sessionExpiresIn = jwtAccessTokenTtlSeconds
                         , sessionUser = userResp
                         }
+            liftIO $
+                withDatabaseConnection env \conn ->
+                    Outbox.enqueue conn $
+                        Events.MfaVerified
+                            Events.MfaPayload
+                                { Events.mpFactorId = factorUuid
+                                , Events.mpUserId = uid
+                                }
             pure (VerifyFactorResponse sessionResp)
 
 -- ---------------------------------------------------------------------------
