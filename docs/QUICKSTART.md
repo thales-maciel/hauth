@@ -150,14 +150,17 @@ service is running end-to-end against your Postgres.
 
 ## Next steps
 
+- [`docs/PRODUCTION.md`](PRODUCTION.md) — production hardening: TLS
+  termination (Caddy config), systemd unit file, Postgres pool sizing, secret
+  rotation, backups, and a hardening checklist. Read this before accepting
+  real traffic.
 - [`docs/v0.1-compatibility.md`](v0.1-compatibility.md) — the Supabase-compat
   contract: which endpoints exist, which fields are emitted, and which v0.1
   intentionally omits.
 - [`PROJECT.md`](../PROJECT.md) — product direction, milestone scope, and
   what's deferred to v0.2 and beyond.
-- [Open issues](https://github.com/thales-maciel/hauth/issues) — production
-  concerns (TLS termination, secret rotation, backups, systemd units) and
-  per-feature docs land here.
+- [Open issues](https://github.com/thales-maciel/hauth/issues) — per-feature
+  docs and roadmap items.
 
 OAuth, MFA enrollment, and webhook delivery are implemented but not covered
 here — they will get dedicated docs in v0.2.
