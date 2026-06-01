@@ -120,7 +120,23 @@ If `8080` is already taken on your host, override it: either set
 `server.port` in `config.json`, pass `--port 18080`, or set `HAUTH_PORT=18080`.
 Then update every URL below to match.
 
-## 5. Smoke test
+## 5. Verify the configuration (recommended)
+
+Before exposing the service, run:
+
+```sh
+hauth verify --config config.json
+```
+
+This exercises every configured surface — database, JWT, SMTP, OAuth
+providers — and reports specifically what's broken. A passing report is
+the precondition for the smoke test below.
+
+```sh
+hauth verify --config config.json --format json | jq
+```
+
+## 6. Smoke test
 
 In a second shell, with `hauth serve` still running:
 

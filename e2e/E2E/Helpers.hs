@@ -251,7 +251,7 @@ testingConfig dbUrl =
                 }
         , configJwt =
             JwtConfig
-                { jwtSecret = "0123456789abcdef0123456789abcdef"
+                { jwtSecret = "deadbeefcafefoodfaceb00ddeadbeef"
                 , jwtIssuer = "hauth-e2e"
                 , jwtAudience = "authenticated"
                 , jwtAccessTokenTtlSeconds = 3600
