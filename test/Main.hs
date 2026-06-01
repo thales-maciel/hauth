@@ -29,6 +29,7 @@ import qualified Spec.SessionSpec
 import qualified Spec.UserSpec
 import qualified Spec.Verify.DatabaseSpec
 import qualified Spec.Verify.IdentitySpec
+import qualified Spec.Verify.SmtpSpec
 import qualified Spec.VerifySpec
 import qualified Spec.Webhooks.SigningSpec
 import System.Exit (exitSuccess)
@@ -64,6 +65,7 @@ main = do
     Spec.ServerSpec.runSpec
     Spec.Verify.DatabaseSpec.runSpec
     Spec.Verify.IdentitySpec.runSpec
+    Spec.Verify.SmtpSpec.runSpec
     Spec.VerifySpec.runSpec
     Spec.Webhooks.SigningSpec.runSpec
     exitSuccess
