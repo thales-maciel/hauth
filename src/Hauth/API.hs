@@ -4,6 +4,7 @@ module Hauth.API (
     AdminEmailTemplateAPI,
     AdminUsersAPI,
     AdminWebhookAPI,
+    AdminWebhookSubscriptionsAPI,
     HauthAPI,
     MfaAPI,
     OperatorAPI,
@@ -73,6 +74,7 @@ type AdminAPI =
                 :<|> AdminConfigAPI
                 :<|> AdminWebhookAPI
                 :<|> AdminEmailTemplateAPI
+                :<|> AdminWebhookSubscriptionsAPI
            )
 
 type AdminUsersAPI =
@@ -102,6 +104,13 @@ type AdminEmailTemplateAPI =
         :<|> RequireAuth 'ServiceRole :> "email-templates" :> Capture "name" Text :> Get '[JSON] EmailTemplateRow
         :<|> RequireAuth 'ServiceRole :> "email-templates" :> Capture "name" Text :> ReqBody '[JSON] EmailTemplateCrudRequest :> Put '[JSON] EmailTemplateRow
         :<|> RequireAuth 'ServiceRole :> "email-templates" :> Capture "name" Text :> DeleteNoContent
+
+type AdminWebhookSubscriptionsAPI =
+    RequireAuth 'ServiceRole :> "webhooks" :> ReqBody '[JSON] CreateWebhookSubscriptionRequest :> Post '[JSON] WebhookSubscriptionResponse
+        :<|> RequireAuth 'ServiceRole :> "webhooks" :> Get '[JSON] ListWebhookSubscriptionsResponse
+        :<|> RequireAuth 'ServiceRole :> "webhooks" :> Capture "subscription_id" WebhookSubscriptionId :> Get '[JSON] WebhookSubscriptionResponse
+        :<|> RequireAuth 'ServiceRole :> "webhooks" :> Capture "subscription_id" WebhookSubscriptionId :> ReqBody '[JSON] UpdateWebhookSubscriptionRequest :> Put '[JSON] WebhookSubscriptionResponse
+        :<|> RequireAuth 'ServiceRole :> "webhooks" :> Capture "subscription_id" WebhookSubscriptionId :> DeleteNoContent
 
 hauthAPI :: Proxy HauthAPI
 hauthAPI = Proxy

@@ -63,6 +63,13 @@ import Hauth.Server.Mfa (
     verifyFactorHandler,
  )
 import Hauth.Server.OAuth (authorizeHandler, callbackHandler)
+import Hauth.Server.WebhookSubscriptions (
+    createWebhookSubscriptionHandler,
+    deleteWebhookSubscriptionHandler,
+    getWebhookSubscriptionHandler,
+    listWebhookSubscriptionsHandler,
+    updateWebhookSubscriptionHandler,
+ )
 import Hauth.Session (
     NewSession (..),
     RefreshToken (..),
@@ -185,6 +192,7 @@ adminServer =
         :<|> adminConfigServer
         :<|> adminWebhookServer
         :<|> adminEmailTemplateServer
+        :<|> adminWebhookSubscriptionsServer
 
 adminUsersServer :: ServerT AdminUsersAPI AppHandler
 adminUsersServer =
@@ -219,6 +227,14 @@ adminEmailTemplateServer =
         :<|> deleteAndNoContent
   where
     deleteAndNoContent p name = deleteEmailTemplateHandler p name >> pure NoContent
+
+adminWebhookSubscriptionsServer :: ServerT AdminWebhookSubscriptionsAPI AppHandler
+adminWebhookSubscriptionsServer =
+    createWebhookSubscriptionHandler
+        :<|> listWebhookSubscriptionsHandler
+        :<|> getWebhookSubscriptionHandler
+        :<|> updateWebhookSubscriptionHandler
+        :<|> deleteWebhookSubscriptionHandler
 
 healthHandler :: AnonymousPrincipal -> AppHandler HealthResponse
 healthHandler _ =
