@@ -4,6 +4,7 @@ module Hauth.API.Types (
     ChallengeFactorRequest (..),
     ChallengeFactorResponse (..),
     CheckOutcome (..),
+    CreateWebhookSubscriptionRequest (..),
     DeepHealthCheck (..),
     DeepHealthResponse (..),
     DeletedUserResponse (..),
@@ -27,6 +28,7 @@ module Hauth.API.Types (
     ListFactorsResponse (..),
     ListIdentitiesResponse (..),
     ListUsersResponse (..),
+    ListWebhookSubscriptionsResponse (..),
     MessageResponse (..),
     OAuthAuthorizeResponse (..),
     Password (..),
@@ -43,6 +45,7 @@ module Hauth.API.Types (
     UpdateEmailTemplatesRequest (..),
     UpdateProvidersRequest (..),
     UpdateUserRequest (..),
+    UpdateWebhookSubscriptionRequest (..),
     UserId (..),
     UserResponse (..),
     ValidRefreshToken (..),
@@ -52,6 +55,8 @@ module Hauth.API.Types (
     WebhookDeliveriesResponse (..),
     WebhookDeliveryId (..),
     WebhookDeliveryResponse (..),
+    WebhookSubscriptionId (..),
+    WebhookSubscriptionResponse (..),
     buildFactorResponse,
     buildIdentityResponse,
     buildSessionResponse,
@@ -1060,3 +1065,101 @@ data WebhookDeliveryResponse = WebhookDeliveryResponse
     }
     deriving stock (Eq, Generic, Show)
     deriving anyclass (FromJSON, ToJSON)
+
+newtype WebhookSubscriptionId = WebhookSubscriptionId {unWebhookSubscriptionId :: Text}
+    deriving stock (Eq, Generic, Ord, Show)
+    deriving newtype (FromHttpApiData, FromJSON, ToHttpApiData, ToJSON)
+
+data WebhookSubscriptionResponse = WebhookSubscriptionResponse
+    { webhookSubId :: UUID
+    , webhookSubUrl :: Text
+    , webhookSubEvents :: [Text]
+    , webhookSubSecret :: Text
+    , webhookSubDisabledAt :: Maybe UTCTime
+    , webhookSubCreatedAt :: UTCTime
+    , webhookSubUpdatedAt :: UTCTime
+    }
+    deriving stock (Eq, Show)
+
+instance ToJSON WebhookSubscriptionResponse where
+    toJSON WebhookSubscriptionResponse{..} =
+        object
+            [ "id" .= webhookSubId
+            , "url" .= webhookSubUrl
+            , "events" .= webhookSubEvents
+            , "secret" .= webhookSubSecret
+            , "disabled_at" .= webhookSubDisabledAt
+            , "created_at" .= webhookSubCreatedAt
+            , "updated_at" .= webhookSubUpdatedAt
+            ]
+
+instance FromJSON WebhookSubscriptionResponse where
+    parseJSON = Aeson.withObject "WebhookSubscriptionResponse" \o ->
+        WebhookSubscriptionResponse
+            <$> o Aeson..: "id"
+            <*> o Aeson..: "url"
+            <*> o Aeson..: "events"
+            <*> o Aeson..: "secret"
+            <*> o Aeson..:? "disabled_at"
+            <*> o Aeson..: "created_at"
+            <*> o Aeson..: "updated_at"
+
+newtype ListWebhookSubscriptionsResponse = ListWebhookSubscriptionsResponse
+    { listWebhookSubscriptions :: [WebhookSubscriptionResponse]
+    }
+    deriving stock (Eq, Show)
+
+instance ToJSON ListWebhookSubscriptionsResponse where
+    toJSON ListWebhookSubscriptionsResponse{listWebhookSubscriptions} =
+        object ["webhooks" .= listWebhookSubscriptions]
+
+instance FromJSON ListWebhookSubscriptionsResponse where
+    parseJSON = Aeson.withObject "ListWebhookSubscriptionsResponse" \o ->
+        ListWebhookSubscriptionsResponse <$> o Aeson..: "webhooks"
+
+data CreateWebhookSubscriptionRequest = CreateWebhookSubscriptionRequest
+    { createWebhookSubUrl :: Text
+    , createWebhookSubEvents :: Maybe [Text]
+    , createWebhookSubSecret :: Maybe Text
+    }
+    deriving stock (Eq, Show)
+
+instance FromJSON CreateWebhookSubscriptionRequest where
+    parseJSON = Aeson.withObject "CreateWebhookSubscriptionRequest" \o ->
+        CreateWebhookSubscriptionRequest
+            <$> o Aeson..: "url"
+            <*> o Aeson..:? "events"
+            <*> o Aeson..:? "secret"
+
+instance ToJSON CreateWebhookSubscriptionRequest where
+    toJSON CreateWebhookSubscriptionRequest{..} =
+        object
+            [ "url" .= createWebhookSubUrl
+            , "events" .= createWebhookSubEvents
+            , "secret" .= createWebhookSubSecret
+            ]
+
+data UpdateWebhookSubscriptionRequest = UpdateWebhookSubscriptionRequest
+    { updateWebhookSubUrl :: Maybe Text
+    , updateWebhookSubEvents :: Maybe [Text]
+    , updateWebhookSubSecret :: Maybe Text
+    , updateWebhookSubDisabledAt :: Maybe (Maybe UTCTime)
+    }
+    deriving stock (Eq, Show)
+
+instance FromJSON UpdateWebhookSubscriptionRequest where
+    parseJSON = Aeson.withObject "UpdateWebhookSubscriptionRequest" \o ->
+        UpdateWebhookSubscriptionRequest
+            <$> o Aeson..:? "url"
+            <*> o Aeson..:? "events"
+            <*> o Aeson..:? "secret"
+            <*> (fmap Just <$> o Aeson..:? "disabled_at")
+
+instance ToJSON UpdateWebhookSubscriptionRequest where
+    toJSON UpdateWebhookSubscriptionRequest{..} =
+        object
+            [ "url" .= updateWebhookSubUrl
+            , "events" .= updateWebhookSubEvents
+            , "secret" .= updateWebhookSubSecret
+            , "disabled_at" .= updateWebhookSubDisabledAt
+            ]

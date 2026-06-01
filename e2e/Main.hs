@@ -11,6 +11,7 @@ import qualified E2E.RecoverySpec
 import qualified E2E.UserSpec
 import qualified E2E.VerifyDatabaseSpec
 import qualified E2E.WebhookOutboxSpec
+import qualified E2E.WebhookSubscriptionsSpec
 import Test.Hspec (SpecWith, aroundAll, beforeWith, describe, hspec)
 
 main :: IO ()
@@ -30,3 +31,4 @@ allSpecs = do
     describe "verify database checks" E2E.VerifyDatabaseSpec.spec
     describe "webhook outbox" E2E.WebhookOutboxSpec.spec
     describe "email templates CRUD" E2E.EmailTemplatesCrudSpec.spec
+    describe "webhook subscriptions CRUD" E2E.WebhookSubscriptionsSpec.spec
