@@ -75,15 +75,13 @@ verifySignature secret wId wTs wSig body =
         Nothing -> False
         Just ts ->
             let now = unsafePerformIO getPOSIXTime
-             in if abs (now - ts) > driftTolerance
-                    then False
-                    else
-                        let signed = wId <> "." <> wTs <> "." <> body
-                            digest = hmacGetDigest (hmac secret signed :: HMAC SHA256)
-                            rawSig = convertToBase Base64 (convert digest :: BS.ByteString) :: BS.ByteString
-                            expected = "v1," <> rawSig :: BS.ByteString
-                            candidate = BS.takeWhile (/= 0x20) wSig
-                         in constEq expected candidate
+             in abs (now - ts) <= driftTolerance
+                    && let signed = wId <> "." <> wTs <> "." <> body
+                           digest = hmacGetDigest (hmac secret signed :: HMAC SHA256)
+                           rawSig = convertToBase Base64 (convert digest :: BS.ByteString) :: BS.ByteString
+                           expected = "v1," <> rawSig :: BS.ByteString
+                           candidate = BS.takeWhile (/= 0x20) wSig
+                        in constEq expected candidate
 
 -- | Maximum allowed timestamp drift (seconds).
 driftTolerance :: POSIXTime
