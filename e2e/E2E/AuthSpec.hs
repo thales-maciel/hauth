@@ -2,9 +2,13 @@
 
 module E2E.AuthSpec (spec) where
 
+import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Control.Exception (bracket_)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.Text as T
+import Database.PostgreSQL.Simple (execute, execute_)
 import E2E.Helpers (
     TestEnv (..),
     decodeBody,
@@ -14,7 +18,25 @@ import E2E.Helpers (
     runApp,
  )
 import Hauth.Env (withDatabaseConnection)
+import Hauth.Hooks.Types (HookPoint (..), hookPointName)
 import Hauth.User (User (..), getUserByEmail)
+import Network.HTTP.Types (status200)
+import Network.Socket (
+    Family (..),
+    SockAddr (..),
+    Socket,
+    SocketOption (..),
+    SocketType (..),
+    bind,
+    close,
+    listen,
+    maxListenQueue,
+    setSocketOption,
+    socket,
+    socketPort,
+ )
+import Network.Wai (Application, responseLBS)
+import qualified Network.Wai.Handler.Warp as Warp
 import Test.Hspec (SpecWith, describe, it, shouldBe)
 
 spec :: SpecWith TestEnv
@@ -132,6 +154,222 @@ spec = do
             expectStatus 400 loginResp
             (errObj :: Aeson.Object) <- decodeBody loginResp
             KeyMap.lookup "error" errObj `shouldBe` Just (Aeson.String "invalid_grant")
+
+    describe "before-user-created hook" $ do
+        it "no hook → signup succeeds as today" \env ->
+            -- No hook row seeded; regression guard.
+            withHookCleanup env $ do
+                resp <-
+                    runApp env $
+                        jsonPost
+                            "/signup"
+                            ( Aeson.object
+                                [ "email" Aeson..= ("hook-none@example.com" :: T.Text)
+                                , "password" Aeson..= ("correct horse" :: T.Text)
+                                ]
+                            )
+                            Nothing
+                expectStatus 200 resp
+
+        it "hook allow → signup succeeds" \env ->
+            withHookCleanup env $
+                withDecisionServer allowDecision \port -> do
+                    seedHook env port 2000 False
+                    resp <-
+                        runApp env $
+                            jsonPost
+                                "/signup"
+                                ( Aeson.object
+                                    [ "email" Aeson..= ("hook-allow@example.com" :: T.Text)
+                                    , "password" Aeson..= ("correct horse" :: T.Text)
+                                    ]
+                                )
+                                Nothing
+                    expectStatus 200 resp
+                    mUser <- withDatabaseConnection (testAppEnv env) (`getUserByEmail` "hook-allow@example.com")
+                    case mUser of
+                        Nothing -> error "expected user row after hook-allow signup"
+                        Just _ -> pure ()
+
+        it "hook allow_with merges user_metadata overlay" \env ->
+            withHookCleanup env $
+                withDecisionServer overlayDecision \port -> do
+                    seedHook env port 2000 False
+                    resp <-
+                        runApp env $
+                            jsonPost
+                                "/signup"
+                                ( Aeson.object
+                                    [ "email" Aeson..= ("hook-overlay@example.com" :: T.Text)
+                                    , "password" Aeson..= ("correct horse" :: T.Text)
+                                    ]
+                                )
+                                Nothing
+                    expectStatus 200 resp
+                    mUser <- withDatabaseConnection (testAppEnv env) (`getUserByEmail` "hook-overlay@example.com")
+                    user <- case mUser of
+                        Nothing -> error "expected user row after hook-overlay signup"
+                        Just u -> pure u
+                    -- "injected" key should be present in user_metadata
+                    case userRawUserMetaData user of
+                        Aeson.Object m ->
+                            KeyMap.lookup "injected" m `shouldBe` Just (Aeson.String "by-hook")
+                        other -> error ("expected object user_metadata; got " <> show other)
+
+        it "hook reject → 400 hook_rejected; no user row" \env ->
+            withHookCleanup env $
+                withDecisionServer rejectDecisionBody \port -> do
+                    seedHook env port 2000 False
+                    resp <-
+                        runApp env $
+                            jsonPost
+                                "/signup"
+                                ( Aeson.object
+                                    [ "email" Aeson..= ("hook-reject@example.com" :: T.Text)
+                                    , "password" Aeson..= ("correct horse" :: T.Text)
+                                    ]
+                                )
+                                Nothing
+                    expectStatus 400 resp
+                    (errObj :: Aeson.Object) <- decodeBody resp
+                    KeyMap.lookup "error" errObj `shouldBe` Just (Aeson.String "hook_rejected")
+                    mUser <- withDatabaseConnection (testAppEnv env) (`getUserByEmail` "hook-reject@example.com")
+                    mUser `shouldBe` Nothing
+
+        it "hook timeout fail_open=false → 400; no user row" \env ->
+            withHookCleanup env $
+                withDecisionServer slowServer \port -> do
+                    seedHook env port 100 False -- 100 ms timeout (minimum allowed)
+                    resp <-
+                        runApp env $
+                            jsonPost
+                                "/signup"
+                                ( Aeson.object
+                                    [ "email" Aeson..= ("hook-timeout-closed@example.com" :: T.Text)
+                                    , "password" Aeson..= ("correct horse" :: T.Text)
+                                    ]
+                                )
+                                Nothing
+                    expectStatus 400 resp
+                    mUser <- withDatabaseConnection (testAppEnv env) (`getUserByEmail` "hook-timeout-closed@example.com")
+                    mUser `shouldBe` Nothing
+
+        it "hook timeout fail_open=true → signup succeeds" \env ->
+            withHookCleanup env $
+                withDecisionServer slowServer \port -> do
+                    seedHook env port 100 True -- 100 ms timeout (minimum allowed), fail open
+                    resp <-
+                        runApp env $
+                            jsonPost
+                                "/signup"
+                                ( Aeson.object
+                                    [ "email" Aeson..= ("hook-timeout-open@example.com" :: T.Text)
+                                    , "password" Aeson..= ("correct horse" :: T.Text)
+                                    ]
+                                )
+                                Nothing
+                    expectStatus 200 resp
+                    mUser <- withDatabaseConnection (testAppEnv env) (`getUserByEmail` "hook-timeout-open@example.com")
+                    case mUser of
+                        Nothing -> error "expected user row after fail-open timeout"
+                        Just _ -> pure ()
+
+-- ---------------------------------------------------------------------------
+-- Hook test helpers
+-- ---------------------------------------------------------------------------
+
+withHookCleanup :: TestEnv -> IO a -> IO a
+withHookCleanup env =
+    bracket_
+        (pure ())
+        ( withDatabaseConnection
+            (testAppEnv env)
+            (`execute_` "DELETE FROM auth.hooks WHERE hook_point = 'before-user-created'")
+        )
+
+-- | Seed a before-user-created hook row pointing at 127.0.0.1:port.
+seedHook :: TestEnv -> Int -> Int -> Bool -> IO ()
+seedHook env port timeoutMs failOpen =
+    withDatabaseConnection (testAppEnv env) \conn -> do
+        let url = ("http://127.0.0.1:" :: String) <> show port <> "/"
+        _ <-
+            execute
+                conn
+                "INSERT INTO auth.hooks (hook_point, url, secret, timeout_ms, fail_open, enabled) \
+                \VALUES (?, ?, ?, ?, ?, true)"
+                ( hookPointName HookBeforeUserCreated
+                , url
+                , "test-secret" :: String
+                , timeoutMs :: Int
+                , failOpen
+                )
+        pure ()
+
+-- | Spin up a WAI application on a free port, run the action, then close the socket.
+withDecisionServer :: Application -> (Int -> IO a) -> IO a
+withDecisionServer waiApp action = do
+    ready <- newEmptyMVar
+    sock <- openFreeSocket
+    port <- fromIntegral <$> socketPort sock
+    _ <- forkIO $ do
+        putMVar ready ()
+        Warp.runSettingsSocket
+            (Warp.setPort port Warp.defaultSettings)
+            sock
+            waiApp
+    takeMVar ready
+    threadDelay 10000 -- 10 ms for the server to start accepting
+    result <- action port
+    close sock
+    pure result
+
+openFreeSocket :: IO Socket
+openFreeSocket = do
+    sock <- socket AF_INET Stream 0
+    setSocketOption sock ReuseAddr 1
+    bind sock (SockAddrInet 0 0)
+    listen sock maxListenQueue
+    pure sock
+
+respondJSON :: Aeson.Value -> Application
+respondJSON v _req respond =
+    respond (responseLBS status200 [("Content-Type", "application/json")] (Aeson.encode v))
+
+allowDecision :: Application
+allowDecision = respondJSON (Aeson.object [("decision", Aeson.String "allow")])
+
+rejectDecisionBody :: Application
+rejectDecisionBody =
+    respondJSON $
+        Aeson.object
+            [ ("decision", Aeson.String "reject")
+            , ("reason", Aeson.String "blocked by operator rule")
+            ]
+
+overlayDecision :: Application
+overlayDecision =
+    respondJSON $
+        Aeson.object
+            [ ("decision", Aeson.String "allow_with")
+            ,
+                ( "overlay"
+                , Aeson.object
+                    [
+                        ( "user_metadata"
+                        , Aeson.object [("injected", Aeson.String "by-hook")]
+                        )
+                    ]
+                )
+            ]
+
+slowServer :: Application
+slowServer _req respond = do
+    threadDelay 500000 -- 500 ms
+    respond (responseLBS status200 [] (Aeson.encode (Aeson.object [("decision", Aeson.String "allow")])))
+
+-- ---------------------------------------------------------------------------
+-- Utilities
+-- ---------------------------------------------------------------------------
 
 extractStringKey :: Aeson.Key -> Aeson.Object -> IO T.Text
 extractStringKey k obj =
