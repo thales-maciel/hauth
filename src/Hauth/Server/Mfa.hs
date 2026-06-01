@@ -27,6 +27,8 @@ import Hauth.Auth.AalAmr (SessionAuthState (..), buildAmrEntries, deriveSessionA
 import Hauth.Auth.Jwt (AccessTokenClaims (..), signAccessToken)
 import Hauth.Config (Config (..), JwtConfig (..))
 import Hauth.Env (AppEnv (..), withDatabaseConnection)
+import Hauth.Hooks.Runner (HookDecision (..), runHook)
+import Hauth.Hooks.Types (HookPoint (..), loadHookConfig)
 import Hauth.Mfa.Totp (TotpSecret (..), decodeBase32, encodeBase32, generateTotpSecret, otpAuthUri, unTotpSecret)
 import Hauth.Mfa.TotpVerify (TotpVerificationResult (..), verifyTotpCode)
 import qualified Hauth.MfaFactor as MfaFactor
@@ -215,6 +217,33 @@ verifyFactorHandler principal (FactorId factorIdText) VerifyFactorRequest{verify
                     }
         Just u -> pure (SessionId u)
     factor <- lookupFactorOrError env factorIdText uid
+    -- Fire mfa-verification-attempt hook BEFORE the TOTP check.
+    let factorUuid' = MfaFactor.unMfaFactorId (MfaFactor.mfaFactorId factor)
+        mfaHookPayload =
+            Aeson.object
+                [ "user_id" Aeson..= UUID.toText uid
+                , "factor_id" Aeson..= UUID.toText factorUuid'
+                , "factor_type" Aeson..= ("totp" :: Text)
+                , "ip" Aeson..= ("" :: Text)
+                ]
+    mMfaHookCfg <- liftIO (withDatabaseConnection env (`loadHookConfig` HookMfaVerificationAttempt))
+    case mMfaHookCfg of
+        Nothing -> pure ()
+        Just cfg -> do
+            decision <- liftIO (runHook cfg mfaHookPayload)
+            case decision of
+                HookAllow -> pure ()
+                HookAllowWith _ -> pure ()
+                HookReject _ ->
+                    throwError
+                        err400
+                            { errBody =
+                                Aeson.encode $
+                                    Aeson.object
+                                        [ "error" Aeson..= ("mfa_or_password_blocked" :: Text)
+                                        , "error_description" Aeson..= ("MFA verification attempt blocked" :: Text)
+                                        ]
+                            }
     let secretB32 = MfaFactor.mfaFactorSecret factor
     rawSecret <- case decodeBase32 secretB32 of
         Nothing ->

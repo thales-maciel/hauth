@@ -41,6 +41,8 @@ import Hauth.Crypto.Password (defaultArgon2Settings, hashPassword)
 import qualified Hauth.Crypto.Password as Pwd
 import Hauth.Email (EmailSender (..), TemplateData (..), TemplateKind (..), renderEmailCached, sendEmail, stubSender)
 import Hauth.Env (AppEnv (..), LogLevel (..), createAppEnv, destroyAppEnv, logMessage, withDatabaseConnection)
+import Hauth.Hooks.Runner (HookDecision (..), runHook)
+import Hauth.Hooks.Types (HookPoint (..), loadHookConfig)
 import Hauth.Server.Admin (
     adminCreateUserHandler,
     adminDeleteUserHandler,
@@ -519,6 +521,32 @@ handlePasswordGrant req = do
     user <- case mUser of
         Nothing -> throwError invalidGrantError
         Just u -> pure u
+    -- Fire password-verification-attempt hook BEFORE the crypto check.
+    let User.UserId userUUID' = User.userId user
+        hookPayload =
+            Aeson.object
+                [ "email" Aeson..= emailText
+                , "user_id" Aeson..= UUID.toText userUUID'
+                , "ip" Aeson..= ("" :: T.Text)
+                ]
+    mHookCfg <- liftIO (withDatabaseConnection env (`loadHookConfig` HookPasswordVerificationAttempt))
+    case mHookCfg of
+        Nothing -> pure ()
+        Just cfg -> do
+            decision <- liftIO (runHook cfg hookPayload)
+            case decision of
+                HookAllow -> pure ()
+                HookAllowWith _ -> pure ()
+                HookReject _ ->
+                    throwError
+                        err400
+                            { errBody =
+                                Aeson.encode $
+                                    Aeson.object
+                                        [ "error" Aeson..= ("mfa_or_password_blocked" :: T.Text)
+                                        , "error_description" Aeson..= ("Login attempt blocked" :: T.Text)
+                                        ]
+                            }
     let verified = case User.userEncryptedPassword user of
             Nothing -> False
             Just phc -> Pwd.verifyPassword phc passwordText

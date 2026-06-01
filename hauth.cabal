@@ -237,10 +237,12 @@ test-suite hauth-e2e
     , hauth
     , hspec >=2.10 && <2.12
     , http-types >=0.12 && <0.13
+    , network >=3.1 && <3.3
     , postgresql-simple >=0.7 && <0.8
     , text >=2.0 && <2.2
     , time >=1.12 && <1.15
     , uuid >=1.3 && <1.4
     , wai >=3.2 && <3.3
     , wai-extra >=3.1 && <3.2
+    , warp >=3.3 && <3.5
   default-language: Haskell2010
