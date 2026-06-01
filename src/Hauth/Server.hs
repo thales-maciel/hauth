@@ -30,7 +30,7 @@ import Hauth.API
 import Hauth.API.Auth
 import Hauth.API.Types
 import Hauth.Auth.AalAmr (SessionAuthState (..), buildAmrEntries, deriveSessionAuthState)
-import Hauth.Auth.Jwt (AccessTokenClaims (..), AmrEntry (..), signAccessToken, validateAccessToken)
+import Hauth.Auth.Jwt (AccessTokenClaims (..), AmrEntry (..), issueAccessToken, validateAccessToken)
 import Hauth.Auth.Login (LoginError (..), authorizeLogin, buildLoginClaims, extractCredentials)
 import Hauth.Auth.Logout (LogoutError (..), resolveLogoutSession)
 import Hauth.Auth.Recovery (RecoveryError (..), recoverySentMessage, validateRecoverRequest, validateRecoveryVerify)
@@ -121,6 +121,7 @@ import Servant.Server (
     err401,
     err404,
     err422,
+    err500,
     err501,
     err503,
     hoistServerWithContext,
@@ -473,15 +474,15 @@ handleRefreshTokenGrant TokenRequest{tokenRequestRefreshToken} = do
                 newRt <- createRefreshToken conn sid (Just tokenText)
                 touchSessionRefreshedAt conn sid
                 pure newRt
-            signResult <- liftIO (signAccessToken configJwt claims)
+            signResult <- liftIO (issueAccessToken env claims)
             accessToken <- case signResult of
                 Left err ->
                     throwError
-                        err401
+                        err500
                             { errBody =
                                 Aeson.encode $
                                     Aeson.object
-                                        [ "error" Aeson..= ("server_error" :: T.Text)
+                                        [ "error" Aeson..= ("token_issuance_blocked" :: T.Text)
                                         , "error_description" Aeson..= T.pack (show err)
                                         ]
                             }
@@ -563,15 +564,15 @@ handlePasswordGrant req = do
             pure (s, rt)
     now <- liftIO getCurrentTime
     let claims = buildLoginClaims configJwt user (sessionId sess) now
-    signResult <- liftIO (signAccessToken configJwt claims)
+    signResult <- liftIO (issueAccessToken env claims)
     accessToken <- case signResult of
         Left err ->
             throwError
-                err400
+                err500
                     { errBody =
                         Aeson.encode $
                             Aeson.object
-                                [ "error" Aeson..= ("server_error" :: T.Text)
+                                [ "error" Aeson..= ("token_issuance_blocked" :: T.Text)
                                 , "error_description" Aeson..= T.pack (show err)
                                 ]
                     }
@@ -958,15 +959,15 @@ issueSessionForUser user methodName = do
                 , claimIssuedAt = now
                 , claimExpiresAt = expiry
                 }
-    signResult <- liftIO (signAccessToken configJwt claims)
+    signResult <- liftIO (issueAccessToken env claims)
     accessToken <- case signResult of
         Left err ->
             throwError
-                err401
+                err500
                     { errBody =
                         Aeson.encode $
                             Aeson.object
-                                [ "error" Aeson..= ("server_error" :: T.Text)
+                                [ "error" Aeson..= ("token_issuance_blocked" :: T.Text)
                                 , "error_description" Aeson..= T.pack (show err)
                                 ]
                     }
