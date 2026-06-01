@@ -4,6 +4,7 @@ import qualified E2E.AdminSpec
 import qualified E2E.AuthSpec
 import qualified E2E.EmailTemplatesCrudSpec
 import E2E.Helpers (TestEnv, truncateAll, withTestEnv)
+import qualified E2E.HooksCrudSpec
 import qualified E2E.HooksTypesSpec
 import qualified E2E.MfaSpec
 import qualified E2E.OAuthSpec
@@ -32,3 +33,4 @@ allSpecs = do
     describe "webhook outbox" E2E.WebhookOutboxSpec.spec
     describe "email templates CRUD" E2E.EmailTemplatesCrudSpec.spec
     describe "webhook subscriptions CRUD" E2E.WebhookSubscriptionsSpec.spec
+    describe "hooks CRUD API" E2E.HooksCrudSpec.spec

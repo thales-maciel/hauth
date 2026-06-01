@@ -81,6 +81,7 @@ library
     Hauth.Server
     Hauth.Server.Admin
     Hauth.Server.EmailTemplates
+    Hauth.Server.Hooks
     Hauth.Server.Mfa
     Hauth.Server.OAuth
     Hauth.Server.WebhookSubscriptions
@@ -210,6 +211,7 @@ test-suite hauth-e2e
     E2E.AuthSpec
     E2E.EmailTemplatesCrudSpec
     E2E.Helpers
+    E2E.HooksCrudSpec
     E2E.HooksTypesSpec
     E2E.MfaSpec
     E2E.OAuthSpec

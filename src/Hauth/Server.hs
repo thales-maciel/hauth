@@ -56,6 +56,13 @@ import Hauth.Server.EmailTemplates (
     listEmailTemplatesHandler,
     putEmailTemplateHandler,
  )
+import Hauth.Server.Hooks (
+    createHookHandler,
+    deleteHookHandler,
+    getHookHandler,
+    listHooksHandler,
+    updateHookHandler,
+ )
 import Hauth.Server.Mfa (
     challengeFactorHandler,
     enrollFactorHandler,
@@ -193,6 +200,7 @@ adminServer =
         :<|> adminWebhookServer
         :<|> adminEmailTemplateServer
         :<|> adminWebhookSubscriptionsServer
+        :<|> adminHooksServer
 
 adminUsersServer :: ServerT AdminUsersAPI AppHandler
 adminUsersServer =
@@ -235,6 +243,14 @@ adminWebhookSubscriptionsServer =
         :<|> getWebhookSubscriptionHandler
         :<|> updateWebhookSubscriptionHandler
         :<|> deleteWebhookSubscriptionHandler
+
+adminHooksServer :: ServerT AdminHooksAPI AppHandler
+adminHooksServer =
+    createHookHandler
+        :<|> listHooksHandler
+        :<|> getHookHandler
+        :<|> updateHookHandler
+        :<|> deleteHookHandler
 
 healthHandler :: AnonymousPrincipal -> AppHandler HealthResponse
 healthHandler _ =
