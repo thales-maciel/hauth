@@ -2,8 +2,8 @@
 
 Go from zero to a running hauth with signup and login in about ten minutes.
 This guide targets operators self-hosting hauth against their own Postgres on
-Linux. It does not cover OAuth providers, MFA enrollment UX, or production
-hardening — those will get dedicated docs in v0.2.
+Linux. It does not cover MFA enrollment UX or production hardening. For OAuth
+provider setup see [`docs/OAUTH.md`](OAUTH.md).
 
 ## Prerequisites
 
@@ -159,5 +159,6 @@ service is running end-to-end against your Postgres.
   concerns (TLS termination, secret rotation, backups, systemd units) and
   per-feature docs land here.
 
-OAuth, MFA enrollment, and webhook delivery are implemented but not covered
-here — they will get dedicated docs in v0.2.
+- [`docs/OAUTH.md`](OAUTH.md) — OAuth provider setup: configuring Google and
+  GitHub, the exact redirect URI to register with each provider, and common
+  errors.
