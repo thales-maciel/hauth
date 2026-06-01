@@ -24,7 +24,7 @@ import Data.Time.Clock (addUTCTime, getCurrentTime)
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
 import Data.UUID (UUID)
 import qualified Data.UUID as UUID
-import Database.PostgreSQL.Simple (Connection, Only (..), execute_, query, withTransaction)
+import Database.PostgreSQL.Simple (Connection, Only (..), query, query_, withTransaction)
 import GHC.Clock (getMonotonicTimeNSec)
 import Hauth.API
 import Hauth.API.Auth
@@ -267,7 +267,9 @@ checkConfig AppEnv{appConfig} =
 checkPostgres :: AppEnv -> IO DeepHealthCheck
 checkPostgres env = do
     startNs <- getMonotonicTimeNSec
-    result <- try (timeout 2000000 (withDatabaseConnection env (`execute_` "SELECT 1")))
+    -- SELECT returns a column, so we use query_ (not execute_) and discard the rows.
+    let probe conn = query_ conn "SELECT 1" :: IO [Only Int]
+    result <- try (timeout 2000000 (withDatabaseConnection env probe))
     endNs <- getMonotonicTimeNSec
     let latencyMs = Just (fromIntegral ((endNs - startNs) `div` 1000000))
     let outcome = case result of
