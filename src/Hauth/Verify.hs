@@ -12,14 +12,16 @@ import Data.ByteString (ByteString)
 import qualified Data.ByteString.Char8 as BSC
 import Data.Text (Text)
 import qualified Data.Text as T
+import Hauth.Config (Config)
 import Hauth.Env (AppEnv)
 import qualified Hauth.Verify.Database as Database
 import qualified Hauth.Verify.Identity as Identity
+import qualified Hauth.Verify.Oauth as OauthChecks
 import qualified Hauth.Verify.Smtp as Smtp
 import Hauth.Verify.Types (Check (..), CheckOutcome (..), Report (..))
 
-defaultChecks :: [Check]
-defaultChecks =
+defaultChecks :: Config -> [Check]
+defaultChecks cfg =
     Check
         { checkName = "verify.framework"
         , checkLabel = "Verify framework"
@@ -28,6 +30,7 @@ defaultChecks =
         : Database.checks
             <> Identity.checks
             <> Smtp.checks
+            <> OauthChecks.checks cfg
 
 runChecks :: AppEnv -> [Check] -> IO Report
 runChecks env cks = do
