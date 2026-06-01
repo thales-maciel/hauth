@@ -3,6 +3,7 @@ module Main (main) where
 import qualified E2E.AdminSpec
 import qualified E2E.AuthSpec
 import E2E.Helpers (TestEnv, truncateAll, withTestEnv)
+import qualified E2E.HooksTypesSpec
 import qualified E2E.MfaSpec
 import qualified E2E.OAuthSpec
 import qualified E2E.RecoverySpec
@@ -22,3 +23,4 @@ allSpecs = do
     describe "MFA TOTP" E2E.MfaSpec.spec
     describe "admin users API" E2E.AdminSpec.spec
     describe "OAuth (limited)" E2E.OAuthSpec.spec
+    describe "hooks types (loadHookConfig)" E2E.HooksTypesSpec.spec
