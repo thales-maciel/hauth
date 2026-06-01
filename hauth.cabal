@@ -228,6 +228,7 @@ test-suite hauth-e2e
     E2E.UserSpec
     E2E.VerifyDatabaseSpec
     E2E.WebhookDeliveriesSpec
+    E2E.WebhookEmitSpec
     E2E.WebhookOutboxSpec
     E2E.WebhookSubscriptionsSpec
   build-depends:

@@ -13,6 +13,7 @@ import qualified E2E.RecoverySpec
 import qualified E2E.UserSpec
 import qualified E2E.VerifyDatabaseSpec
 import qualified E2E.WebhookDeliveriesSpec
+import qualified E2E.WebhookEmitSpec
 import qualified E2E.WebhookOutboxSpec
 import qualified E2E.WebhookSubscriptionsSpec
 import Test.Hspec (SpecWith, aroundAll, beforeWith, describe, hspec)
@@ -33,6 +34,7 @@ allSpecs = do
     describe "hooks types (loadHookConfig)" E2E.HooksTypesSpec.spec
     describe "verify database checks" E2E.VerifyDatabaseSpec.spec
     describe "webhook outbox" E2E.WebhookOutboxSpec.spec
+    describe "webhook emit from handlers" E2E.WebhookEmitSpec.spec
     describe "email templates CRUD" E2E.EmailTemplatesCrudSpec.spec
     describe "webhook subscriptions CRUD" E2E.WebhookSubscriptionsSpec.spec
     describe "hooks CRUD API" E2E.HooksCrudSpec.spec

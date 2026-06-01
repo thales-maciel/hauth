@@ -105,6 +105,8 @@ import Hauth.User (
     validateSignupPassword,
  )
 import qualified Hauth.User as User
+import Hauth.Webhooks.Events (SessionPayload (..), UserPayload (..), WebhookEvent (..))
+import qualified Hauth.Webhooks.Outbox as Outbox
 import Network.Wai (Application, Request, requestHeaders)
 import qualified Network.Wai.Handler.Warp as Warp
 import Servant.API (NoContent (..), type (:<|>) ((:<|>)))
@@ -397,10 +399,15 @@ handleRefreshTokenGrant TokenRequest{tokenRequestRefreshToken} = do
                                 ]
                     }
         Left RefreshTokenReuseDetected -> do
-            let sid = refreshTokenSessionId (fromMaybeRawToken mRawToken)
+            let rt = fromMaybeRawToken mRawToken
+                sid = refreshTokenSessionId rt
+                uid = refreshTokenUserId rt
             liftIO $ withDatabaseConnection env \conn -> do
                 _ <- revokeSessionRefreshTokens conn sid
                 revokeSession conn sid
+                Outbox.enqueue
+                    conn
+                    (SessionRevoked SessionPayload{spSessionId = unSessionId sid, spUserId = uid})
             throwError
                 err401
                     { errBody =
@@ -674,6 +681,7 @@ signupHandler _ SignupRequest{signupEmail, signupPassword, signupData} = do
                                     , User.newUserAud = "authenticated"
                                     }
                         created <- User.createUser conn newUser
+                        Outbox.enqueue conn (UserSignedUp (userPayloadFromUser created))
                         pure (Right created)
     case user of
         Left SignupEmailExists ->
@@ -812,7 +820,9 @@ handleSignupVerify VerifyRequest{verifyToken} = do
                                 ]
                     }
         Just u -> pure u
-    liftIO (withDatabaseConnection env (`User.markEmailConfirmed` User.userId user))
+    liftIO $ withDatabaseConnection env \conn -> withTransaction conn do
+        User.markEmailConfirmed conn (User.userId user)
+        Outbox.enqueue conn (UserEmailConfirmed (userPayloadFromUser user))
     issueSessionForUser user "otp"
 
 handleRecoveryVerify :: VerifyRequest -> AppHandler SessionResponse
@@ -864,8 +874,9 @@ handleRecoveryVerify req = do
                     }
         Just u -> pure u
     phc <- liftIO (hashPassword defaultArgon2Settings password)
-    liftIO $ withDatabaseConnection env \conn ->
+    liftIO $ withDatabaseConnection env \conn -> withTransaction conn do
         User.applyPasswordReset conn (User.userId user) phc
+        Outbox.enqueue conn (UserRecovered (userPayloadFromUser user))
     issueSessionForUser user "recovery"
 
 issueSessionForUser :: User.User -> T.Text -> AppHandler SessionResponse
@@ -1030,6 +1041,14 @@ notImplemented3 :: a -> b -> c -> AppHandler d
 notImplemented3 _ _ _ =
     notImplemented
 
+userPayloadFromUser :: User.User -> UserPayload
+userPayloadFromUser u =
+    UserPayload
+        { upUserId = User.unUserId (User.userId u)
+        , upEmail = User.userEmail u
+        , upCreatedAt = User.userCreatedAt u
+        }
+
 authContext ::
     AppEnv -> Context AuthContext
 authContext env =
@@ -1170,7 +1189,12 @@ updateUserHandler principal req = do
                 , User.updateRawUserMetaData = mData
                 , User.updateEmailChangeToken = mToken
                 }
-    mUser <- liftIO (withDatabaseConnection env (\conn -> User.applyUserUpdate conn (User.UserId uid) upd))
+    mUser <- liftIO $ withDatabaseConnection env \conn -> withTransaction conn do
+        updated <- User.applyUserUpdate conn (User.UserId uid) upd
+        case (updated, mPassword) of
+            (Just u, Just _) -> Outbox.enqueue conn (PasswordChanged (userPayloadFromUser u))
+            _ -> pure ()
+        pure updated
     case mUser of
         Nothing ->
             throwError
@@ -1229,5 +1253,13 @@ logoutHandler principal _scope = do
                             )
                     }
         Right s -> pure s
-    liftIO (withDatabaseConnection env (`revokeSession` sid))
+    let mUid = UUID.fromText (sessionUserId principal)
+    liftIO $ withDatabaseConnection env \conn -> withTransaction conn do
+        revokeSession conn sid
+        case mUid of
+            Just uid ->
+                Outbox.enqueue
+                    conn
+                    (SessionRevoked SessionPayload{spSessionId = unSessionId sid, spUserId = uid})
+            Nothing -> pure ()
     pure NoContent
