@@ -28,6 +28,7 @@ import qualified Spec.ServerSpec
 import qualified Spec.SessionSpec
 import qualified Spec.UserSpec
 import qualified Spec.VerifySpec
+import qualified Spec.Webhooks.SigningSpec
 import System.Exit (exitSuccess)
 
 main :: IO ()
@@ -60,4 +61,5 @@ main = do
     Spec.RefreshTokenSpec.runSpec
     Spec.ServerSpec.runSpec
     Spec.VerifySpec.runSpec
+    Spec.Webhooks.SigningSpec.runSpec
     exitSuccess
