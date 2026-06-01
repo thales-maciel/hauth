@@ -19,6 +19,8 @@ runSpec = do
         , "0005_refresh_tokens.sql"
         , "0006_mfa_factors.sql"
         , "0007_flow_state.sql"
+        , "0008_webhook_subscriptions.sql"
+        , "0009_webhook_deliveries.sql"
         ]
         names
     assertEqual
