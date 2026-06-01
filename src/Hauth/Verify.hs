@@ -14,6 +14,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Hauth.Env (AppEnv)
 import qualified Hauth.Verify.Database as Database
+import qualified Hauth.Verify.Identity as Identity
 import Hauth.Verify.Types (Check (..), CheckOutcome (..), Report (..))
 
 defaultChecks :: [Check]
@@ -24,6 +25,7 @@ defaultChecks =
         , checkRun = \_env -> pure CheckOk
         }
         : Database.checks
+            <> Identity.checks
 
 runChecks :: AppEnv -> [Check] -> IO Report
 runChecks env checks = do
