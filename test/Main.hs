@@ -24,6 +24,7 @@ import qualified Spec.RefreshTokenSpec
 import qualified Spec.ServerSpec
 import qualified Spec.SessionSpec
 import qualified Spec.UserSpec
+import qualified Spec.VerifySpec
 import System.Exit (exitSuccess)
 
 main :: IO ()
@@ -52,4 +53,5 @@ main = do
     Spec.Mfa.VerifySpec.runSpec
     Spec.RefreshTokenSpec.runSpec
     Spec.ServerSpec.runSpec
+    Spec.VerifySpec.runSpec
     exitSuccess
