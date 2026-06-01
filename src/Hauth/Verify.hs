@@ -15,6 +15,7 @@ import qualified Data.Text as T
 import Hauth.Env (AppEnv)
 import qualified Hauth.Verify.Database as Database
 import qualified Hauth.Verify.Identity as Identity
+import qualified Hauth.Verify.Smtp as Smtp
 import Hauth.Verify.Types (Check (..), CheckOutcome (..), Report (..))
 
 defaultChecks :: [Check]
@@ -26,10 +27,11 @@ defaultChecks =
         }
         : Database.checks
             <> Identity.checks
+            <> Smtp.checks
 
 runChecks :: AppEnv -> [Check] -> IO Report
-runChecks env checks = do
-    results <- mapM (runCheck env) checks
+runChecks env cks = do
+    results <- mapM (runCheck env) cks
     let passed = length [() | (_, CheckOk) <- results]
         warned = length [() | (_, CheckWarn _) <- results]
         failed = length [() | (_, CheckFail _) <- results]
