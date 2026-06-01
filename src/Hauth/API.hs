@@ -5,6 +5,7 @@ module Hauth.API (
     AdminHooksAPI,
     AdminUsersAPI,
     AdminWebhookAPI,
+    AdminWebhookDeliveriesAPI,
     AdminWebhookSubscriptionsAPI,
     HauthAPI,
     MfaAPI,
@@ -77,6 +78,7 @@ type AdminAPI =
                 :<|> AdminEmailTemplateAPI
                 :<|> AdminWebhookSubscriptionsAPI
                 :<|> AdminHooksAPI
+                :<|> AdminWebhookDeliveriesAPI
            )
 
 type AdminUsersAPI =
@@ -120,6 +122,11 @@ type AdminHooksAPI =
         :<|> RequireAuth 'ServiceRole :> "hooks" :> Capture "hook_id" HookId :> Get '[JSON] HookRow
         :<|> RequireAuth 'ServiceRole :> "hooks" :> Capture "hook_id" HookId :> ReqBody '[JSON] UpdateHookRequest :> Put '[JSON] HookRow
         :<|> RequireAuth 'ServiceRole :> "hooks" :> Capture "hook_id" HookId :> DeleteNoContent
+
+type AdminWebhookDeliveriesAPI =
+    RequireAuth 'ServiceRole :> "webhooks" :> Capture "subscription_id" WebhookSubscriptionId :> "deliveries" :> QueryParam "limit" Int :> QueryParam "after" Text :> Get '[JSON] ListWebhookDeliveriesResponse
+        :<|> RequireAuth 'ServiceRole :> "deliveries" :> Capture "delivery_id" WebhookDeliveryId :> Get '[JSON] WebhookDeliveryResponse
+        :<|> RequireAuth 'ServiceRole :> "deliveries" :> Capture "delivery_id" WebhookDeliveryId :> "retry" :> Post '[JSON] WebhookDeliveryResponse
 
 hauthAPI :: Proxy HauthAPI
 hauthAPI = Proxy

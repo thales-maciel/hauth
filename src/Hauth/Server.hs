@@ -70,6 +70,11 @@ import Hauth.Server.Mfa (
     verifyFactorHandler,
  )
 import Hauth.Server.OAuth (authorizeHandler, callbackHandler)
+import Hauth.Server.WebhookDeliveries (
+    getDeliveryHandler,
+    listDeliveriesBySubscriptionHandler,
+    retryDeliveryHandler,
+ )
 import Hauth.Server.WebhookSubscriptions (
     createWebhookSubscriptionHandler,
     deleteWebhookSubscriptionHandler,
@@ -201,6 +206,7 @@ adminServer =
         :<|> adminEmailTemplateServer
         :<|> adminWebhookSubscriptionsServer
         :<|> adminHooksServer
+        :<|> adminWebhookDeliveriesServer
 
 adminUsersServer :: ServerT AdminUsersAPI AppHandler
 adminUsersServer =
@@ -251,6 +257,12 @@ adminHooksServer =
         :<|> getHookHandler
         :<|> updateHookHandler
         :<|> deleteHookHandler
+
+adminWebhookDeliveriesServer :: ServerT AdminWebhookDeliveriesAPI AppHandler
+adminWebhookDeliveriesServer =
+    listDeliveriesBySubscriptionHandler
+        :<|> getDeliveryHandler
+        :<|> retryDeliveryHandler
 
 healthHandler :: AnonymousPrincipal -> AppHandler HealthResponse
 healthHandler _ =
