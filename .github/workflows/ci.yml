@@ -124,18 +124,31 @@ jobs:
       - name: End-to-end tests
         env:
           HAUTH_E2E_DATABASE_URL: postgresql://hauth:hauth@localhost:5432/hauth_e2e
-        run: cabal test hauth-e2e --project-file=cabal.project.ci --test-show-details=streaming
+        run: cabal test hauth-e2e --project-file=cabal.project.ci --enable-coverage --test-show-details=streaming
 
-      - name: Collect coverage report
+      - name: Collect combined coverage report
+        # Coverage from BOTH suites: hauth-test (pure logic, parsers, crypto) +
+        # hauth-e2e (handlers, OAuth, MFA, admin). The unit suite alone
+        # under-reports coverage by ~2x because most of the codebase is
+        # exercised through HTTP handlers in the e2e suite.
         run: |
           set -euo pipefail
-          src=$(find dist-newstyle -type d -path '*hpc/vanilla/html' | head -n 1)
-          if [ -z "$src" ]; then
-            echo "no HPC HTML report found" >&2
-            exit 1
-          fi
+          mix_lib=$(find dist-newstyle -type d -path '*noopt/build/extra-compilation-artifacts/hpc/vanilla/mix' | head -n 1)
+          mix_test=$(find dist-newstyle -type d -path '*t/hauth-test/*/hpc/vanilla/mix' | head -n 1)
+          mix_e2e=$(find dist-newstyle -type d -path '*t/hauth-e2e/*/hpc/vanilla/mix' | head -n 1)
+          tix_test=$(find dist-newstyle -type f -path '*t/hauth-test/*/hauth-test.tix' | head -n 1)
+          tix_e2e=$(find dist-newstyle -type f -path '*t/hauth-e2e/*/hauth-e2e.tix' | head -n 1)
+          for v in mix_lib mix_test mix_e2e tix_test tix_e2e; do
+            if [ -z "${!v}" ]; then echo "missing $v" >&2; exit 1; fi
+          done
+          hpc combine --union --output=combined.tix "$tix_test" "$tix_e2e"
           mkdir -p coverage-report
-          cp -r "$src"/. coverage-report/
+          hpc markup combined.tix \
+            --hpcdir="$mix_lib" --hpcdir="$mix_test" --hpcdir="$mix_e2e" \
+            --destdir=coverage-report
+          echo "--- Coverage summary ---"
+          hpc report combined.tix \
+            --hpcdir="$mix_lib" --hpcdir="$mix_test" --hpcdir="$mix_e2e"
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
