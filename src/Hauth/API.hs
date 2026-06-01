@@ -2,6 +2,7 @@ module Hauth.API (
     AdminAPI,
     AdminConfigAPI,
     AdminEmailTemplateAPI,
+    AdminHooksAPI,
     AdminUsersAPI,
     AdminWebhookAPI,
     AdminWebhookSubscriptionsAPI,
@@ -75,6 +76,7 @@ type AdminAPI =
                 :<|> AdminWebhookAPI
                 :<|> AdminEmailTemplateAPI
                 :<|> AdminWebhookSubscriptionsAPI
+                :<|> AdminHooksAPI
            )
 
 type AdminUsersAPI =
@@ -111,6 +113,13 @@ type AdminWebhookSubscriptionsAPI =
         :<|> RequireAuth 'ServiceRole :> "webhooks" :> Capture "subscription_id" WebhookSubscriptionId :> Get '[JSON] WebhookSubscriptionResponse
         :<|> RequireAuth 'ServiceRole :> "webhooks" :> Capture "subscription_id" WebhookSubscriptionId :> ReqBody '[JSON] UpdateWebhookSubscriptionRequest :> Put '[JSON] WebhookSubscriptionResponse
         :<|> RequireAuth 'ServiceRole :> "webhooks" :> Capture "subscription_id" WebhookSubscriptionId :> DeleteNoContent
+
+type AdminHooksAPI =
+    RequireAuth 'ServiceRole :> "hooks" :> ReqBody '[JSON] CreateHookRequest :> Post '[JSON] HookRow
+        :<|> RequireAuth 'ServiceRole :> "hooks" :> Get '[JSON] ListHooksResponse
+        :<|> RequireAuth 'ServiceRole :> "hooks" :> Capture "hook_id" HookId :> Get '[JSON] HookRow
+        :<|> RequireAuth 'ServiceRole :> "hooks" :> Capture "hook_id" HookId :> ReqBody '[JSON] UpdateHookRequest :> Put '[JSON] HookRow
+        :<|> RequireAuth 'ServiceRole :> "hooks" :> Capture "hook_id" HookId :> DeleteNoContent
 
 hauthAPI :: Proxy HauthAPI
 hauthAPI = Proxy
