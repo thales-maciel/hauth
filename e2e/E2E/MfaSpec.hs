@@ -202,7 +202,7 @@ spec = do
 
         it "hook allow: verify succeeds with correct code" \env ->
             withMfaHookServer (allowApp env) env \port -> do
-                seedMfaHook env port 5000 False
+                seedMfaHook env port 2000 False
                 access <- bootstrapVerifiedUser env "mfa-allow@example.com" "correct horse"
                 (factorId, secretBytes) <- enrollFactor env access
                 challengeId <- challengeFactor env access factorId
@@ -218,7 +218,7 @@ spec = do
 
         it "hook reject: 400 even with correct code (opaque error)" \env ->
             withMfaHookServer (rejectApp env) env \port -> do
-                seedMfaHook env port 5000 False
+                seedMfaHook env port 2000 False
                 access <- bootstrapVerifiedUser env "mfa-reject@example.com" "correct horse"
                 (factorId, secretBytes) <- enrollFactor env access
                 challengeId <- challengeFactor env access factorId
@@ -236,7 +236,7 @@ spec = do
 
         it "hook timeout fail_open=false: rejects verify" \env ->
             withMfaHookServer (slowApp env) env \port -> do
-                seedMfaHook env port 50 False
+                seedMfaHook env port 100 False
                 access <- bootstrapVerifiedUser env "mfa-timeout-closed@example.com" "correct horse"
                 (factorId, secretBytes) <- enrollFactor env access
                 challengeId <- challengeFactor env access factorId
@@ -254,7 +254,7 @@ spec = do
 
         it "hook timeout fail_open=true: TOTP check proceeds" \env ->
             withMfaHookServer (slowApp env) env \port -> do
-                seedMfaHook env port 50 True
+                seedMfaHook env port 100 True
                 access <- bootstrapVerifiedUser env "mfa-timeout-open@example.com" "correct horse"
                 (factorId, secretBytes) <- enrollFactor env access
                 challengeId <- challengeFactor env access factorId

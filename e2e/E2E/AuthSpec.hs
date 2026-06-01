@@ -234,7 +234,7 @@ spec = do
 
         it "hook timeout fail_open=false: rejects login" \env ->
             withHookServer (slowApp env) env HookPasswordVerificationAttempt \port -> do
-                seedHookWithOpts env HookPasswordVerificationAttempt port 50 False
+                seedHookWithOpts env HookPasswordVerificationAttempt port 100 False
                 _ <-
                     runApp env $
                         jsonPost
@@ -254,7 +254,7 @@ spec = do
 
         it "hook timeout fail_open=true: password check proceeds" \env ->
             withHookServer (slowApp env) env HookPasswordVerificationAttempt \port -> do
-                seedHookWithOpts env HookPasswordVerificationAttempt port 50 True
+                seedHookWithOpts env HookPasswordVerificationAttempt port 100 True
                 _ <-
                     runApp env $
                         jsonPost
@@ -342,7 +342,7 @@ withHookServer hookApp env hp action = do
     pure result
 
 seedHook :: TestEnv -> HookPoint -> Int -> IO ()
-seedHook env hp port = seedHookWithOpts env hp port 5000 False
+seedHook env hp port = seedHookWithOpts env hp port 2000 False
 
 seedHookWithOpts :: TestEnv -> HookPoint -> Int -> Int -> Bool -> IO ()
 seedHookWithOpts env hp port timeoutMs failOpen =
