@@ -25,7 +25,7 @@ defaultChecks =
         , checkRun = \_env -> pure CheckOk
         }
         : Database.checks
-        <> Identity.checks
+            <> Identity.checks
 
 runChecks :: AppEnv -> [Check] -> IO Report
 runChecks env checks = do
