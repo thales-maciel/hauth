@@ -18,13 +18,12 @@ import Hauth.Verify.Types (Check (..), CheckOutcome (..), Report (..))
 
 defaultChecks :: [Check]
 defaultChecks =
-    [ Check
+    Check
         { checkName = "verify.framework"
         , checkLabel = "Verify framework"
         , checkRun = \_env -> pure CheckOk
         }
-    ]
-        ++ Database.checks
+        : Database.checks
 
 runChecks :: AppEnv -> [Check] -> IO Report
 runChecks env checks = do

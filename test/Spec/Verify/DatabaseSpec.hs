@@ -12,6 +12,6 @@ runSpec = do
 testChecksExported :: IO ()
 testChecksExported = do
     assertEqual "database checks count" 3 (length checks)
-    assertEqual "first check name" "config.parse" (checkName (checks !! 0))
+    assertEqual "first check name" "config.parse" (checkName (head checks))
     assertEqual "second check name" "database.connect" (checkName (checks !! 1))
     assertEqual "third check name" "database.migrations" (checkName (checks !! 2))

@@ -45,11 +45,9 @@ spec = do
             let migrationsCheck = checks !! 2
             -- Remove one applied migration row to simulate a pending migration
             _ <-
-                withDatabaseConnection (testAppEnv env) \conn ->
-                    execute_
-                        conn
-                        "DELETE FROM auth.schema_migrations WHERE filename = (SELECT filename FROM auth.schema_migrations ORDER BY filename DESC LIMIT 1)"
-            pure ()
+                withDatabaseConnection
+                    (testAppEnv env)
+                    (`execute_` "DELETE FROM auth.schema_migrations WHERE filename = (SELECT filename FROM auth.schema_migrations ORDER BY filename DESC LIMIT 1)")
             outcome <- checkRun migrationsCheck (testAppEnv env)
             case outcome of
                 CheckWarn msg -> T.isInfixOf "pending" msg `shouldBe` True
