@@ -82,15 +82,26 @@ loadFromDb conn = do
 {- | Create a new 'TemplateCache' backed by the DB, with LISTEN/NOTIFY reload.
 Starts a background thread that listens on "email_templates_updated".
 Takes the Postgres connection string directly to avoid a circular import with Hauth.Env.
+
+If the initial connection fails (DB unreachable, e.g. operator hasn't
+migrated yet, or a unit-test environment with a bogus URL), returns an
+empty in-memory cache; lookupTemplate falls back to embedded defaults.
+The background reconnect loop will pick up the DB once it comes online.
 -}
 newTemplateCache :: Text -> IO TemplateCache
 newTemplateCache databaseUrl = do
-    conn <- connectPostgreSQL (TE.encodeUtf8 databaseUrl)
-    initial <- loadFromDb conn
-    ref <- newIORef initial
+    result <- try @SomeException (connectPostgreSQL (TE.encodeUtf8 databaseUrl))
+    ref <- newIORef Map.empty
     let cache = TemplateCache ref
-    _ <- forkIO (listenLoop conn ref databaseUrl)
-    pure cache
+    case result of
+        Left _ -> do
+            _ <- forkIO (reconnectLoop ref databaseUrl)
+            pure cache
+        Right conn -> do
+            initial <- loadFromDb conn
+            writeIORef ref initial
+            _ <- forkIO (listenLoop conn ref databaseUrl)
+            pure cache
 
 listenLoop :: Connection -> IORef (Map Text Template) -> Text -> IO ()
 listenLoop conn ref databaseUrl = do
