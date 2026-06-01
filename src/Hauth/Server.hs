@@ -39,7 +39,7 @@ import Hauth.Auth.Verify (OtpType (..), VerifyError (..), classifyVerifyRequest,
 import Hauth.Config (Config (..), DatabaseConfig (..), EmailConfig (..), JwtConfig (..), ServerConfig (..), SiteConfig (..))
 import Hauth.Crypto.Password (defaultArgon2Settings, hashPassword)
 import qualified Hauth.Crypto.Password as Pwd
-import Hauth.Email (EmailSender (..), TemplateData (..), TemplateKind (..), renderEmail, sendEmail, stubSender)
+import Hauth.Email (EmailSender (..), TemplateData (..), TemplateKind (..), renderEmailCached, sendEmail, stubSender)
 import Hauth.Env (AppEnv (..), LogLevel (..), createAppEnv, destroyAppEnv, logMessage, withDatabaseConnection)
 import Hauth.Server.Admin (
     adminCreateUserHandler,
@@ -716,7 +716,8 @@ recoverHandler _ req = do
                                     , templateSiteUrl = siteUrl
                                     , templateTokenHash = token
                                     }
-                        case renderEmail Recovery emailFrom tdata of
+                        rendered <- liftIO (renderEmailCached (appTemplateCache env) Recovery emailFrom tdata)
+                        case rendered of
                             Left err ->
                                 liftIO $
                                     logMessage appLogger LogWarn $
@@ -985,7 +986,8 @@ handleSignupResend emailText = do
                             , templateSiteUrl = siteUrl configSite
                             , templateTokenHash = newToken
                             }
-                case renderEmail Confirmation (emailFrom configEmail) tdata of
+                rendered <- liftIO (renderEmailCached (appTemplateCache env) Confirmation (emailFrom configEmail) tdata)
+                case rendered of
                     Left _ ->
                         liftIO (logMessage appLogger LogWarn "resend: failed to render confirmation email")
                     Right msg -> do
