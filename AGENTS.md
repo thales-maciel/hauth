@@ -44,6 +44,10 @@ docs/                    Operator-facing docs
 
 **If your test needs `connectPostgreSQL`, it belongs in `e2e/E2E/`, not `test/Spec/`.** This rule has tripped multiple agents.
 
+**`createAppEnv` is exercised by the unit suite via `Spec.ConfigSpec` against zero migrations.** Anything you add to `createAppEnv` (a cache, a worker thread, a background loop) MUST work when `auth.*` tables don't exist yet. Catch SqlError on schema-shaped queries; catch the connectPostgreSQL exception if you eagerly open connections; fall back to no-op behavior. The DB will come up later — be ready to recover via a reconnect loop. Crashing AppEnv construction breaks the entire unit suite.
+
+**E2E tests that mutate `auth.*` MUST clean up after themselves.** `truncateAll` doesn't restore the schema migration log, and migrations are forward-only. A test that deletes from `auth.schema_migrations` (e.g. to simulate a pending migration) leaves the next `runMigrate` trying to re-apply a migration whose objects already exist — every subsequent run of the e2e suite fails until the operator drops and recreates the database. Wrap mutation tests in `bracket_` that restores the state on exit.
+
 ## Postgres gotchas
 
 - `execute_` is for statements with no result columns (INSERT/UPDATE/DELETE/DDL). It throws on column-returning statements — even `SELECT pg_advisory_lock(...)` (returns void column) or `SELECT 1`. Use `query_` and discard:
@@ -93,6 +97,12 @@ Multiple agents working in parallel WILL collide on these files. Resolution is a
 | `src/Hauth/Env.hs::AppEnv` | new env field | additive; double-check `createAppEnv` and `destroyAppEnv` cover both |
 
 If your scope is "the framework module that aggregates" (e.g. `Hauth.Verify` itself, `e2e/Main.hs` registry), expect to be the focal merge target — design the aggregation so each downstream issue is a one-line edit.
+
+### Stay in your lane
+
+If a module already exists in main, **work with it as-is** — don't refactor its shape, don't extract types into a new module, don't change its public signature. In v0.2 wave 2 three concurrent agents each independently decided to extract `Hauth.Verify.Types` from `Hauth.Verify`; resolving the duplicate-create conflicts cost an hour. If you genuinely need a structural change, propose it in a separate refactor PR before the issue lands, or accept the existing shape and live with it.
+
+**Don't change an aggregator's signature even if your check needs more arguments.** One agent saw that OAuth checks need `Config` and changed `defaultChecks :: [Check]` to `defaultChecks :: Config -> [Check]`. That broke every other concurrent verify-check PR. Better: take the extra argument in YOUR per-area module (`oauthChecks :: Config -> [Check]`) and the aggregator constructs the value at the call site or routes it through a shared context. If signature changes are unavoidable, the issue body should call it out as a blocking coordination point.
 
 ## Branch + PR conventions
 
