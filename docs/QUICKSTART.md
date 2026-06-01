@@ -10,12 +10,17 @@ hardening — those will get dedicated docs in v0.2.
 - **Linux x86_64** host (any distro — the binary is fully static, no glibc).
 - **Postgres 13 or newer** reachable from the host. You need permission to
   create a database and a role.
-- **`curl`** and **`psql`** on the host.
+- **`curl`**, **`psql`**, and **`jq`** on the host. The smoke test pipes
+  through `jq`; `psql` is whatever your distro packages as
+  `postgresql-client`.
+- **`sudo`** (or write access to `/usr/local/bin`) so the install step can
+  drop the binary somewhere on `PATH`.
 - **An SMTP target** for outbound email. For a local trial run you can use
   MailHog — `docker run -d -p 1025:1025 -p 8025:8025 mailhog/mailhog` brings
   up an SMTP server on `:1025` and a web inbox on `http://localhost:8025`. For
   the smoke test below we skip email entirely by flipping the confirmation
-  flag in SQL.
+  flag in SQL. If SMTP is unreachable, signup still returns 200 — the
+  confirmation email just never arrives.
 
 No language tooling required.
 
@@ -42,6 +47,10 @@ hauth --help
 ## 2. Create the database
 
 ```sql
+-- Skip the first two lines if this is a genuinely fresh Postgres.
+DROP DATABASE IF EXISTS hauth;
+DROP ROLE     IF EXISTS hauth;
+
 CREATE ROLE hauth LOGIN PASSWORD 'change-me';
 CREATE DATABASE hauth OWNER hauth;
 ```
@@ -100,9 +109,15 @@ hauth migrate up   --config config.json
 hauth serve        --config config.json
 ```
 
-Health endpoints are available at `http://127.0.0.1:8080/healthz` (process up)
-and `http://127.0.0.1:8080/healthz/deep` (database reachable, migrations
-applied).
+`hauth serve` doesn't print a startup banner — it just blocks. Hit
+`http://127.0.0.1:8080/healthz` from another shell to confirm it's up; that
+returns `{"status":"ok"}`. The deeper check at
+`http://127.0.0.1:8080/healthz/deep` returns `{"status":"ok", "checks":
+[...]}` once Postgres is reachable from the process.
+
+If `8080` is already taken on your host, override it: either set
+`server.port` in `config.json`, pass `--port 18080`, or set `HAUTH_PORT=18080`.
+Then update every URL below to match.
 
 ## 5. Smoke test
 

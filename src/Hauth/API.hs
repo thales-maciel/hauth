@@ -20,7 +20,6 @@ import Servant.API (
     Delete,
     Get,
     JSON,
-    NoContent,
     Post,
     PostNoContent,
     Put,
