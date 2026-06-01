@@ -330,7 +330,7 @@ withHookServer hookApp env hp action = do
             sock
             hookApp
     takeMVar ready
-    threadDelay 10000
+    threadDelay 250000
     result <-
         bracket_
             (pure ())
