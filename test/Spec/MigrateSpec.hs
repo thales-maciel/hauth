@@ -23,6 +23,7 @@ runSpec = do
         , "0009_webhook_deliveries.sql"
         , "0010_auth_hooks.sql"
         , "0011_email_templates.sql"
+        , "0012_email_templates_notify.sql"
         ]
         names
     assertEqual

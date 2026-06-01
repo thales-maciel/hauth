@@ -50,7 +50,7 @@ import Hauth.Auth.Admin (
  )
 import Hauth.Config (Config (..), EmailConfig (..), SiteConfig (..))
 import Hauth.Crypto.Password (defaultArgon2Settings, hashPassword)
-import Hauth.Email (TemplateData (..), TemplateKind (..), renderEmail, sendEmail, stubSender)
+import Hauth.Email (TemplateData (..), TemplateKind (..), renderEmailCached, sendEmail, stubSender)
 import Hauth.Env (AppEnv (..), LogLevel (..), logMessage, withDatabaseConnection)
 import qualified Hauth.Identity as Identity
 import Hauth.User (generateConfirmationToken)
@@ -321,7 +321,8 @@ adminInviteUserHandler _ req = do
                 , templateSiteUrl = siteUrl
                 , templateTokenHash = token
                 }
-    case renderEmail Invite emailFrom tdata of
+    rendered <- liftIO (renderEmailCached (appTemplateCache env) Invite emailFrom tdata)
+    case rendered of
         Left err ->
             liftIO $
                 logMessage appLogger LogWarn $

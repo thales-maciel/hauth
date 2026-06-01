@@ -17,11 +17,13 @@ import qualified Data.Text.Encoding as TE
 import Data.Time (NominalDiffTime)
 import Database.PostgreSQL.Simple (Connection, close, connectPostgreSQL)
 import Hauth.Config (Config (..), DatabaseConfig (..))
+import Hauth.Email.TemplateCache (TemplateCache, newTemplateCache)
 
 data AppEnv = AppEnv
     { appConfig :: Config
     , appLogger :: Logger
     , appConnectionPool :: ConnectionPool
+    , appTemplateCache :: TemplateCache
     }
 
 newtype ConnectionPool = ConnectionPool
@@ -46,11 +48,13 @@ createAppEnv =
 createAppEnvWithLogger :: Logger -> Config -> IO AppEnv
 createAppEnvWithLogger logger config = do
     pool <- createConnectionPool config
+    cache <- newTemplateCache (databaseUrl (configDatabase config))
     pure
         AppEnv
             { appConfig = config
             , appLogger = logger
             , appConnectionPool = pool
+            , appTemplateCache = cache
             }
 
 destroyAppEnv :: AppEnv -> IO ()

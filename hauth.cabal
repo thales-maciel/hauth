@@ -66,6 +66,7 @@ library
     Hauth.Config
     Hauth.Crypto.Password
     Hauth.Email
+    Hauth.Email.TemplateCache
     Hauth.Email.Templates
     Hauth.Env
     Hauth.Hooks.Runner
@@ -206,6 +207,7 @@ test-suite hauth-e2e
     E2E.AdminSpec
     E2E.AuthSpec
     E2E.EmailTemplatesCrudSpec
+    E2E.EmailTemplatesLoaderSpec
     E2E.Helpers
     E2E.HooksTypesSpec
     E2E.MfaSpec
