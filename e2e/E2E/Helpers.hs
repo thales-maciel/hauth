@@ -88,7 +88,9 @@ silentLogger :: Logger
 silentLogger = Logger \_lvl _msg -> pure ()
 
 -- Truncate every auth.* table EXCEPT auth.schema_migrations. Drives per-test
--- isolation when wired via hspec's before_.
+-- isolation when wired via hspec's before_. When adding a new auth.* table,
+-- add it here too — otherwise tests pile up rows across runs and assertions
+-- like "expected 0 deliveries" start counting hundreds.
 truncateAll :: TestEnv -> IO ()
 truncateAll TestEnv{testAppEnv} =
     withDatabaseConnection testAppEnv \conn -> do
@@ -97,9 +99,12 @@ truncateAll TestEnv{testAppEnv} =
                 conn
                 "TRUNCATE TABLE \
                 \  auth.flow_state, \
+                \  auth.hooks, \
                 \  auth.mfa_factors, \
                 \  auth.refresh_tokens, \
                 \  auth.sessions, \
+                \  auth.webhook_deliveries, \
+                \  auth.webhook_subscriptions, \
                 \  auth.identities, \
                 \  auth.users \
                 \RESTART IDENTITY CASCADE"

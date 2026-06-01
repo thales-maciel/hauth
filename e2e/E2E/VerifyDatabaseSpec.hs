@@ -1,7 +1,8 @@
 module E2E.VerifyDatabaseSpec (spec) where
 
+import Control.Exception (bracket_)
 import qualified Data.Text as T
-import Database.PostgreSQL.Simple (execute_)
+import Database.PostgreSQL.Simple (Only (..), execute, execute_, query_)
 import E2E.Helpers (TestEnv (..))
 import Hauth.Config (Config (..), DatabaseConfig (..))
 import Hauth.Env (createAppEnvWithLogger, destroyAppEnv, withDatabaseConnection)
@@ -43,12 +44,27 @@ spec = do
 
         it "returns CheckWarn when a migration row is missing" \env -> do
             let migrationsCheck = checks !! 2
-            -- Remove one applied migration row to simulate a pending migration
-            _ <-
-                withDatabaseConnection
-                    (testAppEnv env)
-                    (`execute_` "DELETE FROM auth.schema_migrations WHERE filename = (SELECT filename FROM auth.schema_migrations ORDER BY filename DESC LIMIT 1)")
-            outcome <- checkRun migrationsCheck (testAppEnv env)
+            -- Capture the last applied row, delete it to simulate a pending
+            -- migration, then restore it so the next test (and subsequent local
+            -- runs against the same database) see a consistent schema_migrations
+            -- table. Without the restore, the next runMigrate tries to re-apply
+            -- the migration whose objects already exist, breaking every
+            -- subsequent invocation until the operator drops the database.
+            outcome <-
+                withDatabaseConnection (testAppEnv env) \conn -> do
+                    rows <-
+                        query_
+                            conn
+                            "SELECT filename FROM auth.schema_migrations \
+                            \ORDER BY filename DESC LIMIT 1" ::
+                            IO [Only T.Text]
+                    case rows of
+                        [Only lastFilename] ->
+                            bracket_
+                                (execute conn "DELETE FROM auth.schema_migrations WHERE filename = ?" (Only lastFilename))
+                                (execute conn "INSERT INTO auth.schema_migrations (filename) VALUES (?)" (Only lastFilename))
+                                (checkRun migrationsCheck (testAppEnv env))
+                        _ -> fail "expected at least one applied migration"
             case outcome of
                 CheckWarn msg -> T.isInfixOf "pending" msg `shouldBe` True
                 _ -> fail ("expected CheckWarn, got: " <> show outcome)
