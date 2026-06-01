@@ -24,7 +24,7 @@ import qualified Data.UUID.V4 as UUID4
 import Hauth.API.Auth (SessionPrincipal (..))
 import Hauth.API.Types
 import Hauth.Auth.AalAmr (SessionAuthState (..), buildAmrEntries, deriveSessionAuthState)
-import Hauth.Auth.Jwt (AccessTokenClaims (..), signAccessToken)
+import Hauth.Auth.Jwt (AccessTokenClaims (..), issueAccessToken)
 import Hauth.Config (Config (..), JwtConfig (..))
 import Hauth.Env (AppEnv (..), withDatabaseConnection)
 import Hauth.Mfa.Totp (TotpSecret (..), decodeBase32, encodeBase32, generateTotpSecret, otpAuthUri, unTotpSecret)
@@ -298,7 +298,7 @@ verifyFactorHandler principal (FactorId factorIdText) VerifyFactorRequest{verify
                         , claimIssuedAt = nowUtc
                         , claimExpiresAt = expiryUtc
                         }
-            signResult <- liftIO (signAccessToken configJwt claims)
+            signResult <- liftIO (issueAccessToken env claims)
             accessToken <- case signResult of
                 Left err ->
                     throwError
@@ -306,7 +306,7 @@ verifyFactorHandler principal (FactorId factorIdText) VerifyFactorRequest{verify
                             { errBody =
                                 Aeson.encode $
                                     Aeson.object
-                                        [ "error" Aeson..= ("server_error" :: Text)
+                                        [ "error" Aeson..= ("token_issuance_blocked" :: Text)
                                         , "error_description" Aeson..= T.pack (show err)
                                         ]
                             }

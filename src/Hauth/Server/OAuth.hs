@@ -19,7 +19,7 @@ import Hauth.API.Types (
     buildSessionResponse,
     buildUserResponse,
  )
-import Hauth.Auth.Jwt (AccessTokenClaims (..), AmrEntry (..), signAccessToken)
+import Hauth.Auth.Jwt (AccessTokenClaims (..), AmrEntry (..), issueAccessToken)
 import Hauth.Config (Config (..), JwtConfig (..), SiteConfig (..))
 import Hauth.Env (AppEnv (..), withDatabaseConnection)
 import Hauth.OAuth (
@@ -54,7 +54,7 @@ import Hauth.Session (
     sessionId,
  )
 import qualified Hauth.User as User
-import Servant.Server (Handler, ServerError (errBody), err400, err401, err501)
+import Servant.Server (Handler, ServerError (errBody), err400, err401, err500, err501)
 
 type AppHandler = ReaderT AppEnv Handler
 
@@ -363,15 +363,15 @@ issueOAuthSession env configJwt jwtAccessTokenTtlSeconds claims = do
                 , claimIssuedAt = now
                 , claimExpiresAt = expiry
                 }
-    signResult <- liftIO (signAccessToken configJwt accessClaims)
+    signResult <- liftIO (issueAccessToken env accessClaims)
     accessToken <- case signResult of
         Left err ->
             throwError
-                err401
+                err500
                     { errBody =
                         Aeson.encode $
                             Aeson.object
-                                [ "error" Aeson..= ("server_error" :: T.Text)
+                                [ "error" Aeson..= ("token_issuance_blocked" :: T.Text)
                                 , "msg" Aeson..= T.pack (show err)
                                 ]
                     }

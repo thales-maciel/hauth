@@ -8,10 +8,13 @@ module Hauth.Auth.Jwt (
     AccessTokenClaims (..),
     AmrEntry (..),
     JwtError (..),
+    applyOverlay,
+    issueAccessToken,
     signAccessToken,
     validateAccessToken,
 ) where
 
+import Control.Exception (SomeException, try)
 import Crypto.Hash (SHA256)
 import Crypto.MAC.HMAC (HMAC, hmac, hmacGetDigest)
 import Data.Aeson (
@@ -38,7 +41,10 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Data.Time.Clock (UTCTime, getCurrentTime)
 import Data.Time.Clock.POSIX (POSIXTime, posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
-import Hauth.Config (JwtConfig (..))
+import Hauth.Config (Config (..), JwtConfig (..))
+import Hauth.Env (AppEnv (..), withDatabaseConnection)
+import Hauth.Hooks.Runner (HookDecision (..), runHook)
+import Hauth.Hooks.Types (HookConfig, HookPoint (..), loadHookConfig)
 
 -- | A single entry in the Authentication Methods References claim array.
 data AmrEntry = AmrEntry
@@ -120,6 +126,85 @@ signAccessToken JwtConfig{jwtSecret, jwtIssuer, jwtAudience} claims = do
         sig = computeHmac256 jwtSecret signingInput
         token = signingInput <> "." <> sig
     pure (Right token)
+
+{- | Issue an access token, applying the custom-access-token hook if configured.
+
+Only @app_metadata@ and @user_metadata@ from the hook overlay are merged into
+the claims. Security-sensitive claims (@sub@, @role@, @exp@, @iat@, etc.) are
+immutable. A @HookReject@ surfaces as @Left (JwtSignError "token_issuance_blocked: <reason>")@.
+-}
+issueAccessToken :: AppEnv -> AccessTokenClaims -> IO (Either JwtError Text)
+issueAccessToken env claims = do
+    let AppEnv{appConfig} = env
+        Config{configJwt} = appConfig
+    mCfg <- tryLoadHookConfig env
+    case mCfg of
+        Nothing -> signAccessToken configJwt claims
+        Just hookCfg -> do
+            let payload = buildHookPayload claims
+            decision <- runHook hookCfg payload
+            case decision of
+                HookAllow ->
+                    signAccessToken configJwt claims
+                HookAllowWith overlay ->
+                    signAccessToken configJwt (applyOverlay claims overlay)
+                HookReject reason ->
+                    pure (Left (JwtSignError ("token_issuance_blocked: " <> T.unpack reason)))
+
+-- | Load the custom-access-token hook config, returning Nothing on DB error.
+tryLoadHookConfig :: AppEnv -> IO (Maybe HookConfig)
+tryLoadHookConfig env = do
+    result <- try (withDatabaseConnection env (`loadHookConfig` HookCustomAccessToken))
+    pure $ case (result :: Either SomeException (Maybe HookConfig)) of
+        Left _ -> Nothing
+        Right v -> v
+
+-- | Build the hook payload for a custom-access-token invocation.
+buildHookPayload :: AccessTokenClaims -> Aeson.Value
+buildHookPayload claims =
+    Aeson.object
+        [ "claims" Aeson..= claimsToValue claims
+        , "user_id" Aeson..= claimSub claims
+        , "session_id" Aeson..= claimSessionId claims
+        , "aal" Aeson..= claimAal claims
+        ]
+
+-- | Encode the proposed claims as a JSON object for the hook payload.
+claimsToValue :: AccessTokenClaims -> Aeson.Value
+claimsToValue AccessTokenClaims{..} =
+    Aeson.object
+        ( [ "sub" Aeson..= claimSub
+          , "role" Aeson..= claimRole
+          , "aal" Aeson..= claimAal
+          , "session_id" Aeson..= claimSessionId
+          , "app_metadata" Aeson..= claimAppMetadata
+          , "user_metadata" Aeson..= claimUserMetadata
+          ]
+            ++ maybe [] (\e -> ["email" Aeson..= e]) claimEmail
+            ++ maybe [] (\p -> ["phone" Aeson..= p]) claimPhone
+        )
+
+-- | Merge only @app_metadata@ and @user_metadata@ from the overlay into claims.
+applyOverlay :: AccessTokenClaims -> Aeson.Value -> AccessTokenClaims
+applyOverlay claims (Aeson.Object o) =
+    claims
+        { claimAppMetadata = mergeObjects (claimAppMetadata claims) (KeyMap.lookup (fromText "app_metadata") o)
+        , claimUserMetadata = mergeObjects (claimUserMetadata claims) (KeyMap.lookup (fromText "user_metadata") o)
+        }
+applyOverlay claims _ = claims
+
+-- | Merge overlay object into base; overlay wins on key conflicts.
+mergeObjects :: Value -> Maybe Value -> Value
+mergeObjects base Nothing = base
+mergeObjects base (Just (Aeson.Object overlayObj)) =
+    case base of
+        Aeson.Object baseObj -> Aeson.Object (KeyMap.unionWith mergeValues baseObj overlayObj)
+        _ -> Aeson.Object overlayObj
+mergeObjects _ (Just v) = v
+
+mergeValues :: Value -> Value -> Value
+mergeValues (Aeson.Object b) (Aeson.Object o) = Aeson.Object (KeyMap.unionWith mergeValues b o)
+mergeValues _ overlay = overlay
 
 -- | Build the full JSON claims object for signing.
 buildPayload :: Text -> Text -> Integer -> Integer -> AccessTokenClaims -> Object

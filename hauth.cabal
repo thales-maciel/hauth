@@ -158,6 +158,7 @@ test-suite hauth-test
     Spec.APISpec
     Spec.Auth.AalAmrSpec
     Spec.Auth.AdminSpec
+    Spec.Auth.CustomAccessTokenSpec
     Spec.Auth.JwtSpec
     Spec.Auth.LoginSpec
     Spec.Auth.LogoutSpec
