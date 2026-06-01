@@ -90,6 +90,7 @@ library
     Hauth.Verify
     Hauth.Verify.Database
     Hauth.Verify.Identity
+    Hauth.Verify.Oauth
     Hauth.Verify.Smtp
     Hauth.Verify.Types
     Hauth.Webhooks.Events
@@ -145,6 +146,10 @@ test-suite hauth-test
     -rtsopts
     -with-rtsopts=-N
   type: exitcode-stdio-1.0
+  ghc-options:
+    -threaded
+    -rtsopts
+    -with-rtsopts=-N
   main-is: Main.hs
   hs-source-dirs: test
   other-modules:
@@ -180,6 +185,7 @@ test-suite hauth-test
     Spec.Verify.IdentitySpec
     Spec.Verify.SmtpSpec
     Spec.VerifySpec
+    Spec.Verify.OauthSpec
     Spec.Webhooks.SigningSpec
   build-depends:
       base >=4.17 && <5

@@ -78,7 +78,7 @@ runVerifyCommand envConfigPath options =
         Right configPath -> do
             config <- loadConfigOrExit configPath
             env <- createAppEnv config
-            report <- runChecks env defaultChecks
+            report <- runChecks env (defaultChecks config)
             destroyAppEnv env
             printReport (verifyFormat options) report
             if reportFailed report > 0
