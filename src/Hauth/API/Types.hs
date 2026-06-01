@@ -57,6 +57,7 @@ module Hauth.API.Types (
     VerifyFactorRequest (..),
     VerifyFactorResponse (..),
     VerifyRequest (..),
+    ListWebhookDeliveriesResponse (..),
     WebhookDeliveriesResponse (..),
     WebhookDeliveryId (..),
     WebhookDeliveryResponse (..),
@@ -1062,19 +1063,88 @@ newtype UpdateEmailTemplatesRequest = UpdateEmailTemplatesRequest
     deriving stock (Eq, Generic, Show)
     deriving anyclass (FromJSON, ToJSON)
 
+-- | Full delivery row returned by GET single and POST retry.
+data WebhookDeliveryResponse = WebhookDeliveryResponse
+    { webhookDeliveryId :: UUID
+    , webhookDeliverySubscriptionId :: UUID
+    , webhookDeliveryEventType :: Text
+    , webhookDeliveryPayload :: Value
+    , webhookDeliveryStatus :: Text
+    , webhookDeliveryAttempts :: Int
+    , webhookDeliveryNextAttemptAt :: UTCTime
+    , webhookDeliveryResponseStatus :: Maybe Int
+    , webhookDeliveryResponseBody :: Maybe Text
+    , webhookDeliveryLastError :: Maybe Text
+    , webhookDeliveryCreatedAt :: UTCTime
+    , webhookDeliveryUpdatedAt :: UTCTime
+    }
+    deriving stock (Eq, Show)
+
+instance ToJSON WebhookDeliveryResponse where
+    toJSON WebhookDeliveryResponse{..} =
+        object
+            [ "id" .= webhookDeliveryId
+            , "subscription_id" .= webhookDeliverySubscriptionId
+            , "event_type" .= webhookDeliveryEventType
+            , "payload" .= webhookDeliveryPayload
+            , "status" .= webhookDeliveryStatus
+            , "attempts" .= webhookDeliveryAttempts
+            , "next_attempt_at" .= webhookDeliveryNextAttemptAt
+            , "response_status" .= webhookDeliveryResponseStatus
+            , "response_body" .= webhookDeliveryResponseBody
+            , "last_error" .= webhookDeliveryLastError
+            , "created_at" .= webhookDeliveryCreatedAt
+            , "updated_at" .= webhookDeliveryUpdatedAt
+            ]
+
+instance FromJSON WebhookDeliveryResponse where
+    parseJSON = Aeson.withObject "WebhookDeliveryResponse" \o ->
+        WebhookDeliveryResponse
+            <$> o Aeson..: "id"
+            <*> o Aeson..: "subscription_id"
+            <*> o Aeson..: "event_type"
+            <*> o Aeson..: "payload"
+            <*> o Aeson..: "status"
+            <*> o Aeson..: "attempts"
+            <*> o Aeson..: "next_attempt_at"
+            <*> o Aeson..:? "response_status"
+            <*> o Aeson..:? "response_body"
+            <*> o Aeson..:? "last_error"
+            <*> o Aeson..: "created_at"
+            <*> o Aeson..: "updated_at"
+
+data ListWebhookDeliveriesResponse = ListWebhookDeliveriesResponse
+    { listDeliveries :: [WebhookDeliveryResponse]
+    , listDeliveriesNextPage :: Maybe Int
+    }
+    deriving stock (Eq, Show)
+
+instance ToJSON ListWebhookDeliveriesResponse where
+    toJSON ListWebhookDeliveriesResponse{listDeliveries, listDeliveriesNextPage} =
+        object
+            [ "deliveries" .= listDeliveries
+            , "next_page" .= listDeliveriesNextPage
+            ]
+
+instance FromJSON ListWebhookDeliveriesResponse where
+    parseJSON = Aeson.withObject "ListWebhookDeliveriesResponse" \o ->
+        ListWebhookDeliveriesResponse
+            <$> o Aeson..: "deliveries"
+            <*> o Aeson..:? "next_page"
+
+-- | Legacy response type kept for the existing AdminWebhookAPI stubs.
 newtype WebhookDeliveriesResponse = WebhookDeliveriesResponse
     { webhookDeliveries :: [WebhookDeliveryResponse]
     }
-    deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+    deriving stock (Eq, Show)
 
-data WebhookDeliveryResponse = WebhookDeliveryResponse
-    { webhookDeliveryId :: WebhookDeliveryId
-    , webhookDeliveryStatus :: Text
-    , webhookDeliveryAttempts :: Int
-    }
-    deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+instance ToJSON WebhookDeliveriesResponse where
+    toJSON WebhookDeliveriesResponse{webhookDeliveries} =
+        object ["deliveries" .= webhookDeliveries]
+
+instance FromJSON WebhookDeliveriesResponse where
+    parseJSON = Aeson.withObject "WebhookDeliveriesResponse" \o ->
+        WebhookDeliveriesResponse <$> o Aeson..: "deliveries"
 
 newtype WebhookSubscriptionId = WebhookSubscriptionId {unWebhookSubscriptionId :: Text}
     deriving stock (Eq, Generic, Ord, Show)
