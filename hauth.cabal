@@ -85,6 +85,7 @@ library
     Hauth.User
     Hauth.Verify
     Hauth.Verify.Database
+    Hauth.Verify.Identity
     Hauth.Verify.Types
     Hauth.Webhooks.Events
     Hauth.Webhooks.Outbox
@@ -104,6 +105,7 @@ library
     , http-types >=0.12 && <0.13
     , memory >=0.18 && <0.19
     , mtl >=2.2 && <2.4
+    , network-uri >=2.6 && <2.7
     , postgresql-simple >=0.7 && <0.8
     , resource-pool >=0.2.3 && <0.3
     , servant >=0.19 && <0.21
@@ -169,6 +171,7 @@ test-suite hauth-test
     Spec.TestUtils
     Spec.UserSpec
     Spec.Verify.DatabaseSpec
+    Spec.Verify.IdentitySpec
     Spec.VerifySpec
     Spec.Webhooks.SigningSpec
   build-depends:
