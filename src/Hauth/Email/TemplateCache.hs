@@ -160,3 +160,4 @@ lookupTemplate TemplateCache{cacheRef} name = do
                             <> show name
                             <> " (not in DB or embedded bundle)"
                         )
+
