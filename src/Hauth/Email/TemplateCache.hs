@@ -57,19 +57,26 @@ embeddedTemplate name = do
             , templateBodyHtml = html
             }
 
--- | Load all rows from auth.email_templates.
+-- | Load all rows from auth.email_templates. Returns an empty map if the
+-- table doesn't exist yet (pre-migration deployments / unit-test setups
+-- without a migrated schema). The lookupTemplate fallback then serves
+-- embedded defaults.
 loadFromDb :: Connection -> IO (Map Text Template)
 loadFromDb conn = do
-    rows <-
-        query_
-            conn
-            "SELECT name, subject, body_text, body_html \
-            \FROM auth.email_templates"
-    pure $
-        Map.fromList
-            [ (name, Template{templateSubject = subj, templateBodyText = txt, templateBodyHtml = html})
-            | (name, subj, txt, html) <- rows
-            ]
+    result <-
+        try @SomeException $
+            query_
+                conn
+                "SELECT name, subject, body_text, body_html \
+                \FROM auth.email_templates"
+    case result of
+        Left _ -> pure Map.empty
+        Right rows ->
+            pure $
+                Map.fromList
+                    [ (name, Template{templateSubject = subj, templateBodyText = txt, templateBodyHtml = html})
+                    | (name, subj, txt, html) <- rows
+                    ]
 
 {- | Create a new 'TemplateCache' backed by the DB, with LISTEN/NOTIFY reload.
 Starts a background thread that listens on "email_templates_updated".
