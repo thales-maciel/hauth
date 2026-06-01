@@ -81,6 +81,7 @@ library
     Hauth.Server.OAuth
     Hauth.Session
     Hauth.User
+    Hauth.Verify
   hs-source-dirs: src
   build-depends:
       aeson >=2.2 && <2.3
@@ -117,7 +118,9 @@ executable hauth
   hs-source-dirs: app
   build-depends:
     base >=4.17 && <5
+    , bytestring >=0.11 && <0.13
     , hauth
+    , text >=2.0 && <2.2
   default-language: Haskell2010
 
 test-suite hauth-test
@@ -151,6 +154,7 @@ test-suite hauth-test
     Spec.SessionSpec
     Spec.TestUtils
     Spec.UserSpec
+    Spec.VerifySpec
   build-depends:
       base >=4.17 && <5
     , aeson >=2.2 && <2.3

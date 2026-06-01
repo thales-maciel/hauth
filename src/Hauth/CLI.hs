@@ -4,13 +4,16 @@ module Hauth.CLI (
     HelpTopic (..),
     MigrateCommand (..),
     MigrateOptions (..),
+    OutputFormat (..),
     Port (..),
     ServeOptions (..),
+    VerifyOptions (..),
     helpText,
     parseCommand,
     resolveMigrateConfigPath,
     resolveServeConfigPath,
     resolveServePort,
+    resolveVerifyConfigPath,
 ) where
 
 import Data.List (stripPrefix)
@@ -35,16 +38,29 @@ data MigrateCommand
     | MigrateUp
     deriving stock (Eq, Show)
 
+data OutputFormat
+    = FormatText
+    | FormatJson
+    deriving stock (Eq, Show)
+
+data VerifyOptions = VerifyOptions
+    { verifyConfigPath :: Maybe FilePath
+    , verifyFormat :: OutputFormat
+    }
+    deriving stock (Eq, Show)
+
 data HelpTopic
     = TopLevelHelp
     | ServeHelp
     | MigrateHelp
+    | VerifyHelp
     deriving stock (Eq, Show)
 
 data Command
     = Help HelpTopic
     | Serve ServeOptions
     | Migrate MigrateOptions MigrateCommand
+    | Verify VerifyOptions
     deriving stock (Eq, Show)
 
 data CliError = CliError
@@ -67,6 +83,8 @@ parseCommand = \case
         parseServeCommand args
     "migrate" : args ->
         parseMigrateCommand args
+    "verify" : args ->
+        parseVerifyCommand args
     command : _ ->
         Left (CliError ("Unknown command: " <> command) topLevelHelp)
 
@@ -160,6 +178,59 @@ parseMigrateOptions options = \case
     args ->
         Left (CliError ("Unknown migrate option(s): " <> unwords args) migrateHelp)
 
+parseVerifyCommand :: [String] -> Either CliError Command
+parseVerifyCommand = \case
+    [] ->
+        Right (Verify (VerifyOptions Nothing FormatText))
+    ["-h"] ->
+        Right (Help VerifyHelp)
+    ["--help"] ->
+        Right (Help VerifyHelp)
+    args ->
+        Verify <$> parseVerifyOptions (VerifyOptions Nothing FormatText) args
+
+parseVerifyOptions :: VerifyOptions -> [String] -> Either CliError VerifyOptions
+parseVerifyOptions options = \case
+    [] ->
+        Right options
+    "--config" : value : rest -> do
+        configPath <- parseConfigPath "--config" verifyHelp value
+        parseVerifyOptions options{verifyConfigPath = Just configPath} rest
+    "-c" : value : rest -> do
+        configPath <- parseConfigPath "-c" verifyHelp value
+        parseVerifyOptions options{verifyConfigPath = Just configPath} rest
+    "--format" : value : rest -> do
+        fmt <- parseOutputFormat value
+        parseVerifyOptions options{verifyFormat = fmt} rest
+    arg : rest
+        | Just value <- stripPrefix "--config=" arg -> do
+            configPath <- parseConfigPath "--config" verifyHelp value
+            parseVerifyOptions options{verifyConfigPath = Just configPath} rest
+        | Just value <- stripPrefix "--format=" arg -> do
+            fmt <- parseOutputFormat value
+            parseVerifyOptions options{verifyFormat = fmt} rest
+    ["--config"] ->
+        Left (CliError "Missing value for --config." verifyHelp)
+    ["-c"] ->
+        Left (CliError "Missing value for -c." verifyHelp)
+    ["--format"] ->
+        Left (CliError "Missing value for --format." verifyHelp)
+    args ->
+        Left (CliError ("Unknown verify option(s): " <> unwords args) verifyHelp)
+
+parseOutputFormat :: String -> Either CliError OutputFormat
+parseOutputFormat = \case
+    "text" ->
+        Right FormatText
+    "json" ->
+        Right FormatJson
+    other ->
+        Left (CliError ("Unknown format: " <> other <> ". Use text or json.") verifyHelp)
+
+resolveVerifyConfigPath :: Maybe FilePath -> VerifyOptions -> Either String FilePath
+resolveVerifyConfigPath envConfigPath VerifyOptions{verifyConfigPath} =
+    resolveConfigPath verifyConfigPath envConfigPath
+
 resolveServeConfigPath :: Maybe FilePath -> ServeOptions -> Either String FilePath
 resolveServeConfigPath envConfigPath ServeOptions{serveConfigPath} =
     resolveConfigPath serveConfigPath envConfigPath
@@ -234,6 +305,8 @@ helpText = \case
         serveHelp
     MigrateHelp ->
         migrateHelp
+    VerifyHelp ->
+        verifyHelp
 
 topLevelHelp :: String
 topLevelHelp =
@@ -243,6 +316,7 @@ topLevelHelp =
         , "Commands:"
         , "  serve       Start the Hauth HTTP server"
         , "  migrate     Manage database migrations"
+        , "  verify      Run operational health checks"
         , ""
         , "Run `hauth COMMAND --help` for command-specific help."
         ]
@@ -272,4 +346,16 @@ migrateHelp =
         , ""
         , "Options:"
         , "  -c, --config PATH   Load startup config from PATH instead of HAUTH_CONFIG"
+        ]
+
+verifyHelp :: String
+verifyHelp =
+    unlines
+        [ "Usage: hauth verify [--config PATH] [--format text|json]"
+        , ""
+        , "Run operational health checks and report results."
+        , ""
+        , "Options:"
+        , "  -c, --config PATH          Load startup config from PATH instead of HAUTH_CONFIG"
+        , "  --format text|json         Output format (default: text)"
         ]

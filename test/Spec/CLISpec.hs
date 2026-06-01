@@ -5,12 +5,15 @@ import Hauth.CLI (
     HelpTopic (..),
     MigrateCommand (..),
     MigrateOptions (..),
+    OutputFormat (..),
     Port (..),
     ServeOptions (..),
+    VerifyOptions (..),
     parseCommand,
     resolveMigrateConfigPath,
     resolveServeConfigPath,
     resolveServePort,
+    resolveVerifyConfigPath,
  )
 import Spec.TestUtils (assertCliError, assertEqual)
 
@@ -77,3 +80,56 @@ runSpec = do
     assertCliError "migrate missing --config value" (parseCommand ["migrate", "up", "--config"])
     assertCliError "migrate unknown option" (parseCommand ["migrate", "up", "--bogus"])
     assertCliError "bad port" (parseCommand ["serve", "--port", "nope"])
+    -- verify subcommand parser tests
+    assertEqual
+        "verify default"
+        (Right (Verify (VerifyOptions Nothing FormatText)))
+        (parseCommand ["verify"])
+    assertEqual
+        "verify --config"
+        (Right (Verify (VerifyOptions (Just "config.json") FormatText)))
+        (parseCommand ["verify", "--config", "config.json"])
+    assertEqual
+        "verify -c"
+        (Right (Verify (VerifyOptions (Just "config.json") FormatText)))
+        (parseCommand ["verify", "-c", "config.json"])
+    assertEqual
+        "verify --config="
+        (Right (Verify (VerifyOptions (Just "config.json") FormatText)))
+        (parseCommand ["verify", "--config=config.json"])
+    assertEqual
+        "verify --format json"
+        (Right (Verify (VerifyOptions Nothing FormatJson)))
+        (parseCommand ["verify", "--format", "json"])
+    assertEqual
+        "verify --format text"
+        (Right (Verify (VerifyOptions Nothing FormatText)))
+        (parseCommand ["verify", "--format", "text"])
+    assertEqual
+        "verify --format=json"
+        (Right (Verify (VerifyOptions Nothing FormatJson)))
+        (parseCommand ["verify", "--format=json"])
+    assertEqual
+        "verify --config and --format json"
+        (Right (Verify (VerifyOptions (Just "config.json") FormatJson)))
+        (parseCommand ["verify", "--config", "config.json", "--format", "json"])
+    assertEqual
+        "verify help"
+        (Right (Help VerifyHelp))
+        (parseCommand ["verify", "--help"])
+    assertEqual
+        "verify config path resolution"
+        (Right "config.json")
+        (resolveVerifyConfigPath Nothing (VerifyOptions (Just "config.json") FormatText))
+    assertEqual
+        "verify env config path"
+        (Right "env.json")
+        (resolveVerifyConfigPath (Just "env.json") (VerifyOptions Nothing FormatText))
+    assertEqual
+        "verify option overrides env"
+        (Right "override.json")
+        (resolveVerifyConfigPath (Just "env.json") (VerifyOptions (Just "override.json") FormatText))
+    assertCliError "verify unknown option" (parseCommand ["verify", "--bogus"])
+    assertCliError "verify missing --config value" (parseCommand ["verify", "--config"])
+    assertCliError "verify missing --format value" (parseCommand ["verify", "--format"])
+    assertCliError "verify unknown format" (parseCommand ["verify", "--format", "xml"])

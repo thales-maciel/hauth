@@ -1,22 +1,29 @@
 module Main (main) where
 
+import qualified Data.ByteString.Char8 as BSC
+import qualified Data.Text.IO as TIO
 import Hauth.CLI (
     CliError (..),
     Command (..),
     MigrateCommand,
     MigrateOptions,
+    OutputFormat (..),
     Port (..),
+    VerifyOptions (..),
     helpText,
     parseCommand,
     resolveMigrateConfigPath,
     resolveServeConfigPath,
     resolveServePort,
+    resolveVerifyConfigPath,
  )
 import Hauth.Config (Config (..), ServerConfig (..), formatConfigError, loadConfig)
+import Hauth.Env (createAppEnv, destroyAppEnv)
 import Hauth.Migrate (runMigrate)
 import Hauth.Server (runServer)
+import Hauth.Verify (Report (..), defaultChecks, formatJson, formatText, runChecks)
 import System.Environment (getArgs, lookupEnv)
-import System.Exit (exitFailure, exitWith)
+import System.Exit (ExitCode (..), exitFailure, exitSuccess, exitWith)
 import System.IO (hPutStr, hPutStrLn, stderr)
 
 main :: IO ()
@@ -49,6 +56,9 @@ runCommand = \case
     Migrate options command -> do
         envConfigPath <- lookupEnv "HAUTH_CONFIG"
         runMigrateCommand envConfigPath options command
+    Verify options -> do
+        envConfigPath <- lookupEnv "HAUTH_CONFIG"
+        runVerifyCommand envConfigPath options
 
 runMigrateCommand :: Maybe FilePath -> MigrateOptions -> MigrateCommand -> IO ()
 runMigrateCommand envConfigPath options command =
@@ -59,6 +69,29 @@ runMigrateCommand envConfigPath options command =
             config <- loadConfigOrExit configPath
             code <- runMigrate config command
             exitWith code
+
+runVerifyCommand :: Maybe FilePath -> VerifyOptions -> IO ()
+runVerifyCommand envConfigPath options =
+    case resolveVerifyConfigPath envConfigPath options of
+        Left message ->
+            failWith message
+        Right configPath -> do
+            config <- loadConfigOrExit configPath
+            env <- createAppEnv config
+            report <- runChecks env defaultChecks
+            destroyAppEnv env
+            printReport (verifyFormat options) report
+            if reportFailed report > 0
+                then exitWith (ExitFailure 1)
+                else exitSuccess
+
+printReport :: OutputFormat -> Report -> IO ()
+printReport fmt report =
+    case fmt of
+        FormatText ->
+            TIO.putStr (formatText report)
+        FormatJson ->
+            BSC.putStrLn (formatJson report)
 
 loadConfigOrExit :: FilePath -> IO Config
 loadConfigOrExit configPath = do
