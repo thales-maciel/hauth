@@ -227,6 +227,7 @@ test-suite hauth-e2e
     E2E.RecoverySpec
     E2E.UserSpec
     E2E.VerifyDatabaseSpec
+    E2E.VerifySpec
     E2E.WebhookDeliveriesSpec
     E2E.WebhookOutboxSpec
     E2E.WebhookSubscriptionsSpec

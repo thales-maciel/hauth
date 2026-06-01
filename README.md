@@ -15,6 +15,10 @@ See [docs/QUICKSTART.md](docs/QUICKSTART.md) for the operator quickstart:
 download the static release binary, point it at Postgres, run `hauth migrate
 up && hauth serve`, verify with curl.
 
+hauth ships a `verify` subcommand that exercises every configured surface
+(database, JWT, SMTP, OAuth) and reports specifically what's broken — run it
+before going live. See `hauth verify --help`.
+
 ## Development
 
 Required tools:

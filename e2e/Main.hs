@@ -12,6 +12,7 @@ import qualified E2E.OAuthSpec
 import qualified E2E.RecoverySpec
 import qualified E2E.UserSpec
 import qualified E2E.VerifyDatabaseSpec
+import qualified E2E.VerifySpec
 import qualified E2E.WebhookDeliveriesSpec
 import qualified E2E.WebhookOutboxSpec
 import qualified E2E.WebhookSubscriptionsSpec
@@ -32,6 +33,7 @@ allSpecs = do
     describe "OAuth (limited)" E2E.OAuthSpec.spec
     describe "hooks types (loadHookConfig)" E2E.HooksTypesSpec.spec
     describe "verify database checks" E2E.VerifyDatabaseSpec.spec
+    describe "verify subcommand" E2E.VerifySpec.spec
     describe "webhook outbox" E2E.WebhookOutboxSpec.spec
     describe "email templates CRUD" E2E.EmailTemplatesCrudSpec.spec
     describe "webhook subscriptions CRUD" E2E.WebhookSubscriptionsSpec.spec
