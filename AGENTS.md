@@ -40,7 +40,7 @@ docs/                    Operator-facing docs
 
 - `runApp env $ jsonPost path body (Just bearer)` — drive the in-process WAI app.
 - `withDatabaseConnection (testAppEnv env) \conn -> …` — direct SQL.
-- `truncateAll env` — wipes user-data tables between tests; `auth.email_templates` and `auth.hooks` are NOT truncated, so clean up your own seed rows with `bracket_`.
+- `truncateAll env` — wipes user-data tables between tests; `auth.email_templates` is NOT truncated (loader fallback owns it), so clean up your own seed rows with `bracket_`. When you add a new `auth.*` table, **also add it to `truncateAll`** — otherwise rows pile up across tests and assertions like "expected 0 deliveries" start counting hundreds (real bug in wave 2 with `auth.webhook_subscriptions`/`webhook_deliveries`).
 
 **If your test needs `connectPostgreSQL`, it belongs in `e2e/E2E/`, not `test/Spec/`.** This rule has tripped multiple agents.
 
@@ -103,6 +103,18 @@ If your scope is "the framework module that aggregates" (e.g. `Hauth.Verify` its
 If a module already exists in main, **work with it as-is** — don't refactor its shape, don't extract types into a new module, don't change its public signature. In v0.2 wave 2 three concurrent agents each independently decided to extract `Hauth.Verify.Types` from `Hauth.Verify`; resolving the duplicate-create conflicts cost an hour. If you genuinely need a structural change, propose it in a separate refactor PR before the issue lands, or accept the existing shape and live with it.
 
 **Don't change an aggregator's signature even if your check needs more arguments.** One agent saw that OAuth checks need `Config` and changed `defaultChecks :: [Check]` to `defaultChecks :: Config -> [Check]`. That broke every other concurrent verify-check PR. Better: take the extra argument in YOUR per-area module (`oauthChecks :: Config -> [Check]`) and the aggregator constructs the value at the call site or routes it through a shared context. If signature changes are unavoidable, the issue body should call it out as a blocking coordination point.
+
+### Squash your fix-iterations before re-rebasing
+
+If your branch needs multiple CI cycles to go green (lint nit, timeout tweak, debug print, format fix), squash those into the original commit BEFORE rebasing against a moved main. In v0.2 wave 3, one PR accumulated five iterative commits while concurrent PRs landed on top of it. Each iteration touched the same handler bodies the concurrent PRs were also editing. The cumulative rebase became unsolvable — `git rebase` had to apply six separate commits against a moved tree, and the conflict resolution at each step compounded. The PR had to be closed and re-filed. `git rebase -i --autosquash`, or a `git reset --soft` + amend, prevents this. One commit per PR is the goal state at push time.
+
+### Outbound HTTP needs the threaded RTS
+
+If your code uses `http-client` (directly or via `http-client-tls`), the test suite that exercises it MUST be compiled with `-threaded`. Without it, `http-client`'s `responseTimeoutMicro` calls `getSystemTimerManager` which throws "the TimerManager requires linking against the threaded runtime", every HTTP request fails with `NoResponseDataReceived`, and the failure looks like the receiver isn't responding. In wave 3 this masquerade ate hours of debugging — fix the cabal file before fixing tests. Both `hauth-test` and `hauth-e2e` now carry `-threaded -rtsopts -with-rtsopts=-N`; keep them that way if you touch the cabal stanzas.
+
+### Match the schema CHECK constraints in tests
+
+Migration files often add CHECK constraints (timeout_ms BETWEEN 100 AND 3000, hook_point IN (...), etc.) on top of column types. If your test seeds a row by raw INSERT, **read the migration's CHECK clause and stay inside it**. An agent used `timeout_ms = 50` and `5000` in the verify-attempt hook tests — both violate the `100..3000` range from the schema. CI surfaced this as `violates check constraint "hooks_timeout_ms_check"`; the fix wasn't the test logic, it was the value. Same story for the `hook_point` enum: only the four canonical names work.
 
 ## Branch + PR conventions
 
