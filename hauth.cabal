@@ -81,10 +81,14 @@ library
     Hauth.OAuth.Google
     Hauth.Server
     Hauth.Server.Admin
+    Hauth.Server.Auth
     Hauth.Server.EmailTemplates
+    Hauth.Server.Errors
+    Hauth.Server.Health
     Hauth.Server.Hooks
     Hauth.Server.Mfa
     Hauth.Server.OAuth
+    Hauth.Server.Session
     Hauth.Server.WebhookDeliveries
     Hauth.Server.WebhookSubscriptions
     Hauth.Session
