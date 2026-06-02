@@ -1,3 +1,18 @@
+{- | HTTP entrypoint: Warp bootstrap, Servant API stitching, and the auth
+context wiring.
+
+Per-endpoint handler logic lives in the domain-specific siblings:
+
+* "Hauth.Server.Health"   — @/healthz@ and @/healthz/deep@
+* "Hauth.Server.Auth"     — public auth endpoints (signup, token, recover, verify, resend, settings)
+* "Hauth.Server.Session"  — @/user@ session-scoped endpoints (get, update, logout)
+* "Hauth.Server.Admin", "Hauth.Server.Mfa", "Hauth.Server.OAuth",
+  "Hauth.Server.Hooks", "Hauth.Server.EmailTemplates",
+  "Hauth.Server.WebhookSubscriptions", "Hauth.Server.WebhookDeliveries"
+
+This module is composition only. Re-exports 'aggregateStatus' and 'isUnhealthy'
+from "Hauth.Server.Health" because "Spec.ServerSpec" imports them from here.
+-}
 module Hauth.Server (
     aggregateStatus,
     app,
@@ -6,43 +21,19 @@ module Hauth.Server (
     server,
 ) where
 
-import Control.Exception (SomeException, bracket, try)
-import Control.Monad (unless, when)
+import Control.Exception (bracket)
 import Control.Monad.Except (throwError)
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.Reader (ReaderT, ask, asks, runReaderT)
-import qualified Data.Aeson as Aeson
-import qualified Data.Aeson.KeyMap as KeyMap
-import qualified Data.ByteString.Lazy as BSL
+import Control.Monad.Reader (ReaderT, runReaderT)
 import qualified Data.ByteString.Lazy.Char8 as BSLC
-import Data.Maybe (fromMaybe, isJust)
 import Data.Proxy (Proxy (Proxy))
 import Data.String (fromString)
-import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Time.Clock (addUTCTime, getCurrentTime)
-import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
-import Data.UUID (UUID)
-import qualified Data.UUID as UUID
-import Database.PostgreSQL.Simple (Connection, Only (..), query, query_, withTransaction)
-import GHC.Clock (getMonotonicTimeNSec)
 import Hauth.API
 import Hauth.API.Auth
-import Hauth.API.Types
-import Hauth.Auth.AalAmr (SessionAuthState (..), buildAmrEntries, deriveSessionAuthState)
-import Hauth.Auth.Jwt (AccessTokenClaims (..), AmrEntry (..), issueAccessToken, validateAccessToken)
-import Hauth.Auth.Login (LoginError (..), authorizeLogin, buildLoginClaims, extractCredentials)
-import Hauth.Auth.Logout (LogoutError (..), resolveLogoutSession)
-import Hauth.Auth.Recovery (RecoveryError (..), recoverySentMessage, validateRecoverRequest, validateRecoveryVerify)
-import Hauth.Auth.UserUpdate (UpdateUserError (..), validateUpdateRequest)
-import Hauth.Auth.Verify (OtpType (..), VerifyError (..), classifyVerifyRequest, parseOtpType)
-import Hauth.Config (Config (..), DatabaseConfig (..), EmailConfig (..), JwtConfig (..), ServerConfig (..), SiteConfig (..))
-import Hauth.Crypto.Password (defaultArgon2Settings, hashPassword)
-import qualified Hauth.Crypto.Password as Pwd
-import Hauth.Email (EmailSender (..), TemplateData (..), TemplateKind (..), renderEmailCached, sendEmail, stubSender)
-import Hauth.Env (AppEnv (..), LogLevel (..), createAppEnv, destroyAppEnv, logMessage, withDatabaseConnection)
-import Hauth.Hooks.Runner (HookDecision (..), runHook)
-import Hauth.Hooks.Types (HookPoint (..), loadHookConfig)
+import Hauth.Auth.Jwt (AccessTokenClaims (..), validateAccessToken)
+import Hauth.Config (Config (..), ServerConfig (..))
+import Hauth.Env (AppEnv (..), LogLevel (..), createAppEnv, destroyAppEnv, logMessage)
 import Hauth.Server.Admin (
     adminCreateUserHandler,
     adminDeleteUserHandler,
@@ -52,12 +43,22 @@ import Hauth.Server.Admin (
     adminListUsersHandler,
     adminUpdateUserHandler,
  )
+import Hauth.Server.Auth (
+    recoverHandler,
+    resendHandler,
+    settingsHandler,
+    signupHandler,
+    tokenHandler,
+    verifyHandler,
+ )
 import Hauth.Server.EmailTemplates (
     deleteEmailTemplateHandler,
     getEmailTemplateHandler,
     listEmailTemplatesHandler,
     putEmailTemplateHandler,
  )
+import Hauth.Server.Errors (supabaseErrorBody)
+import Hauth.Server.Health (aggregateStatus, deepHealthHandler, healthHandler, isUnhealthy)
 import Hauth.Server.Hooks (
     createHookHandler,
     deleteHookHandler,
@@ -72,6 +73,7 @@ import Hauth.Server.Mfa (
     verifyFactorHandler,
  )
 import Hauth.Server.OAuth (authorizeHandler, callbackHandler)
+import Hauth.Server.Session (getUserHandler, logoutHandler, updateUserHandler)
 import Hauth.Server.WebhookDeliveries (
     getDeliveryHandler,
     listDeliveriesBySubscriptionHandler,
@@ -84,31 +86,6 @@ import Hauth.Server.WebhookSubscriptions (
     listWebhookSubscriptionsHandler,
     updateWebhookSubscriptionHandler,
  )
-import Hauth.Session (
-    NewSession (..),
-    RefreshToken (..),
-    Session (sessionId),
-    SessionId (..),
-    createRefreshToken,
-    createSession,
-    generateOpaqueToken,
-    getSession,
-    lookupRefreshTokenRaw,
-    revokeRefreshToken,
-    revokeSession,
-    revokeSessionRefreshTokens,
-    sessionId,
-    touchSessionRefreshedAt,
- )
-import Hauth.User (
-    SignupError (..),
-    generateConfirmationToken,
-    validateSignupEmail,
-    validateSignupPassword,
- )
-import qualified Hauth.User as User
-import Hauth.Webhooks.Events (SessionPayload (..), UserPayload (..), WebhookEvent (..))
-import qualified Hauth.Webhooks.Outbox as Outbox
 import Network.Wai (Application, Request, requestHeaders)
 import qualified Network.Wai.Handler.Warp as Warp
 import Servant.API (NoContent (..), type (:<|>) ((:<|>)))
@@ -117,18 +94,12 @@ import Servant.Server (
     Handler,
     ServerError (errBody),
     ServerT,
-    err400,
     err401,
-    err404,
-    err422,
-    err500,
     err501,
-    err503,
     hoistServerWithContext,
     serveWithContext,
  )
 import Servant.Server.Experimental.Auth (AuthHandler, mkAuthHandler)
-import System.Timeout (timeout)
 
 type AppHandler = ReaderT AppEnv Handler
 
@@ -164,6 +135,10 @@ app env =
 runAppHandler :: AppEnv -> AppHandler a -> Handler a
 runAppHandler env handler =
     runReaderT handler env
+
+-- ---------------------------------------------------------------------------
+-- API stitching
+-- ---------------------------------------------------------------------------
 
 server :: ServerT HauthAPI AppHandler
 server =
@@ -269,853 +244,11 @@ adminWebhookDeliveriesServer =
         :<|> getDeliveryHandler
         :<|> retryDeliveryHandler
 
-healthHandler :: AnonymousPrincipal -> AppHandler HealthResponse
-healthHandler _ =
-    pure HealthResponse{healthStatus = "ok"}
-
-deepHealthHandler :: AnonymousPrincipal -> AppHandler DeepHealthResponse
-deepHealthHandler _ = do
-    env <- ask
-    checks <- liftIO (runDeepChecks env)
-    let response =
-            DeepHealthResponse
-                { deepHealthStatus = aggregateStatus (fmap deepHealthCheckOutcome checks)
-                , deepHealthChecks = checks
-                }
-    when (isUnhealthy response) $
-        throwError err503{errBody = Aeson.encode response}
-    pure response
-
-aggregateStatus :: [CheckOutcome] -> T.Text
-aggregateStatus outcomes =
-    if any isFailed outcomes
-        then "unhealthy"
-        else "ok"
-  where
-    isFailed (CheckFailed _) = True
-    isFailed CheckOk = False
-
-isUnhealthy :: DeepHealthResponse -> Bool
-isUnhealthy DeepHealthResponse{deepHealthStatus} =
-    deepHealthStatus /= "ok"
-
-runDeepChecks :: AppEnv -> IO [DeepHealthCheck]
-runDeepChecks env = do
-    processCheck <- checkProcess
-    configCheck <- checkConfig env
-    postgresCheck <- checkPostgres env
-    pure [processCheck, configCheck, postgresCheck]
-
-checkProcess :: IO DeepHealthCheck
-checkProcess =
-    pure
-        DeepHealthCheck
-            { deepHealthCheckName = "process"
-            , deepHealthCheckOutcome = CheckOk
-            , deepHealthCheckLatencyMs = Nothing
-            }
-
-checkConfig :: AppEnv -> IO DeepHealthCheck
-checkConfig AppEnv{appConfig} =
-    let Config{configDatabase = DatabaseConfig{databaseUrl}, configJwt = JwtConfig{jwtSecret}} = appConfig
-        outcome =
-            if T.null databaseUrl || T.null jwtSecret
-                then CheckFailed "config fields are empty"
-                else CheckOk
-     in pure
-            DeepHealthCheck
-                { deepHealthCheckName = "config"
-                , deepHealthCheckOutcome = outcome
-                , deepHealthCheckLatencyMs = Nothing
-                }
-
-checkPostgres :: AppEnv -> IO DeepHealthCheck
-checkPostgres env = do
-    startNs <- getMonotonicTimeNSec
-    -- SELECT returns a column, so we use query_ (not execute_) and discard the rows.
-    let probe conn = query_ conn "SELECT 1" :: IO [Only Int]
-    result <- try (timeout 2000000 (withDatabaseConnection env probe))
-    endNs <- getMonotonicTimeNSec
-    let latencyMs = Just (fromIntegral ((endNs - startNs) `div` 1000000))
-    let outcome = case result of
-            Left (err :: SomeException) ->
-                CheckFailed (T.pack (show err))
-            Right Nothing ->
-                CheckFailed "postgres check timed out"
-            Right (Just _) ->
-                CheckOk
-    pure
-        DeepHealthCheck
-            { deepHealthCheckName = "postgres"
-            , deepHealthCheckOutcome = outcome
-            , deepHealthCheckLatencyMs = latencyMs
-            }
-
 -- ---------------------------------------------------------------------------
--- Token endpoint
+-- Servant auth context
 -- ---------------------------------------------------------------------------
 
-tokenHandler :: AnonymousPrincipal -> Text -> TokenRequest -> AppHandler TokenResponse
-tokenHandler _ grantType req =
-    case parseGrantType (Just grantType) of
-        GrantRefreshToken ->
-            handleRefreshTokenGrant req
-        GrantPassword ->
-            handlePasswordGrant req
-        GrantUnsupported _ ->
-            throwError
-                err400
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                ["error" Aeson..= ("unsupported_grant_type" :: T.Text)]
-                    }
-
-handleRefreshTokenGrant :: TokenRequest -> AppHandler TokenResponse
-handleRefreshTokenGrant TokenRequest{tokenRequestRefreshToken} = do
-    tokenText <- case tokenRequestRefreshToken of
-        Nothing ->
-            throwError
-                err400
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "error" Aeson..= ("invalid_request" :: T.Text)
-                                , "error_description" Aeson..= ("refresh_token is required" :: T.Text)
-                                ]
-                    }
-        Just t -> pure t
-    env <- ask
-    let AppEnv{appConfig} = env
-        Config{configJwt} = appConfig
-        JwtConfig{jwtAccessTokenTtlSeconds} = configJwt
-    mRawToken <- liftIO (withDatabaseConnection env (`lookupRefreshTokenRaw` tokenText))
-    case classifyRefreshTokenLookup mRawToken of
-        Left InvalidGrant ->
-            throwError
-                err401
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "error" Aeson..= ("invalid_grant" :: T.Text)
-                                , "error_description" Aeson..= ("Invalid Refresh Token" :: T.Text)
-                                ]
-                    }
-        Left RefreshTokenReuseDetected -> do
-            let rt = fromMaybeRawToken mRawToken
-                sid = refreshTokenSessionId rt
-                uid = refreshTokenUserId rt
-            liftIO $ withDatabaseConnection env \conn -> do
-                _ <- revokeSessionRefreshTokens conn sid
-                revokeSession conn sid
-                Outbox.enqueue
-                    conn
-                    (SessionRevoked SessionPayload{spSessionId = unSessionId sid, spUserId = uid})
-            throwError
-                err401
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "error" Aeson..= ("invalid_grant" :: T.Text)
-                                , "error_description" Aeson..= ("Invalid Refresh Token: reuse detected" :: T.Text)
-                                ]
-                    }
-        Right (ValidRefreshToken rt) -> do
-            now <- liftIO getCurrentTime
-            let sid = refreshTokenSessionId rt
-                uid = refreshTokenUserId rt
-                ttl = fromIntegral jwtAccessTokenTtlSeconds
-                expiry = addUTCTime ttl now
-                iatPosix = utcTimeToPOSIXSeconds now
-            mUserVal <- liftIO (withDatabaseConnection env (`fetchMinimalUser` uid))
-            userVal <- case mUserVal of
-                Nothing ->
-                    throwError
-                        err401
-                            { errBody =
-                                Aeson.encode $
-                                    Aeson.object
-                                        [ "error" Aeson..= ("invalid_grant" :: T.Text)
-                                        , "error_description" Aeson..= ("user not found" :: T.Text)
-                                        ]
-                            }
-                Just v -> pure v
-            mSession <- liftIO (withDatabaseConnection env (`getSession` sid))
-            sess <- case mSession of
-                Nothing ->
-                    throwError
-                        err401
-                            { errBody =
-                                Aeson.encode $
-                                    Aeson.object
-                                        [ "error" Aeson..= ("invalid_grant" :: T.Text)
-                                        , "error_description" Aeson..= ("session not found" :: T.Text)
-                                        ]
-                            }
-                Just s -> pure s
-            let (userEmail', userRole') = extractEmailRole userVal
-                sas = deriveSessionAuthState Nothing sess
-                claims =
-                    AccessTokenClaims
-                        { claimSub = UUID.toText uid
-                        , claimRole = userRole'
-                        , claimEmail = userEmail'
-                        , claimPhone = Nothing
-                        , claimAppMetadata = Aeson.object []
-                        , claimUserMetadata = Aeson.object []
-                        , claimAal = sasAal sas
-                        , claimAmr = buildAmrEntries (sasMethods sas) iatPosix
-                        , claimSessionId = UUID.toText (unSessionId sid)
-                        , claimIssuedAt = now
-                        , claimExpiresAt = expiry
-                        }
-            newToken <- liftIO $ withDatabaseConnection env \conn -> do
-                revokeRefreshToken conn (refreshTokenId rt)
-                newRt <- createRefreshToken conn sid (Just tokenText)
-                touchSessionRefreshedAt conn sid
-                pure newRt
-            signResult <- liftIO (issueAccessToken env claims)
-            accessToken <- case signResult of
-                Left err ->
-                    throwError
-                        err500
-                            { errBody =
-                                Aeson.encode $
-                                    Aeson.object
-                                        [ "error" Aeson..= ("token_issuance_blocked" :: T.Text)
-                                        , "error_description" Aeson..= T.pack (show err)
-                                        ]
-                            }
-                Right t -> pure t
-            pure
-                TokenResponse
-                    { tokenResponseAccessToken = accessToken
-                    , tokenResponseTokenType = "bearer"
-                    , tokenResponseExpiresIn = jwtAccessTokenTtlSeconds
-                    , tokenResponseRefreshToken = refreshTokenToken newToken
-                    , tokenResponseUser = userVal
-                    }
-  where
-    fromMaybeRawToken (Just rt) = rt
-    fromMaybeRawToken Nothing = error "fromMaybeRawToken: impossible"
-
-handlePasswordGrant :: TokenRequest -> AppHandler TokenResponse
-handlePasswordGrant req = do
-    (emailText, passwordText) <- case extractCredentials req of
-        Left LoginMissingFields ->
-            throwError
-                err400
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "error" Aeson..= ("invalid_request" :: T.Text)
-                                , "error_description" Aeson..= ("email and password are required" :: T.Text)
-                                ]
-                    }
-        Left err ->
-            throwError
-                err400
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                ["error" Aeson..= T.pack (show err)]
-                    }
-        Right creds -> pure creds
-    env <- ask
-    let AppEnv{appConfig} = env
-        Config{configJwt} = appConfig
-        JwtConfig{jwtAccessTokenTtlSeconds} = configJwt
-    mUser <- liftIO (withDatabaseConnection env (`User.getUserByEmail` emailText))
-    user <- case mUser of
-        Nothing -> throwError invalidGrantError
-        Just u -> pure u
-    -- Fire password-verification-attempt hook BEFORE the crypto check so a
-    -- hook-reject doesn't reveal whether the password would have been correct.
-    let User.UserId userUUID' = User.userId user
-        loginHookPayload =
-            Aeson.object
-                [ "email" Aeson..= emailText
-                , "user_id" Aeson..= UUID.toText userUUID'
-                , "ip" Aeson..= ("" :: T.Text)
-                ]
-    mLoginHookCfg <- liftIO (withDatabaseConnection env (`loadHookConfig` HookPasswordVerificationAttempt))
-    case mLoginHookCfg of
-        Nothing -> pure ()
-        Just loginHookCfg -> do
-            loginDecision <- liftIO (runHook loginHookCfg loginHookPayload)
-            case loginDecision of
-                HookAllow -> pure ()
-                HookAllowWith _ -> pure ()
-                HookReject _ ->
-                    throwError
-                        err400
-                            { errBody =
-                                Aeson.encode $
-                                    Aeson.object
-                                        [ "error" Aeson..= ("mfa_or_password_blocked" :: T.Text)
-                                        , "error_description" Aeson..= ("Login attempt blocked" :: T.Text)
-                                        ]
-                            }
-    let verified = case User.userEncryptedPassword user of
-            Nothing -> False
-            Just phc -> Pwd.verifyPassword phc passwordText
-    case authorizeLogin verified (User.userEmailConfirmedAt user) of
-        Left LoginInvalidGrant -> throwError invalidGrantError
-        Left LoginEmailNotConfirmed ->
-            throwError
-                err400
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "error" Aeson..= ("email_not_confirmed" :: T.Text)
-                                , "msg" Aeson..= ("Email not confirmed" :: T.Text)
-                                ]
-                    }
-        Left LoginMissingFields ->
-            throwError invalidGrantError
-        Right () -> pure ()
-    let User.UserId userUUID = User.userId user
-        newSess =
-            NewSession
-                { newSessionUserId = userUUID
-                , newSessionAal = "aal1"
-                , newSessionFactorId = Nothing
-                , newSessionUserAgent = Nothing
-                , newSessionIp = Nothing
-                , newSessionNotAfter = Nothing
-                }
-    (sess, refreshTok) <- liftIO $
-        withDatabaseConnection env \conn -> do
-            s <- createSession conn newSess
-            rt <- createRefreshToken conn (sessionId s) Nothing
-            pure (s, rt)
-    now <- liftIO getCurrentTime
-    let claims = buildLoginClaims configJwt user (sessionId sess) now
-    signResult <- liftIO (issueAccessToken env claims)
-    accessToken <- case signResult of
-        Left err ->
-            throwError
-                err500
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "error" Aeson..= ("token_issuance_blocked" :: T.Text)
-                                , "error_description" Aeson..= T.pack (show err)
-                                ]
-                    }
-        Right t -> pure t
-    let userVal =
-            Aeson.object
-                [ "id" Aeson..= UUID.toText userUUID
-                , "aud" Aeson..= User.userAud user
-                , "role" Aeson..= User.userRole user
-                , "email" Aeson..= User.userEmail user
-                ]
-    pure
-        TokenResponse
-            { tokenResponseAccessToken = accessToken
-            , tokenResponseTokenType = "bearer"
-            , tokenResponseExpiresIn = jwtAccessTokenTtlSeconds
-            , tokenResponseRefreshToken = refreshTokenToken refreshTok
-            , tokenResponseUser = userVal
-            }
-  where
-    invalidGrantError :: ServerError
-    invalidGrantError =
-        err400
-            { errBody =
-                Aeson.encode $
-                    Aeson.object
-                        [ "error" Aeson..= ("invalid_grant" :: T.Text)
-                        , "error_description" Aeson..= ("Invalid login credentials" :: T.Text)
-                        ]
-            }
-
-fetchMinimalUser :: Connection -> UUID -> IO (Maybe Aeson.Value)
-fetchMinimalUser conn uid = do
-    rows <-
-        query
-            conn
-            "SELECT id::text, email, aud, role \
-            \FROM auth.users \
-            \WHERE id = ?"
-            (Only uid)
-    pure $ case rows of
-        [(idText, email, aud, role) :: (T.Text, Maybe T.Text, T.Text, T.Text)] ->
-            Just $
-                Aeson.object
-                    [ "id" Aeson..= idText
-                    , "aud" Aeson..= aud
-                    , "role" Aeson..= role
-                    , "email" Aeson..= email
-                    ]
-        _ -> Nothing
-
-extractEmailRole :: Aeson.Value -> (Maybe T.Text, T.Text)
-extractEmailRole (Aeson.Object obj) =
-    let email = case KeyMap.lookup "email" obj of
-            Just (Aeson.String e) -> Just e
-            _ -> Nothing
-        role = case KeyMap.lookup "role" obj of
-            Just (Aeson.String r) -> r
-            _ -> "authenticated"
-     in (email, role)
-extractEmailRole _ = (Nothing, "authenticated")
-
-settingsHandler :: AnonymousPrincipal -> AppHandler SettingsResponse
-settingsHandler _ =
-    asks (buildSettingsResponse . appConfig)
-
-signupHandler :: AnonymousPrincipal -> SignupRequest -> AppHandler SignupResponse
-signupHandler _ SignupRequest{signupEmail, signupPassword, signupData} = do
-    env <- ask
-    let emailText = unEmail signupEmail
-        passwordText = unPassword signupPassword
-    validatedEmail <- case validateSignupEmail emailText of
-        Left _ ->
-            throwError
-                err400
-                    { errBody = signupErrorBody "invalid_email" "Email address is invalid"
-                    }
-        Right e -> pure e
-    validatedPassword <- case validateSignupPassword passwordText of
-        Left (SignupPasswordTooShort minLen _) ->
-            throwError
-                err422
-                    { errBody =
-                        signupErrorBody
-                            "weak_password"
-                            ("Password must be at least " <> T.pack (show minLen) <> " characters")
-                    }
-        Left _ ->
-            throwError
-                err422{errBody = signupErrorBody "weak_password" "Password is too weak"}
-        Right p -> pure p
-    let proposedMetadata = fromMaybe (Aeson.object []) signupData
-    -- Run before-user-created hook outside the transaction (hook can't see the new row).
-    effectiveMetadata <- do
-        mHookCfg <- liftIO $ withDatabaseConnection env (`loadHookConfig` HookBeforeUserCreated)
-        case mHookCfg of
-            Nothing -> pure proposedMetadata
-            Just hookCfg -> do
-                let hookPayload =
-                        Aeson.object
-                            [ "email" Aeson..= emailText
-                            , "phone" Aeson..= (Nothing :: Maybe T.Text)
-                            , "user_metadata" Aeson..= proposedMetadata
-                            , "ip" Aeson..= (Nothing :: Maybe T.Text)
-                            ]
-                decision <- liftIO (runHook hookCfg hookPayload)
-                case decision of
-                    HookAllow -> pure proposedMetadata
-                    HookAllowWith (Aeson.Object overlay) ->
-                        -- Merge overlay.user_metadata into proposed metadata; ignore other fields.
-                        case KeyMap.lookup "user_metadata" overlay of
-                            Just (Aeson.Object extra) ->
-                                case proposedMetadata of
-                                    Aeson.Object base -> pure (Aeson.Object (KeyMap.union extra base))
-                                    _ -> pure (Aeson.Object extra)
-                            _ -> pure proposedMetadata
-                    HookAllowWith _ -> pure proposedMetadata
-                    HookReject reason ->
-                        throwError
-                            err400
-                                { errBody =
-                                    Aeson.encode $
-                                        Aeson.object
-                                            [ "error" Aeson..= ("hook_rejected" :: T.Text)
-                                            , "message" Aeson..= reason
-                                            ]
-                                }
-    user <- liftIO $
-        withDatabaseConnection env \conn ->
-            withTransaction conn do
-                existing <- User.getUserByEmail conn validatedEmail
-                case existing of
-                    Just _ ->
-                        pure (Left SignupEmailExists)
-                    Nothing -> do
-                        encrypted <- hashPassword defaultArgon2Settings validatedPassword
-                        token <- generateConfirmationToken
-                        let newUser =
-                                User.NewUser
-                                    { User.newUserEmail = validatedEmail
-                                    , User.newUserEncryptedPassword = encrypted
-                                    , User.newUserConfirmationToken = Just token
-                                    , User.newUserUserMetadata = effectiveMetadata
-                                    , User.newUserAud = "authenticated"
-                                    }
-                        created <- User.createUser conn newUser
-                        Outbox.enqueue conn (UserSignedUp (userPayloadFromUser created))
-                        pure (Right created)
-    case user of
-        Left SignupEmailExists ->
-            throwError
-                err422
-                    { errBody = signupErrorBody "email_exists" "Email address already in use"
-                    }
-        Left _ ->
-            throwError
-                err400{errBody = signupErrorBody "signup_failed" "Signup failed"}
-        Right created ->
-            pure (buildSignupResponse created)
-
-signupErrorBody :: T.Text -> T.Text -> BSL.ByteString
-signupErrorBody code msg =
-    Aeson.encode $
-        Aeson.object
-            [ "code" Aeson..= code
-            , "msg" Aeson..= msg
-            ]
-
--- ---------------------------------------------------------------------------
--- Recover endpoint
--- ---------------------------------------------------------------------------
-
-recoverHandler :: AnonymousPrincipal -> RecoverRequest -> AppHandler MessageResponse
-recoverHandler _ req = do
-    env <- ask
-    let AppEnv{appConfig, appLogger} = env
-        Config{configEmail, configSite = SiteConfig{siteUrl}} = appConfig
-        EmailConfig{emailFrom} = configEmail
-    emailText <- case validateRecoverRequest req of
-        Left _ ->
-            pure ""
-        Right e -> pure e
-    unless (T.null emailText) $ do
-        mUser <- liftIO (withDatabaseConnection env (`User.getUserByEmail` emailText))
-        case mUser of
-            Nothing -> pure ()
-            Just user ->
-                case User.userEncryptedPassword user of
-                    Nothing -> pure ()
-                    Just _ -> do
-                        token <- liftIO generateOpaqueToken
-                        liftIO $ withDatabaseConnection env \conn ->
-                            User.setRecoveryToken conn (User.userId user) token
-                        let actionUrl = siteUrl <> "/auth/v1/verify?token=" <> token <> "&type=recovery"
-                            tdata =
-                                TemplateData
-                                    { templateRecipientEmail = emailText
-                                    , templateActionUrl = actionUrl
-                                    , templateSiteUrl = siteUrl
-                                    , templateTokenHash = token
-                                    }
-                        rendered <- liftIO (renderEmailCached (appTemplateCache env) Recovery emailFrom tdata)
-                        case rendered of
-                            Left err ->
-                                liftIO $
-                                    logMessage appLogger LogWarn $
-                                        "recoverHandler: renderEmail failed: " <> T.pack (show err)
-                            Right msg -> do
-                                result <- liftIO (sendEmail stubSender msg)
-                                case result of
-                                    Left err ->
-                                        liftIO $
-                                            logMessage appLogger LogWarn $
-                                                "recoverHandler: email send failed: " <> T.pack (show err)
-                                    Right () -> pure ()
-    pure MessageResponse{message = recoverySentMessage}
-
--- ---------------------------------------------------------------------------
--- Verify endpoint
--- ---------------------------------------------------------------------------
-
-verifyHandler :: AnonymousPrincipal -> VerifyRequest -> AppHandler SessionResponse
-verifyHandler _ req =
-    case classifyVerifyRequest req of
-        Left VerifyMissingToken ->
-            throwError
-                err400
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "error" Aeson..= ("otp_expired" :: T.Text)
-                                , "msg" Aeson..= ("Token has expired or is invalid" :: T.Text)
-                                ]
-                    }
-        Left (VerifyUnsupportedOtpType t) ->
-            throwError
-                err400
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "error" Aeson..= ("unsupported_otp_type" :: T.Text)
-                                , "msg" Aeson..= ("Unsupported OTP type: " <> t)
-                                ]
-                    }
-        Left VerifyOtpExpired ->
-            throwError
-                err401
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "error" Aeson..= ("otp_expired" :: T.Text)
-                                , "msg" Aeson..= ("Token has expired or is invalid" :: T.Text)
-                                ]
-                    }
-        Right OtpSignup ->
-            handleSignupVerify req
-        Right OtpRecovery ->
-            handleRecoveryVerify req
-        Right _ ->
-            throwError
-                err400
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "error" Aeson..= ("unsupported_otp_type" :: T.Text)
-                                , "msg" Aeson..= ("OTP type not yet implemented" :: T.Text)
-                                ]
-                    }
-
-handleSignupVerify :: VerifyRequest -> AppHandler SessionResponse
-handleSignupVerify VerifyRequest{verifyToken} = do
-    env <- ask
-    mUser <- liftIO (withDatabaseConnection env (`User.getUserByConfirmationToken` verifyToken))
-    user <- case mUser of
-        Nothing ->
-            throwError
-                err401
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "error" Aeson..= ("otp_expired" :: T.Text)
-                                , "msg" Aeson..= ("Token has expired or is invalid" :: T.Text)
-                                ]
-                    }
-        Just u -> pure u
-    liftIO $ withDatabaseConnection env \conn -> withTransaction conn do
-        User.markEmailConfirmed conn (User.userId user)
-        Outbox.enqueue conn (UserEmailConfirmed (userPayloadFromUser user))
-    issueSessionForUser user "otp"
-
-handleRecoveryVerify :: VerifyRequest -> AppHandler SessionResponse
-handleRecoveryVerify req = do
-    (token, password) <- case validateRecoveryVerify req of
-        Left RecoveryMissingToken ->
-            throwError
-                err401
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "error" Aeson..= ("otp_expired" :: T.Text)
-                                , "error_description" Aeson..= ("Token is missing" :: T.Text)
-                                ]
-                    }
-        Left (RecoveryPasswordTooShort minLen _) ->
-            throwError
-                err422
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "error" Aeson..= ("weak_password" :: T.Text)
-                                , "error_description" Aeson..= ("Password must be at least " <> T.pack (show minLen) <> " characters" :: T.Text)
-                                ]
-                    }
-        Left RecoveryMissingEmail ->
-            throwError
-                err400
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "error" Aeson..= ("invalid_request" :: T.Text)
-                                , "error_description" Aeson..= ("Invalid request" :: T.Text)
-                                ]
-                    }
-        Right pair -> pure pair
-    env <- ask
-    mUser <- liftIO (withDatabaseConnection env (`User.getUserByRecoveryToken` token))
-    user <- case mUser of
-        Nothing ->
-            throwError
-                err401
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "error" Aeson..= ("otp_expired" :: T.Text)
-                                , "error_description" Aeson..= ("Token has expired or is invalid" :: T.Text)
-                                ]
-                    }
-        Just u -> pure u
-    phc <- liftIO (hashPassword defaultArgon2Settings password)
-    liftIO $ withDatabaseConnection env \conn -> withTransaction conn do
-        User.applyPasswordReset conn (User.userId user) phc
-        Outbox.enqueue conn (UserRecovered (userPayloadFromUser user))
-    issueSessionForUser user "recovery"
-
-issueSessionForUser :: User.User -> T.Text -> AppHandler SessionResponse
-issueSessionForUser user methodName = do
-    env <- ask
-    let AppEnv{appConfig} = env
-        Config{configJwt} = appConfig
-        JwtConfig{jwtAccessTokenTtlSeconds} = configJwt
-    now <- liftIO getCurrentTime
-    let uid = User.unUserId (User.userId user)
-        ttl = fromIntegral jwtAccessTokenTtlSeconds
-        expiry = addUTCTime ttl now
-        iatSecs = floor (utcTimeToPOSIXSeconds now) :: Integer
-        newSess =
-            NewSession
-                { newSessionUserId = uid
-                , newSessionAal = "aal1"
-                , newSessionFactorId = Nothing
-                , newSessionUserAgent = Nothing
-                , newSessionIp = Nothing
-                , newSessionNotAfter = Nothing
-                }
-    session <- liftIO (withDatabaseConnection env (`createSession` newSess))
-    let sid = sessionId session
-    refreshTok <- liftIO (withDatabaseConnection env (\conn -> createRefreshToken conn sid Nothing))
-    let claims =
-            AccessTokenClaims
-                { claimSub = UUID.toText uid
-                , claimRole = User.userRole user
-                , claimEmail = User.userEmail user
-                , claimPhone = Nothing
-                , claimAppMetadata = User.userRawAppMetaData user
-                , claimUserMetadata = User.userRawUserMetaData user
-                , claimAal = "aal1"
-                , claimAmr =
-                    [ AmrEntry
-                        { amrMethod = methodName
-                        , amrTimestamp = iatSecs
-                        }
-                    ]
-                , claimSessionId = UUID.toText (unSessionId sid)
-                , claimIssuedAt = now
-                , claimExpiresAt = expiry
-                }
-    signResult <- liftIO (issueAccessToken env claims)
-    accessToken <- case signResult of
-        Left err ->
-            throwError
-                err500
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "error" Aeson..= ("token_issuance_blocked" :: T.Text)
-                                , "error_description" Aeson..= T.pack (show err)
-                                ]
-                    }
-        Right t -> pure t
-    pure
-        SessionResponse
-            { sessionAccessToken = accessToken
-            , sessionExpiresIn = jwtAccessTokenTtlSeconds
-            , sessionRefreshToken = refreshTokenToken refreshTok
-            , sessionUser = buildUserResponse user
-            }
-
--- ---------------------------------------------------------------------------
--- Resend endpoint
--- ---------------------------------------------------------------------------
-
-resendHandler :: AnonymousPrincipal -> ResendRequest -> AppHandler MessageResponse
-resendHandler _ ResendRequest{resendEmail, resendType} =
-    case parseOtpType resendType of
-        Left (VerifyUnsupportedOtpType t) ->
-            throwError
-                err400
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "error" Aeson..= ("unsupported_otp_type" :: T.Text)
-                                , "msg" Aeson..= ("Unsupported OTP type: " <> t)
-                                ]
-                    }
-        Left _ ->
-            throwError
-                err400
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "error" Aeson..= ("unsupported_otp_type" :: T.Text)
-                                ]
-                    }
-        Right OtpSignup ->
-            handleSignupResend (unEmail resendEmail)
-        Right _ ->
-            throwError
-                err400
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "error" Aeson..= ("unsupported_otp_type" :: T.Text)
-                                , "msg" Aeson..= ("OTP type not yet implemented" :: T.Text)
-                                ]
-                    }
-
-handleSignupResend :: T.Text -> AppHandler MessageResponse
-handleSignupResend emailText = do
-    env <- ask
-    let AppEnv{appConfig, appLogger} = env
-        Config{configEmail, configSite} = appConfig
-        antiEnumMsg = MessageResponse "Verification email sent if needed"
-    mUser <- liftIO (withDatabaseConnection env (`User.getUserByEmail` emailText))
-    case mUser of
-        Nothing ->
-            pure antiEnumMsg
-        Just user
-            | isJust (User.userEmailConfirmedAt user) ->
-                pure antiEnumMsg
-            | otherwise -> do
-                newToken <- liftIO generateConfirmationToken
-                liftIO $
-                    withDatabaseConnection env \conn ->
-                        User.setConfirmationToken conn (User.userId user) newToken
-                let tdata =
-                        TemplateData
-                            { templateRecipientEmail = emailText
-                            , templateActionUrl =
-                                siteUrl configSite
-                                    <> "/auth/confirm?token="
-                                    <> newToken
-                            , templateSiteUrl = siteUrl configSite
-                            , templateTokenHash = newToken
-                            }
-                rendered <- liftIO (renderEmailCached (appTemplateCache env) Confirmation (emailFrom configEmail) tdata)
-                case rendered of
-                    Left _ ->
-                        liftIO (logMessage appLogger LogWarn "resend: failed to render confirmation email")
-                    Right msg -> do
-                        sendResult <- liftIO (sendEmail stubSender msg)
-                        case sendResult of
-                            Left err ->
-                                liftIO $
-                                    logMessage
-                                        appLogger
-                                        LogWarn
-                                        ("resend: email delivery failed: " <> T.pack (show err))
-                            Right () -> pure ()
-                pure antiEnumMsg
-
-notImplemented :: AppHandler a
-notImplemented =
-    throwError err501{errBody = "Not implemented"}
-
-notImplemented1 :: a -> AppHandler b
-notImplemented1 _ =
-    notImplemented
-
-notImplemented2 :: a -> b -> AppHandler c
-notImplemented2 _ _ =
-    notImplemented
-
-notImplemented3 :: a -> b -> c -> AppHandler d
-notImplemented3 _ _ _ =
-    notImplemented
-
-userPayloadFromUser :: User.User -> UserPayload
-userPayloadFromUser u =
-    UserPayload
-        { upUserId = User.unUserId (User.userId u)
-        , upEmail = User.userEmail u
-        , upCreatedAt = User.userCreatedAt u
-        }
-
-authContext ::
-    AppEnv -> Context AuthContext
+authContext :: AppEnv -> Context AuthContext
 authContext env =
     anonymousAuth
         :. validSessionAuth env
@@ -1140,13 +273,7 @@ validSessionAuth env =
             Left err ->
                 throwError
                     err401
-                        { errBody =
-                            Aeson.encode
-                                ( Aeson.object
-                                    [ "code" Aeson..= ("no_authorization" :: T.Text)
-                                    , "msg" Aeson..= T.pack (show err)
-                                    ]
-                                )
+                        { errBody = supabaseErrorBody "no_authorization" (T.pack (show err))
                         }
             Right claims ->
                 pure
@@ -1170,161 +297,21 @@ serviceRoleAuth env =
             Right principal -> pure principal
 
 -- ---------------------------------------------------------------------------
--- GET /user and PUT /user handlers
+-- Stub handlers for not-yet-implemented endpoints
 -- ---------------------------------------------------------------------------
 
-getUserHandler :: SessionPrincipal -> AppHandler UserResponse
-getUserHandler principal = do
-    env <- ask
-    let uidText = sessionUserId principal
-    uid <- case UUID.fromText uidText of
-        Nothing ->
-            throwError
-                err401
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "code" Aeson..= ("invalid_user_id" :: T.Text)
-                                , "msg" Aeson..= ("malformed user id in token" :: T.Text)
-                                ]
-                    }
-        Just u -> pure u
-    mUser <- liftIO (withDatabaseConnection env (`User.getUserById` User.UserId uid))
-    case mUser of
-        Nothing ->
-            throwError
-                err404
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "code" Aeson..= ("user_not_found" :: T.Text)
-                                , "msg" Aeson..= ("user not found" :: T.Text)
-                                ]
-                    }
-        Just u -> pure (buildUserResponse u)
+notImplemented :: AppHandler a
+notImplemented =
+    throwError err501{errBody = "Not implemented"}
 
-updateUserHandler :: SessionPrincipal -> UpdateUserRequest -> AppHandler UserResponse
-updateUserHandler principal req = do
-    env <- ask
-    let uidText = sessionUserId principal
-    uid <- case UUID.fromText uidText of
-        Nothing ->
-            throwError
-                err401
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "code" Aeson..= ("invalid_user_id" :: T.Text)
-                                , "msg" Aeson..= ("malformed user id in token" :: T.Text)
-                                ]
-                    }
-        Just u -> pure u
-    (mEmail, mPassword, mData) <- case validateUpdateRequest req of
-        Left (UpdateUserEmailInvalid e) ->
-            throwError
-                err422
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "code" Aeson..= ("invalid_email" :: T.Text)
-                                , "msg" Aeson..= ("Email address is invalid: " <> e)
-                                ]
-                    }
-        Left (UpdateUserPasswordTooShort minLen _) ->
-            throwError
-                err422
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "code" Aeson..= ("weak_password" :: T.Text)
-                                , "msg" Aeson..= ("Password must be at least " <> T.pack (show minLen) <> " characters")
-                                ]
-                    }
-        Right triple -> pure triple
-    mEncrypted <- case mPassword of
-        Nothing -> pure Nothing
-        Just pw -> liftIO (Just <$> hashPassword defaultArgon2Settings pw)
-    mToken <- case mEmail of
-        Nothing -> pure Nothing
-        Just _ -> liftIO (Just <$> generateConfirmationToken)
-    let upd =
-            User.emptyUserUpdate
-                { User.updateEmailChange = mEmail
-                , User.updateEncryptedPassword = mEncrypted
-                , User.updateRawUserMetaData = mData
-                , User.updateEmailChangeToken = mToken
-                }
-    mUser <- liftIO $ withDatabaseConnection env \conn -> withTransaction conn do
-        updated <- User.applyUserUpdate conn (User.UserId uid) upd
-        case (updated, mPassword) of
-            (Just u, Just _) -> Outbox.enqueue conn (PasswordChanged (userPayloadFromUser u))
-            _ -> pure ()
-        pure updated
-    case mUser of
-        Nothing ->
-            throwError
-                err404
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "code" Aeson..= ("user_not_found" :: T.Text)
-                                , "msg" Aeson..= ("user not found" :: T.Text)
-                                ]
-                    }
-        Just u -> pure (buildUserResponse u)
+notImplemented1 :: a -> AppHandler b
+notImplemented1 _ =
+    notImplemented
 
-logoutHandler ::
-    SessionPrincipal ->
-    Maybe T.Text ->
-    AppHandler NoContent
-logoutHandler principal _scope = do
-    env <- ask
-    let sidText = sessionAccessTokenId principal
-        dummyClaims =
-            AccessTokenClaims
-                { claimSub = sessionUserId principal
-                , claimRole = sessionRole principal
-                , claimEmail = Nothing
-                , claimPhone = Nothing
-                , claimAppMetadata = Aeson.object []
-                , claimUserMetadata = Aeson.object []
-                , claimAal = "aal1"
-                , claimAmr = []
-                , claimSessionId = sidText
-                , claimIssuedAt = posixSecondsToUTCTime 0
-                , claimExpiresAt = posixSecondsToUTCTime 0
-                }
-    sid <- case resolveLogoutSession (Right dummyClaims) of
-        Left (LogoutBadSessionId msg) ->
-            throwError
-                err401
-                    { errBody =
-                        Aeson.encode
-                            ( Aeson.object
-                                [ "code" Aeson..= ("invalid_session_id" :: T.Text)
-                                , "msg" Aeson..= msg
-                                ]
-                            )
-                    }
-        Left other ->
-            throwError
-                err401
-                    { errBody =
-                        Aeson.encode
-                            ( Aeson.object
-                                [ "code" Aeson..= ("no_authorization" :: T.Text)
-                                , "msg" Aeson..= T.pack (show other)
-                                ]
-                            )
-                    }
-        Right s -> pure s
-    let mUid = UUID.fromText (sessionUserId principal)
-    liftIO $ withDatabaseConnection env \conn -> withTransaction conn do
-        revokeSession conn sid
-        case mUid of
-            Just uid ->
-                Outbox.enqueue
-                    conn
-                    (SessionRevoked SessionPayload{spSessionId = unSessionId sid, spUserId = uid})
-            Nothing -> pure ()
-    pure NoContent
+notImplemented2 :: a -> b -> AppHandler c
+notImplemented2 _ _ =
+    notImplemented
+
+notImplemented3 :: a -> b -> c -> AppHandler d
+notImplemented3 _ _ _ =
+    notImplemented
