@@ -7,6 +7,7 @@ import qualified E2E.EmailTemplatesLoaderSpec
 import qualified E2E.EmailTemplatesSpec
 import E2E.Helpers (TestEnv, truncateAll, withTestEnv)
 import qualified E2E.HooksCrudSpec
+import qualified E2E.HooksSpec
 import qualified E2E.HooksTypesSpec
 import qualified E2E.MfaSpec
 import qualified E2E.OAuthSpec
@@ -41,6 +42,7 @@ allSpecs = do
     describe "email templates CRUD" E2E.EmailTemplatesCrudSpec.spec
     describe "webhook subscriptions CRUD" E2E.WebhookSubscriptionsSpec.spec
     describe "hooks CRUD API" E2E.HooksCrudSpec.spec
+    describe "sync hooks integration" E2E.HooksSpec.spec
     describe "email template cache" E2E.EmailTemplatesLoaderSpec.spec
     describe "webhook deliveries API" E2E.WebhookDeliveriesSpec.spec
     describe "email template hot-reload" E2E.EmailTemplatesSpec.spec

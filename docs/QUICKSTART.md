@@ -184,6 +184,7 @@ service is running end-to-end against your Postgres.
   errors.
 - [`docs/MFA.md`](MFA.md) — MFA (TOTP) enrollment and verification, AAL2
   semantics, and recovery limitations.
+- Sync hooks: see [`docs/HOOKS.md`](HOOKS.md).
 - Customizing email templates: see [docs/EMAIL.md](EMAIL.md).
 
 Webhook delivery is implemented but not covered here — it will get a dedicated

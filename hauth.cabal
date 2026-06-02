@@ -227,6 +227,7 @@ test-suite hauth-e2e
     E2E.EmailTemplatesSpec
     E2E.Helpers
     E2E.HooksCrudSpec
+    E2E.HooksSpec
     E2E.HooksTypesSpec
     E2E.MfaSpec
     E2E.OAuthSpec
