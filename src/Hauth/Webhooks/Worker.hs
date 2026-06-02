@@ -6,11 +6,13 @@ module Hauth.Webhooks.Worker (
     WorkerHandle,
     startWorker,
     stopWorker,
+    dispatchPending,
 ) where
 
 import Control.Concurrent (MVar, newEmptyMVar, putMVar, threadDelay, tryTakeMVar)
 import Control.Concurrent.Async (Async, async, cancel)
 import Control.Exception (SomeException, catch, try)
+import Control.Monad (when)
 import Data.Aeson (Value)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as BS
@@ -94,6 +96,19 @@ workerLoop withConn mgr stopMVar = do
             _ <- runOnce withConn mgr `catch` (\(_ :: SomeException) -> pure False)
             threadDelay pollIntervalMicros
             workerLoop withConn mgr stopMVar
+
+{- | Drain all currently-pending deliveries on a single connection. Spins
+through `runOnce` until no more rows are claimable. Exposed so e2e tests
+can dispatch deterministically without starting/stopping the background
+worker thread.
+-}
+dispatchPending :: Connection -> IO ()
+dispatchPending conn = do
+    mgr <- newManager tlsManagerSettings
+    let loop = do
+            more <- runOnce (\k -> k conn) mgr
+            when more loop
+    loop
 
 -- | Claim and process one pending delivery. Returns True if a row was found.
 runOnce :: (forall a. (Connection -> IO a) -> IO a) -> Manager -> IO Bool

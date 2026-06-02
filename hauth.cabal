@@ -240,6 +240,7 @@ test-suite hauth-e2e
     E2E.WebhookDeliveriesSpec
     E2E.WebhookEmitSpec
     E2E.WebhookOutboxSpec
+    E2E.WebhooksSpec
     E2E.WebhookSubscriptionsSpec
     E2E.WebhookWorkerSpec
   build-depends:
