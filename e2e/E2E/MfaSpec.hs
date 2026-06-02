@@ -2,6 +2,8 @@
 
 module E2E.MfaSpec (spec) where
 
+import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (bracket_)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
@@ -20,9 +22,27 @@ import E2E.Helpers (
     runApp,
  )
 import Hauth.Env (withDatabaseConnection)
+import Hauth.Hooks.Types (HookPoint (..), hookPointName)
 import Hauth.Mfa.Totp (TotpSecret (..), decodeBase32)
 import Hauth.Mfa.TotpVerify (currentTimeStep, totpCodeAtStep)
 import Hauth.User (User (..), getUserByEmail)
+import Network.HTTP.Types (status200)
+import Network.Socket (
+    Family (..),
+    SockAddr (..),
+    SocketOption (..),
+    SocketType (..),
+    bind,
+    close,
+    listen,
+    maxListenQueue,
+    setSocketOption,
+    socket,
+    socketPort,
+ )
+import qualified Network.Socket as Sock
+import Network.Wai (Application, responseLBS)
+import qualified Network.Wai.Handler.Warp as Warp
 import Test.Hspec (SpecWith, describe, it, shouldBe)
 
 spec :: SpecWith TestEnv
@@ -162,6 +182,176 @@ spec = do
                         )
                         (Just access)
             expectStatus 401 verifyResp
+
+    describe "mfa-verification-attempt hook" $ do
+        it "hook allow → TOTP verify succeeds with correct code" \env ->
+            withHookCleanupFor env HookMfaVerificationAttempt $
+                withDecisionServer mfaAllowDecision \port -> do
+                    seedMfaHook env HookMfaVerificationAttempt port 2000 False
+                    (access, factorId, challengeId, code) <-
+                        bootstrapMfaFlow env "mfa-hook-allow@example.com"
+                    verifyResp <-
+                        runApp env $
+                            jsonPost
+                                ("/factors/" <> TE.encodeUtf8 factorId <> "/verify")
+                                (Aeson.object ["challenge_id" Aeson..= challengeId, "code" Aeson..= code])
+                                (Just access)
+                    expectStatus 200 verifyResp
+
+        it "hook reject → 400 mfa_or_password_blocked (opaque)" \env ->
+            withHookCleanupFor env HookMfaVerificationAttempt $
+                withDecisionServer mfaRejectDecision \port -> do
+                    seedMfaHook env HookMfaVerificationAttempt port 2000 False
+                    (access, factorId, challengeId, code) <-
+                        bootstrapMfaFlow env "mfa-hook-reject@example.com"
+                    verifyResp <-
+                        runApp env $
+                            jsonPost
+                                ("/factors/" <> TE.encodeUtf8 factorId <> "/verify")
+                                (Aeson.object ["challenge_id" Aeson..= challengeId, "code" Aeson..= code])
+                                (Just access)
+                    expectStatus 400 verifyResp
+                    (errObj :: Aeson.Object) <- decodeBody verifyResp
+                    KeyMap.lookup "error" errObj `shouldBe` Just (Aeson.String "mfa_or_password_blocked")
+
+        it "hook timeout fail_open=false → 400" \env ->
+            withHookCleanupFor env HookMfaVerificationAttempt $
+                withDecisionServer mfaSlowServer \port -> do
+                    seedMfaHook env HookMfaVerificationAttempt port 100 False
+                    (access, factorId, challengeId, code) <-
+                        bootstrapMfaFlow env "mfa-hook-timeout-closed@example.com"
+                    verifyResp <-
+                        runApp env $
+                            jsonPost
+                                ("/factors/" <> TE.encodeUtf8 factorId <> "/verify")
+                                (Aeson.object ["challenge_id" Aeson..= challengeId, "code" Aeson..= code])
+                                (Just access)
+                    expectStatus 400 verifyResp
+                    (errObj :: Aeson.Object) <- decodeBody verifyResp
+                    KeyMap.lookup "error" errObj `shouldBe` Just (Aeson.String "mfa_or_password_blocked")
+
+        it "hook timeout fail_open=true → TOTP check proceeds" \env ->
+            withHookCleanupFor env HookMfaVerificationAttempt $
+                withDecisionServer mfaSlowServer \port -> do
+                    seedMfaHook env HookMfaVerificationAttempt port 100 True
+                    (access, factorId, challengeId, code) <-
+                        bootstrapMfaFlow env "mfa-hook-timeout-open@example.com"
+                    verifyResp <-
+                        runApp env $
+                            jsonPost
+                                ("/factors/" <> TE.encodeUtf8 factorId <> "/verify")
+                                (Aeson.object ["challenge_id" Aeson..= challengeId, "code" Aeson..= code])
+                                (Just access)
+                    expectStatus 200 verifyResp
+
+-- ---------------------------------------------------------------------------
+-- MFA hook test helpers
+-- ---------------------------------------------------------------------------
+
+{- | Enroll a factor + challenge it + compute a valid code, returning
+(access_token, factor_id, challenge_id, totp_code).
+-}
+bootstrapMfaFlow :: TestEnv -> T.Text -> IO (T.Text, T.Text, T.Text, T.Text)
+bootstrapMfaFlow env email = do
+    access <- bootstrapVerifiedUser env email "correct horse"
+    enrollResp <-
+        runApp env $
+            jsonPost
+                "/factors"
+                (Aeson.object ["factor_type" Aeson..= ("totp" :: T.Text)])
+                (Just access)
+    (enrollObj :: Aeson.Object) <- decodeBody enrollResp
+    factorId <- extractString "id" enrollObj
+    totpObj <- case KeyMap.lookup "totp" enrollObj of
+        Just (Aeson.Object t) -> pure t
+        other -> error ("expected totp object; got " <> show other)
+    secretB32 <- extractString "secret" totpObj
+    secretBytes <- case decodeBase32 secretB32 of
+        Just bs -> pure bs
+        Nothing -> error ("could not decode TOTP secret: " <> T.unpack secretB32)
+    challengeResp <-
+        runApp env $
+            jsonPost
+                ("/factors/" <> TE.encodeUtf8 factorId <> "/challenge")
+                (Aeson.object [])
+                (Just access)
+    (challengeObj :: Aeson.Object) <- decodeBody challengeResp
+    challengeId <- extractString "id" challengeObj
+    now <- getPOSIXTime
+    let code = totpCodeAtStep (TotpSecret secretBytes) (currentTimeStep now)
+    pure (access, factorId, challengeId, code)
+
+seedMfaHook :: TestEnv -> HookPoint -> Int -> Int -> Bool -> IO ()
+seedMfaHook env hp port timeoutMs failOpen =
+    withDatabaseConnection (testAppEnv env) \conn -> do
+        let url = ("http://127.0.0.1:" :: String) <> show port <> "/"
+        _ <-
+            execute
+                conn
+                "INSERT INTO auth.hooks (hook_point, url, secret, timeout_ms, fail_open, enabled) \
+                \VALUES (?, ?, ?, ?, ?, true)"
+                ( hookPointName hp
+                , url
+                , "test-secret" :: String
+                , timeoutMs :: Int
+                , failOpen
+                )
+        pure ()
+
+withHookCleanupFor :: TestEnv -> HookPoint -> IO a -> IO a
+withHookCleanupFor env hp =
+    bracket_
+        (pure ())
+        ( withDatabaseConnection (testAppEnv env) \conn -> do
+            _ <- execute conn "DELETE FROM auth.hooks WHERE hook_point = ?" (Only (hookPointName hp))
+            pure ()
+        )
+
+withDecisionServer :: Application -> (Int -> IO a) -> IO a
+withDecisionServer waiApp action = do
+    ready <- newEmptyMVar
+    probe <- openFreeMfaSocket
+    port <- fromIntegral <$> socketPort probe
+    close probe
+    let settings =
+            Warp.setPort port
+                . Warp.setHost "127.0.0.1"
+                . Warp.setBeforeMainLoop (putMVar ready ())
+                $ Warp.defaultSettings
+    _ <- forkIO (Warp.runSettings settings waiApp)
+    takeMVar ready
+    action port
+
+openFreeMfaSocket :: IO Sock.Socket
+openFreeMfaSocket = do
+    sock <- socket AF_INET Stream 0
+    setSocketOption sock ReuseAddr 1
+    bind sock (SockAddrInet 0 0)
+    listen sock maxListenQueue
+    pure sock
+
+mfaAllowDecision :: Application
+mfaAllowDecision _req respond =
+    respond (responseLBS status200 [("Content-Type", "application/json")] (Aeson.encode (Aeson.object [("decision", Aeson.String "allow")])))
+
+mfaRejectDecision :: Application
+mfaRejectDecision _req respond =
+    respond
+        ( responseLBS
+            status200
+            [("Content-Type", "application/json")]
+            ( Aeson.encode $
+                Aeson.object
+                    [ ("decision", Aeson.String "reject")
+                    , ("reason", Aeson.String "blocked by operator rule")
+                    ]
+            )
+        )
+
+mfaSlowServer :: Application
+mfaSlowServer _req respond = do
+    threadDelay 500000
+    respond (responseLBS status200 [] (Aeson.encode (Aeson.object [("decision", Aeson.String "allow")])))
 
 -- Shared signup+verify bootstrap, returning the user's bearer access token.
 bootstrapVerifiedUser :: TestEnv -> T.Text -> T.Text -> IO T.Text
