@@ -20,6 +20,7 @@ import qualified E2E.WebhookEmitSpec
 import qualified E2E.WebhookOutboxSpec
 import qualified E2E.WebhookSubscriptionsSpec
 import qualified E2E.WebhookWorkerSpec
+import qualified E2E.WebhooksSpec
 import Test.Hspec (SpecWith, aroundAll, beforeWith, describe, hspec)
 
 main :: IO ()
@@ -48,3 +49,4 @@ allSpecs = do
     describe "webhook deliveries API" E2E.WebhookDeliveriesSpec.spec
     describe "email template hot-reload" E2E.EmailTemplatesSpec.spec
     describe "webhook delivery worker" E2E.WebhookWorkerSpec.spec
+    describe "webhooks end-to-end" E2E.WebhooksSpec.spec
