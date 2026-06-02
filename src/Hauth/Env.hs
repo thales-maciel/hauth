@@ -18,7 +18,7 @@ import qualified Data.Text.Encoding as TE
 import Data.Time (NominalDiffTime)
 import Database.PostgreSQL.Simple (Connection, close, connectPostgreSQL)
 import Hauth.Config (Config (..), DatabaseConfig (..))
-import Hauth.Email.TemplateCache (TemplateCache, newTemplateCache)
+import Hauth.Email.TemplateCache (TemplateCache, newTemplateCache, stopTemplateCache)
 import Hauth.Webhooks.Worker (WorkerHandle, startWorker, stopWorker)
 
 data AppEnv = AppEnv
@@ -68,8 +68,9 @@ createAppEnvWithLogger logger config = do
     pure env0{appEnvWebhookWorker = mWorker}
 
 destroyAppEnv :: AppEnv -> IO ()
-destroyAppEnv AppEnv{appConnectionPool, appEnvWebhookWorker} = do
+destroyAppEnv AppEnv{appConnectionPool, appTemplateCache, appEnvWebhookWorker} = do
     mapM_ stopWorker appEnvWebhookWorker
+    stopTemplateCache appTemplateCache
     destroyAllResources (unConnectionPool appConnectionPool)
 
 withDatabaseConnection :: AppEnv -> (Connection -> IO a) -> IO a
