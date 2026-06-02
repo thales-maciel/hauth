@@ -10,6 +10,7 @@ module Hauth.Env (
     withDatabaseConnection,
 ) where
 
+import Control.Exception (SomeException, try)
 import Data.Pool (Pool, createPool, destroyAllResources, withResource)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -18,12 +19,14 @@ import Data.Time (NominalDiffTime)
 import Database.PostgreSQL.Simple (Connection, close, connectPostgreSQL)
 import Hauth.Config (Config (..), DatabaseConfig (..))
 import Hauth.Email.TemplateCache (TemplateCache, newTemplateCache)
+import Hauth.Webhooks.Worker (WorkerHandle, startWorker, stopWorker)
 
 data AppEnv = AppEnv
     { appConfig :: Config
     , appLogger :: Logger
     , appConnectionPool :: ConnectionPool
     , appTemplateCache :: TemplateCache
+    , appEnvWebhookWorker :: Maybe WorkerHandle
     }
 
 newtype ConnectionPool = ConnectionPool
@@ -49,16 +52,24 @@ createAppEnvWithLogger :: Logger -> Config -> IO AppEnv
 createAppEnvWithLogger logger config = do
     pool <- createConnectionPool config
     cache <- newTemplateCache (databaseUrl (configDatabase config))
-    pure
-        AppEnv
-            { appConfig = config
-            , appLogger = logger
-            , appConnectionPool = pool
-            , appTemplateCache = cache
-            }
+    let env0 =
+            AppEnv
+                { appConfig = config
+                , appLogger = logger
+                , appConnectionPool = pool
+                , appTemplateCache = cache
+                , appEnvWebhookWorker = Nothing
+                }
+    -- Tolerate a missing schema: startWorker catches DB errors internally.
+    workerResult <- try @SomeException (startWorker (withResource (unConnectionPool pool)))
+    let mWorker = case workerResult of
+            Left _ -> Nothing
+            Right h -> Just h
+    pure env0{appEnvWebhookWorker = mWorker}
 
 destroyAppEnv :: AppEnv -> IO ()
-destroyAppEnv AppEnv{appConnectionPool} =
+destroyAppEnv AppEnv{appConnectionPool, appEnvWebhookWorker} = do
+    mapM_ stopWorker appEnvWebhookWorker
     destroyAllResources (unConnectionPool appConnectionPool)
 
 withDatabaseConnection :: AppEnv -> (Connection -> IO a) -> IO a
