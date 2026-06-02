@@ -32,10 +32,11 @@ import Data.Aeson (
 import qualified Data.Aeson as Aeson
 import Data.Aeson.Key (fromText)
 import qualified Data.Aeson.KeyMap as KeyMap
-import Data.ByteArray (convert)
+import Data.ByteArray (constEq, convert)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base64.URL as B64URL
 import qualified Data.ByteString.Lazy as BSL
+import Data.Scientific (floatingOrInteger)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -240,13 +241,52 @@ validateAccessToken cfg@JwtConfig{jwtSecret} token = do
         [headerB64, payloadB64, sigB64] ->
             let signingInput = headerB64 <> "." <> payloadB64
                 expectedSig = computeHmac256 jwtSecret signingInput
-             in if sigB64 /= expectedSig
+                -- Constant-time compare on the encoded bytes. constEq fast-exits
+                -- on length mismatch (which is fine — different length means
+                -- malformed token, no secret-dependent timing leak).
+                sigOk = constEq (TE.encodeUtf8 sigB64) (TE.encodeUtf8 expectedSig)
+             in if not sigOk
                     then Left (JwtVerifyError "signature verification failed")
                     else do
+                        -- Signature is verified — only NOW do we trust the header
+                        -- enough to parse it. Header policy is enforced after the
+                        -- sig check to avoid leaking parser timing on un-authenticated
+                        -- input.
+                        validateHeader headerB64
                         payloadBytes <- decodeBase64url payloadB64
                         obj <- parsePayloadJson payloadBytes
                         extractClaims cfg now obj
         _ -> Left (JwtVerifyError "malformed token: expected 3 dot-separated segments")
+
+{- | Decode the JOSE header and enforce algorithm policy: @alg@ MUST be
+@HS256@; if @typ@ is present it MUST be @JWT@. This is defence-in-depth on
+top of the HMAC verification: the signature already binds the header bytes,
+but rejecting non-HS256 explicitly forecloses any future code path that
+might dispatch on @alg@ and accidentally accept @none@ or an asymmetric
+algorithm.
+-}
+validateHeader :: Text -> Either JwtError ()
+validateHeader headerB64 = do
+    bytes <- decodeBase64url headerB64
+    hdr <- case Aeson.decodeStrict' bytes of
+        Just (Object o) -> Right o
+        Just _ -> Left (JwtVerifyError "malformed header: not a JSON object")
+        Nothing -> Left (JwtVerifyError "malformed header: not valid JSON")
+    case KeyMap.lookup (fromText "alg") hdr of
+        Just (String "HS256") -> pure ()
+        Just (String other) ->
+            Left (JwtVerifyError ("unsupported alg: " <> T.unpack other))
+        Just _ ->
+            Left (JwtVerifyError "header alg is not a string")
+        Nothing ->
+            Left (JwtVerifyError "missing alg in header")
+    case KeyMap.lookup (fromText "typ") hdr of
+        Nothing -> pure () -- typ is optional per RFC 7519 §5.1
+        Just (String "JWT") -> pure ()
+        Just (String other) ->
+            Left (JwtVerifyError ("unsupported typ: " <> T.unpack other))
+        Just _ ->
+            Left (JwtVerifyError "header typ is not a string")
 
 -- | Parse the JSON payload from raw bytes.
 parsePayloadJson :: BS.ByteString -> Either JwtError Object
@@ -324,7 +364,14 @@ requireInteger :: Object -> Text -> Either JwtError Integer
 requireInteger obj key =
     case KeyMap.lookup (fromText key) obj of
         Nothing -> Left (JwtClaimError ("missing claim: " <> T.unpack key))
-        Just (Number n) -> Right (floor n)
+        -- RFC 7519 §2 NumericDate is "a JSON numeric value representing the
+        -- number of seconds from 1970-01-01T00:00:00Z UTC". Fractional values
+        -- are allowed by the RFC but are a foot-gun across verifier languages
+        -- (rounding/truncation differences) — reject them here so the wire
+        -- contract is unambiguous.
+        Just (Number n) -> case floatingOrInteger n :: Either Double Integer of
+            Right i -> Right i
+            Left _ -> Left (JwtClaimError ("claim is not an integer: " <> T.unpack key))
         Just _ -> Left (JwtClaimError ("claim is not a number: " <> T.unpack key))
 
 requireValue :: Object -> Text -> Either JwtError Value
