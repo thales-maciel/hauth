@@ -4,6 +4,7 @@ import qualified E2E.AdminSpec
 import qualified E2E.AuthSpec
 import qualified E2E.EmailTemplatesCrudSpec
 import qualified E2E.EmailTemplatesLoaderSpec
+import qualified E2E.EmailTemplatesSchemaSpec
 import qualified E2E.EmailTemplatesSpec
 import E2E.Helpers (TestEnv, truncateAll, withTestEnv)
 import qualified E2E.HooksCrudSpec
@@ -41,6 +42,7 @@ allSpecs = do
     describe "verify subcommand" E2E.VerifySpec.spec
     describe "webhook outbox" E2E.WebhookOutboxSpec.spec
     describe "webhook emit from handlers" E2E.WebhookEmitSpec.spec
+    describe "email templates schema seed" E2E.EmailTemplatesSchemaSpec.spec
     describe "email templates CRUD" E2E.EmailTemplatesCrudSpec.spec
     describe "webhook subscriptions CRUD" E2E.WebhookSubscriptionsSpec.spec
     describe "hooks CRUD API" E2E.HooksCrudSpec.spec
