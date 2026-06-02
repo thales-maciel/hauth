@@ -8,7 +8,7 @@ import Control.Exception (bracket_)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.Text as T
-import Database.PostgreSQL.Simple (execute, execute_)
+import Database.PostgreSQL.Simple (Only (..), execute, execute_)
 import E2E.Helpers (
     TestEnv (..),
     decodeBody,
@@ -274,6 +274,89 @@ spec = do
                         Nothing -> error "expected user row after fail-open timeout"
                         Just _ -> pure ()
 
+    describe "password-verification-attempt hook" $ do
+        it "no hook → login succeeds with correct credentials" \env ->
+            withHookCleanupFor env HookPasswordVerificationAttempt $ do
+                signupAndConfirmFor env "login-no-hook@example.com"
+                loginResp <-
+                    runApp env $
+                        jsonPost
+                            "/token?grant_type=password"
+                            (Aeson.object ["email" Aeson..= ("login-no-hook@example.com" :: T.Text), "password" Aeson..= ("correct horse" :: T.Text)])
+                            Nothing
+                expectStatus 200 loginResp
+
+        it "hook allow → login succeeds with correct password" \env ->
+            withHookCleanupFor env HookPasswordVerificationAttempt $
+                withDecisionServer allowDecision \port -> do
+                    seedHookFor env HookPasswordVerificationAttempt port 2000 False
+                    signupAndConfirmFor env "login-hook-allow@example.com"
+                    loginResp <-
+                        runApp env $
+                            jsonPost
+                                "/token?grant_type=password"
+                                (Aeson.object ["email" Aeson..= ("login-hook-allow@example.com" :: T.Text), "password" Aeson..= ("correct horse" :: T.Text)])
+                                Nothing
+                    expectStatus 200 loginResp
+
+        it "hook allow → wrong password still returns invalid_grant" \env ->
+            withHookCleanupFor env HookPasswordVerificationAttempt $
+                withDecisionServer allowDecision \port -> do
+                    seedHookFor env HookPasswordVerificationAttempt port 2000 False
+                    signupAndConfirmFor env "login-hook-wrong@example.com"
+                    loginResp <-
+                        runApp env $
+                            jsonPost
+                                "/token?grant_type=password"
+                                (Aeson.object ["email" Aeson..= ("login-hook-wrong@example.com" :: T.Text), "password" Aeson..= ("wrong" :: T.Text)])
+                                Nothing
+                    expectStatus 400 loginResp
+                    (errObj :: Aeson.Object) <- decodeBody loginResp
+                    KeyMap.lookup "error" errObj `shouldBe` Just (Aeson.String "invalid_grant")
+
+        it "hook reject → 400 mfa_or_password_blocked (opaque)" \env ->
+            withHookCleanupFor env HookPasswordVerificationAttempt $
+                withDecisionServer rejectDecisionBody \port -> do
+                    seedHookFor env HookPasswordVerificationAttempt port 2000 False
+                    signupAndConfirmFor env "login-hook-reject@example.com"
+                    loginResp <-
+                        runApp env $
+                            jsonPost
+                                "/token?grant_type=password"
+                                (Aeson.object ["email" Aeson..= ("login-hook-reject@example.com" :: T.Text), "password" Aeson..= ("correct horse" :: T.Text)])
+                                Nothing
+                    expectStatus 400 loginResp
+                    (errObj :: Aeson.Object) <- decodeBody loginResp
+                    KeyMap.lookup "error" errObj `shouldBe` Just (Aeson.String "mfa_or_password_blocked")
+
+        it "hook timeout fail_open=false → 400" \env ->
+            withHookCleanupFor env HookPasswordVerificationAttempt $
+                withDecisionServer slowServer \port -> do
+                    seedHookFor env HookPasswordVerificationAttempt port 100 False
+                    signupAndConfirmFor env "login-timeout-closed@example.com"
+                    loginResp <-
+                        runApp env $
+                            jsonPost
+                                "/token?grant_type=password"
+                                (Aeson.object ["email" Aeson..= ("login-timeout-closed@example.com" :: T.Text), "password" Aeson..= ("correct horse" :: T.Text)])
+                                Nothing
+                    expectStatus 400 loginResp
+                    (errObj :: Aeson.Object) <- decodeBody loginResp
+                    KeyMap.lookup "error" errObj `shouldBe` Just (Aeson.String "mfa_or_password_blocked")
+
+        it "hook timeout fail_open=true → password check proceeds" \env ->
+            withHookCleanupFor env HookPasswordVerificationAttempt $
+                withDecisionServer slowServer \port -> do
+                    seedHookFor env HookPasswordVerificationAttempt port 100 True
+                    signupAndConfirmFor env "login-timeout-open@example.com"
+                    loginResp <-
+                        runApp env $
+                            jsonPost
+                                "/token?grant_type=password"
+                                (Aeson.object ["email" Aeson..= ("login-timeout-open@example.com" :: T.Text), "password" Aeson..= ("correct horse" :: T.Text)])
+                                Nothing
+                    expectStatus 200 loginResp
+
 -- ---------------------------------------------------------------------------
 -- Hook test helpers
 -- ---------------------------------------------------------------------------
@@ -366,6 +449,61 @@ slowServer :: Application
 slowServer _req respond = do
     threadDelay 500000 -- 500 ms
     respond (responseLBS status200 [] (Aeson.encode (Aeson.object [("decision", Aeson.String "allow")])))
+
+{- | Sign up a user, fetch the confirmation token from the DB, and verify it.
+After return, the user can log in with "correct horse".
+-}
+signupAndConfirmFor :: TestEnv -> T.Text -> IO ()
+signupAndConfirmFor env email = do
+    _ <-
+        runApp env $
+            jsonPost
+                "/signup"
+                (Aeson.object ["email" Aeson..= email, "password" Aeson..= ("correct horse" :: T.Text)])
+                Nothing
+    mUser <- withDatabaseConnection (testAppEnv env) (`getUserByEmail` email)
+    user <- case mUser of
+        Nothing -> error ("signupAndConfirmFor: no user for " <> T.unpack email)
+        Just u -> pure u
+    token <- case userConfirmationToken user of
+        Nothing -> error ("signupAndConfirmFor: no confirmation_token for " <> T.unpack email)
+        Just t -> pure t
+    _ <-
+        runApp env $
+            jsonPost
+                "/verify"
+                (Aeson.object ["type" Aeson..= ("signup" :: T.Text), "token" Aeson..= token])
+                Nothing
+    pure ()
+
+{- | Seed an arbitrary hook row by HookPoint (the other helpers hard-code
+before-user-created).
+-}
+seedHookFor :: TestEnv -> HookPoint -> Int -> Int -> Bool -> IO ()
+seedHookFor env hp port timeoutMs failOpen =
+    withDatabaseConnection (testAppEnv env) \conn -> do
+        let url = ("http://127.0.0.1:" :: String) <> show port <> "/"
+        _ <-
+            execute
+                conn
+                "INSERT INTO auth.hooks (hook_point, url, secret, timeout_ms, fail_open, enabled) \
+                \VALUES (?, ?, ?, ?, ?, true)"
+                ( hookPointName hp
+                , url
+                , "test-secret" :: String
+                , timeoutMs :: Int
+                , failOpen
+                )
+        pure ()
+
+withHookCleanupFor :: TestEnv -> HookPoint -> IO a -> IO a
+withHookCleanupFor env hp =
+    bracket_
+        (pure ())
+        ( withDatabaseConnection (testAppEnv env) \conn -> do
+            _ <- execute conn "DELETE FROM auth.hooks WHERE hook_point = ?" (Only (hookPointName hp))
+            pure ()
+        )
 
 -- ---------------------------------------------------------------------------
 -- Utilities
