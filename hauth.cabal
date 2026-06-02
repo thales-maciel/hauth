@@ -171,7 +171,6 @@ test-suite hauth-test
     Spec.CLISpec
     Spec.ConfigSpec
     Spec.Crypto.PasswordSpec
-    Spec.Email.TemplatesSchemaSpec
     Spec.EmailSpec
     Spec.Hooks.RunnerSpec
     Spec.Hooks.TypesSpec
@@ -226,6 +225,7 @@ test-suite hauth-e2e
     E2E.AuthSpec
     E2E.EmailTemplatesCrudSpec
     E2E.EmailTemplatesLoaderSpec
+    E2E.EmailTemplatesSchemaSpec
     E2E.EmailTemplatesSpec
     E2E.Helpers
     E2E.HooksCrudSpec
