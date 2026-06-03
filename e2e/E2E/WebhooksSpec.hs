@@ -141,7 +141,8 @@ assertValidSignature secret CapturedRequest{capHeaders, capBody} = do
         wSig = lookupHeader "webhook-signature" capHeaders
     (wId, wTs, wSig) `shouldSatisfy` \(i, t, s) ->
         not (BS.null i) && not (BS.null t) && not (BS.null s)
-    verifySignature secret wId wTs wSig capBody `shouldBe` True
+    ok <- verifySignature secret wId wTs wSig capBody
+    ok `shouldBe` True
 
 lookupHeader :: HeaderName -> RequestHeaders -> BS.ByteString
 lookupHeader name hdrs =
