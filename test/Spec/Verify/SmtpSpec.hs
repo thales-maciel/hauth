@@ -154,4 +154,5 @@ mkEnv smtpHost smtpPort =
         , appLogger = Logger \_level _msg -> pure ()
         , appConnectionPool = error "smtp tests do not use the connection pool"
         , appTemplateCache = error "template cache not used in smtp checks"
+        , appBackgroundServiceStatuses = error "background services not used in smtp checks"
         }
