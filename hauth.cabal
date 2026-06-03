@@ -230,6 +230,7 @@ test-suite hauth-e2e
     E2E.EmailTemplatesLoaderSpec
     E2E.EmailTemplatesSchemaSpec
     E2E.EmailTemplatesSpec
+    E2E.HealthSpec
     E2E.Helpers
     E2E.HooksCrudSpec
     E2E.HooksSpec
