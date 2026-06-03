@@ -1,20 +1,21 @@
 {-# OPTIONS_GHC -Wno-deprecations #-}
 
--- | JWT signing and validation for Supabase-compatible access tokens.
---
--- Implements HS256 (HMAC-SHA256) compact JWTs with the Supabase Auth claim
--- shape so existing Postgres RLS policies and PostgREST integrations keep
--- working without changes.
---
--- The wire-level JWS (signature, header, base64url, time-bound checks) is
--- delegated to the maintained @jose@ library. This module owns only the
--- Supabase-shape claim construction/extraction, the hook-overlay policy, and
--- the project-specific stricter rules (integer-only @iat@/@exp@).
---
--- @jose@'s @addClaim@/@unregisteredClaims@ are deprecated in favour of a
--- @HasClaimsSet@ subtype. The deprecation is stylistic; the functions still
--- work, and adopting the subtype encoding would significantly grow this
--- module without changing behaviour. Suppressing the warning file-locally.
+{- | JWT signing and validation for Supabase-compatible access tokens.
+
+Implements HS256 (HMAC-SHA256) compact JWTs with the Supabase Auth claim
+shape so existing Postgres RLS policies and PostgREST integrations keep
+working without changes.
+
+The wire-level JWS (signature, header, base64url, time-bound checks) is
+delegated to the maintained @jose@ library. This module owns only the
+Supabase-shape claim construction/extraction, the hook-overlay policy, and
+the project-specific stricter rules (integer-only @iat@/@exp@).
+
+@jose@'s @addClaim@/@unregisteredClaims@ are deprecated in favour of a
+@HasClaimsSet@ subtype. The deprecation is stylistic; the functions still
+work, and adopting the subtype encoding would significantly grow this
+module without changing behaviour. Suppressing the warning file-locally.
+-}
 module Hauth.Auth.Jwt (
     AccessTokenClaims (..),
     AmrEntry (..),
@@ -30,8 +31,8 @@ import Control.Lens (preview, view, (&), (.~), (?~))
 import Crypto.JOSE.Error (runJOSE)
 import qualified Crypto.JOSE.Header as Hdr
 import Crypto.JOSE.JWK (fromOctets)
-import qualified Crypto.JOSE.JWS as JWS
 import Crypto.JOSE.JWS (validationSettingsAlgorithms)
+import qualified Crypto.JOSE.JWS as JWS
 import Crypto.JWT (
     Audience (..),
     ClaimsSet,
@@ -246,11 +247,12 @@ mergeValues :: Value -> Value -> Value
 mergeValues (Aeson.Object b) (Aeson.Object o) = Aeson.Object (KeyMap.unionWith mergeValues b o)
 mergeValues _ overlay = overlay
 
--- | Build the @jose@ 'ClaimsSet' with all Supabase-required claims.
---
--- @iat@\/@exp@ are floored to integer POSIX seconds so the emitted token
--- conforms to the project's stricter "no fractional NumericDate" wire
--- contract — @jose@ would otherwise pass sub-second precision through.
+{- | Build the @jose@ 'ClaimsSet' with all Supabase-required claims.
+
+@iat@\/@exp@ are floored to integer POSIX seconds so the emitted token
+conforms to the project's stricter "no fractional NumericDate" wire
+contract — @jose@ would otherwise pass sub-second precision through.
+-}
 buildClaimsSet :: JwtConfig -> AccessTokenClaims -> ClaimsSet
 buildClaimsSet JwtConfig{jwtIssuer, jwtAudience} AccessTokenClaims{..} =
     let issSoUri = textToStringOrURI jwtIssuer

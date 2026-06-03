@@ -1,16 +1,17 @@
--- | Hedgehog-driven malformed-token / property tests for 'Hauth.Auth.Jwt'.
---
--- Complements the hand-written cases in 'Spec.Auth.JwtSpec' by fuzzing the
--- inputs to 'validateAccessToken' — tampered signatures, garbage segments,
--- bad base64, wrong segment counts, random alg headers, non-object header
--- and payload, boundary exp\/iat, and fractional NumericDate.
+{- | Hedgehog-driven malformed-token / property tests for 'Hauth.Auth.Jwt'.
+
+Complements the hand-written cases in 'Spec.Auth.JwtSpec' by fuzzing the
+inputs to 'validateAccessToken' — tampered signatures, garbage segments,
+bad base64, wrong segment counts, random alg headers, non-object header
+and payload, boundary exp\/iat, and fractional NumericDate.
+-}
 module Spec.Auth.JwtPropertySpec (runSpec) where
 
 import Control.Monad (unless, when)
 import Crypto.Hash (SHA256)
 import Crypto.MAC.HMAC (HMAC, hmac, hmacGetDigest)
-import qualified Data.Aeson as Aeson
 import Data.Aeson (Value (..), object, (.=))
+import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KeyMap
 import Data.ByteArray (convert)
@@ -81,7 +82,7 @@ genMetadataValue =
         Gen.choice
         [ pure Null
         , Bool <$> Gen.bool
-        , (String . T.pack) <$> Gen.list (Range.linear 0 10) Gen.alphaNum
+        , String . T.pack <$> Gen.list (Range.linear 0 10) Gen.alphaNum
         ]
         [ Object . KeyMap.fromList
             <$> Gen.list
@@ -93,9 +94,10 @@ genMetadataValue =
                 )
         ]
 
--- | A wide window around \"now\" so exp boundary cases (one second past, one
--- second future) are also reachable, but stays positive and away from
--- year-2038-style overflow.
+{- | A wide window around \"now\" so exp boundary cases (one second past, one
+second future) are also reachable, but stays positive and away from
+year-2038-style overflow.
+-}
 genClaims :: UTCTime -> Gen AccessTokenClaims
 genClaims now = do
     sub <- genUuidLike
@@ -187,11 +189,12 @@ propRoundTrip now = withTests 100 . property $ do
                     claimSessionId out === claimSessionId claims
                     claimAmr out === claimAmr claims
 
--- | Flipping any single byte of a freshly signed token rejects it.
---
--- We mutate a byte in the signature segment (always present), which
--- guarantees the token is still 3 dot-segments — so the failure mode is
--- always signature verification rather than malformed shape.
+{- | Flipping any single byte of a freshly signed token rejects it.
+
+We mutate a byte in the signature segment (always present), which
+guarantees the token is still 3 dot-segments — so the failure mode is
+always signature verification rather than malformed shape.
+-}
 propTamperSignature :: UTCTime -> Property
 propTamperSignature now = withTests 100 . property $ do
     claims <- forAll (genClaims now)
@@ -256,8 +259,9 @@ propBadBase64 = withTests 100 . property $ do
     res <- evalIO (validateAccessToken testCfg tok)
     expectLeft tok res
 
--- | Any header @alg@ value other than @HS256@ rejects, even with a valid HMAC
--- over the new header bytes.
+{- | Any header @alg@ value other than @HS256@ rejects, even with a valid HMAC
+over the new header bytes.
+-}
 propRandomAlgRejected :: UTCTime -> Property
 propRandomAlgRejected now = withTests 100 . property $ do
     let claims = makeTestClaims now
@@ -291,7 +295,7 @@ propNonObjectHeaderPayload :: UTCTime -> Property
 propNonObjectHeaderPayload now = withTests 100 . property $ do
     let claims = makeTestClaims now
     okPayload <- evalIO (defaultPayloadFor claims testCfg)
-    okHeader <- pure (object ["alg" .= ("HS256" :: Text), "typ" .= ("JWT" :: Text)])
+    let okHeader = object ["alg" .= ("HS256" :: Text), "typ" .= ("JWT" :: Text)]
     target <- forAll (Gen.element (["header", "payload"] :: [Text]))
     badShape <-
         forAll
@@ -311,10 +315,11 @@ propNonObjectHeaderPayload now = withTests 100 . property $ do
     res <- evalIO (validateAccessToken testCfg tok)
     expectLeft tok res
 
--- | exp boundary: exactly now (rejected), one second past (rejected), one
--- second future (accepted). The verifier is called with verifyClaims at
--- system @currentTime@ — to make this deterministic against the property's
--- chosen offset, we sign with that offset and check shortly after.
+{- | exp boundary: exactly now (rejected), one second past (rejected), one
+second future (accepted). The verifier is called with verifyClaims at
+system @currentTime@ — to make this deterministic against the property's
+chosen offset, we sign with that offset and check shortly after.
+-}
 propExpBoundary :: Property
 propExpBoundary = withTests 30 . property $ do
     offset <- forAll (Gen.element [-2 :: Int, -1, 0, 2, 5])
@@ -338,8 +343,9 @@ propExpBoundary = withTests 30 . property $ do
                         footnote ("expected accept for offset=" <> show off <> ", got " <> show e)
                         failure
 
--- | Property-generated fractional iat/exp values are always rejected as
--- 'JwtClaimError', not silently floored.
+{- | Property-generated fractional iat/exp values are always rejected as
+'JwtClaimError', not silently floored.
+-}
 propFractionalNumericDate :: UTCTime -> Property
 propFractionalNumericDate now = withTests 100 . property $ do
     let claims = makeTestClaims now
@@ -405,7 +411,7 @@ runSpec = do
             ok <- H.check p
             unless ok $ do
                 putStrLn ("Spec.Auth.JwtPropertySpec: " <> name <> " FAILED")
-                atomicModifyIORef' failedRef (\_ -> (True, ()))
+                atomicModifyIORef' failedRef (const (True, ()))
     run "roundtrip" (propRoundTrip now)
     run "tamper-signature" (propTamperSignature now)
     run "garbage-three-segments" propGarbageThreeSegments
