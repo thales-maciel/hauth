@@ -1,12 +1,11 @@
 # Hauth
 
-Postgres-native authentication service written in Haskell.
-
-The current repository is intentionally only a scaffold. The executable exits
-successfully and gives CI/CD a real package to build, lint, format-check, test,
-and release.
-
-The v0.1 Supabase compatibility target is documented in
+A Postgres-native, Supabase-Auth-compatible authentication service written in
+Haskell. Active pre-1.0 — the v0.1 surface (signup, password and refresh-token
+grants, recover, verify, resend, `/user`, OAuth via Google/GitHub, TOTP MFA,
+admin user management, webhook delivery, sync hooks, email templates) is
+implemented and exercised end-to-end. The supported wire shapes and the
+endpoints intentionally deferred past v0.1 are catalogued in
 [docs/v0.1-compatibility.md](docs/v0.1-compatibility.md).
 
 ## Running hauth
