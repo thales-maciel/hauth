@@ -311,7 +311,7 @@ serviceRoleAuth env =
 
 notImplemented :: AppHandler a
 notImplemented =
-    throwError err501{errBody = "Not implemented"}
+    throwError err501{errBody = supabaseErrorBody "not_implemented" "Not implemented"}
 
 notImplemented1 :: a -> AppHandler b
 notImplemented1 _ =

@@ -2,6 +2,7 @@ module Main (main) where
 
 import qualified E2E.AdminSpec
 import qualified E2E.AuthSpec
+import qualified E2E.CompatibilityPlaceholdersSpec
 import qualified E2E.EmailTemplatesCrudSpec
 import qualified E2E.EmailTemplatesLoaderSpec
 import qualified E2E.EmailTemplatesSchemaSpec
@@ -36,6 +37,7 @@ allSpecs = do
     describe "password recovery" E2E.RecoverySpec.spec
     describe "MFA TOTP" E2E.MfaSpec.spec
     describe "admin users API" E2E.AdminSpec.spec
+    describe "compatibility placeholder routes" E2E.CompatibilityPlaceholdersSpec.spec
     describe "OAuth (limited)" E2E.OAuthSpec.spec
     describe "hooks types (loadHookConfig)" E2E.HooksTypesSpec.spec
     describe "verify database checks" E2E.VerifyDatabaseSpec.spec

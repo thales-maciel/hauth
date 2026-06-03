@@ -225,6 +225,7 @@ test-suite hauth-e2e
   other-modules:
     E2E.AdminSpec
     E2E.AuthSpec
+    E2E.CompatibilityPlaceholdersSpec
     E2E.EmailTemplatesCrudSpec
     E2E.EmailTemplatesLoaderSpec
     E2E.EmailTemplatesSchemaSpec
