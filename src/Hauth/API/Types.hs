@@ -421,7 +421,19 @@ data ResendRequest = ResendRequest
     , resendType :: Text
     }
     deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+
+instance FromJSON ResendRequest where
+    parseJSON = Aeson.withObject "ResendRequest" \o ->
+        ResendRequest
+            <$> o Aeson..: "email"
+            <*> o Aeson..: "type"
+
+instance ToJSON ResendRequest where
+    toJSON ResendRequest{resendEmail, resendType} =
+        object
+            [ "email" .= resendEmail
+            , "type" .= resendType
+            ]
 
 data UpdateUserRequest = UpdateUserRequest
     { updateUserEmail :: Maybe Email
@@ -721,7 +733,14 @@ newtype ChallengeFactorRequest = ChallengeFactorRequest
     { challengeFactorChannel :: Maybe Text
     }
     deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+
+instance FromJSON ChallengeFactorRequest where
+    parseJSON = Aeson.withObject "ChallengeFactorRequest" \o ->
+        ChallengeFactorRequest <$> o Aeson..:? "channel"
+
+instance ToJSON ChallengeFactorRequest where
+    toJSON ChallengeFactorRequest{challengeFactorChannel} =
+        object ["channel" .= challengeFactorChannel]
 
 data ChallengeFactorResponse = ChallengeFactorResponse
     { challengeFactorId :: Text
@@ -945,13 +964,32 @@ data GenerateLinkRequest = GenerateLinkRequest
     , generateLinkType :: Text
     }
     deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+
+instance FromJSON GenerateLinkRequest where
+    parseJSON = Aeson.withObject "GenerateLinkRequest" \o ->
+        GenerateLinkRequest
+            <$> o Aeson..: "email"
+            <*> o Aeson..: "type"
+
+instance ToJSON GenerateLinkRequest where
+    toJSON GenerateLinkRequest{generateLinkEmail, generateLinkType} =
+        object
+            [ "email" .= generateLinkEmail
+            , "type" .= generateLinkType
+            ]
 
 newtype GenerateLinkResponse = GenerateLinkResponse
     { generateLinkActionLink :: Text
     }
     deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+
+instance FromJSON GenerateLinkResponse where
+    parseJSON = Aeson.withObject "GenerateLinkResponse" \o ->
+        GenerateLinkResponse <$> o Aeson..: "action_link"
+
+instance ToJSON GenerateLinkResponse where
+    toJSON GenerateLinkResponse{generateLinkActionLink} =
+        object ["action_link" .= generateLinkActionLink]
 
 data InviteUserRequest = InviteUserRequest
     { inviteUserEmail :: Email
@@ -977,13 +1015,27 @@ newtype ProvidersResponse = ProvidersResponse
     { providers :: [Text]
     }
     deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+
+instance FromJSON ProvidersResponse where
+    parseJSON = Aeson.withObject "ProvidersResponse" \o ->
+        ProvidersResponse <$> o Aeson..: "providers"
+
+instance ToJSON ProvidersResponse where
+    toJSON ProvidersResponse{providers} =
+        object ["providers" .= providers]
 
 newtype UpdateProvidersRequest = UpdateProvidersRequest
     { updateProviders :: [Text]
     }
     deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+
+instance FromJSON UpdateProvidersRequest where
+    parseJSON = Aeson.withObject "UpdateProvidersRequest" \o ->
+        UpdateProvidersRequest <$> o Aeson..: "providers"
+
+instance ToJSON UpdateProvidersRequest where
+    toJSON UpdateProvidersRequest{updateProviders} =
+        object ["providers" .= updateProviders]
 
 -- | Request body for PUT /admin/email-templates/{name}.
 data EmailTemplateCrudRequest = EmailTemplateCrudRequest
@@ -1055,13 +1107,27 @@ newtype EmailTemplatesResponse = EmailTemplatesResponse
     { emailTemplates :: [Text]
     }
     deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+
+instance FromJSON EmailTemplatesResponse where
+    parseJSON = Aeson.withObject "EmailTemplatesResponse" \o ->
+        EmailTemplatesResponse <$> o Aeson..: "templates"
+
+instance ToJSON EmailTemplatesResponse where
+    toJSON EmailTemplatesResponse{emailTemplates} =
+        object ["templates" .= emailTemplates]
 
 newtype UpdateEmailTemplatesRequest = UpdateEmailTemplatesRequest
     { updateEmailTemplates :: [Text]
     }
     deriving stock (Eq, Generic, Show)
-    deriving anyclass (FromJSON, ToJSON)
+
+instance FromJSON UpdateEmailTemplatesRequest where
+    parseJSON = Aeson.withObject "UpdateEmailTemplatesRequest" \o ->
+        UpdateEmailTemplatesRequest <$> o Aeson..: "templates"
+
+instance ToJSON UpdateEmailTemplatesRequest where
+    toJSON UpdateEmailTemplatesRequest{updateEmailTemplates} =
+        object ["templates" .= updateEmailTemplates]
 
 -- | Full delivery row returned by GET single and POST retry.
 data WebhookDeliveryResponse = WebhookDeliveryResponse
