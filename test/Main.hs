@@ -5,6 +5,7 @@ import qualified Spec.APISpec
 import qualified Spec.Auth.AalAmrSpec
 import qualified Spec.Auth.AdminSpec
 import qualified Spec.Auth.CustomAccessTokenSpec
+import qualified Spec.Auth.JwtPropertySpec
 import qualified Spec.Auth.JwtSpec
 import qualified Spec.Auth.LoginSpec
 import qualified Spec.Auth.LogoutSpec
@@ -47,6 +48,7 @@ main = do
     Spec.MigrateSpec.runSpec
     Spec.Crypto.PasswordSpec.runSpec
     Spec.Auth.JwtSpec.runSpec
+    Spec.Auth.JwtPropertySpec.runSpec
     Spec.Auth.ServiceRoleSpec.runSpec
     Spec.Auth.LoginSpec.runSpec
     Spec.Auth.LogoutSpec.runSpec

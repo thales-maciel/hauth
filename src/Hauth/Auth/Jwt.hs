@@ -1,8 +1,20 @@
+{-# OPTIONS_GHC -Wno-deprecations #-}
+
 {- | JWT signing and validation for Supabase-compatible access tokens.
 
 Implements HS256 (HMAC-SHA256) compact JWTs with the Supabase Auth claim
 shape so existing Postgres RLS policies and PostgREST integrations keep
 working without changes.
+
+The wire-level JWS (signature, header, base64url, time-bound checks) is
+delegated to the maintained @jose@ library. This module owns only the
+Supabase-shape claim construction/extraction, the hook-overlay policy, and
+the project-specific stricter rules (integer-only @iat@/@exp@).
+
+@jose@'s @addClaim@/@unregisteredClaims@ are deprecated in favour of a
+@HasClaimsSet@ subtype. The deprecation is stylistic; the functions still
+work, and adopting the subtype encoding would significantly grow this
+module without changing behaviour. Suppressing the warning file-locally.
 -}
 module Hauth.Auth.Jwt (
     AccessTokenClaims (..),
@@ -15,8 +27,33 @@ module Hauth.Auth.Jwt (
 ) where
 
 import Control.Exception (SomeException, try)
-import Crypto.Hash (SHA256)
-import Crypto.MAC.HMAC (HMAC, hmac, hmacGetDigest)
+import Control.Lens (preview, view, (&), (.~), (?~))
+import Crypto.JOSE.Error (runJOSE)
+import qualified Crypto.JOSE.Header as Hdr
+import Crypto.JOSE.JWK (fromOctets)
+import Crypto.JOSE.JWS (validationSettingsAlgorithms)
+import qualified Crypto.JOSE.JWS as JWS
+import Crypto.JWT (
+    Audience (..),
+    ClaimsSet,
+    JWTError (..),
+    NumericDate (..),
+    StringOrURI,
+    addClaim,
+    decodeCompact,
+    defaultJWTValidationSettings,
+    emptyClaimsSet,
+    encodeCompact,
+    issuerPredicate,
+    jwtValidationSettingsCheckIssuedAt,
+    newJWSHeader,
+    signClaims,
+    string,
+    stringOrUri,
+    unregisteredClaims,
+    verifyClaims,
+ )
+import qualified Crypto.JWT as JWT
 import Data.Aeson (
     FromJSON (..),
     Object,
@@ -31,17 +68,19 @@ import Data.Aeson (
  )
 import qualified Data.Aeson as Aeson
 import Data.Aeson.Key (fromText)
+import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KeyMap
-import Data.ByteArray (constEq, convert)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base64.URL as B64URL
 import qualified Data.ByteString.Lazy as BSL
+import qualified Data.Map.Strict as Map
 import Data.Scientific (floatingOrInteger)
+import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
-import Data.Time.Clock (UTCTime, getCurrentTime)
-import Data.Time.Clock.POSIX (POSIXTime, posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
+import Data.Time.Clock (UTCTime)
+import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
 import Hauth.Config (Config (..), JwtConfig (..))
 import Hauth.Env (AppEnv (..), withDatabaseConnection)
 import Hauth.Hooks.Runner (HookDecision (..), runHook)
@@ -116,17 +155,18 @@ Embeds @iss@ and @aud@ from 'JwtConfig', plus all Supabase-required extra
 claims. Returns the compact JWT text.
 -}
 signAccessToken :: JwtConfig -> AccessTokenClaims -> IO (Either JwtError Text)
-signAccessToken JwtConfig{jwtSecret, jwtIssuer, jwtAudience} claims = do
-    let iatSeconds = floor (utcTimeToPOSIXSeconds (claimIssuedAt claims)) :: Integer
-        expSeconds = floor (utcTimeToPOSIXSeconds (claimExpiresAt claims)) :: Integer
-        payload = buildPayload jwtIssuer jwtAudience iatSeconds expSeconds claims
-        headerJson = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}"
-        headerB64 = base64urlEncode (TE.encodeUtf8 headerJson)
-        payloadB64 = base64urlEncode (BSL.toStrict (Aeson.encode payload))
-        signingInput = headerB64 <> "." <> payloadB64
-        sig = computeHmac256 jwtSecret signingInput
-        token = signingInput <> "." <> sig
-    pure (Right token)
+signAccessToken cfg@JwtConfig{jwtSecret} claims = do
+    let jwk = fromOctets (TE.encodeUtf8 jwtSecret)
+        header =
+            newJWSHeader ((), JWS.HS256)
+                & Hdr.typ ?~ Hdr.HeaderParam () "JWT"
+        claimsSet = buildClaimsSet cfg claims
+    result <- runJOSE (signClaims jwk header claimsSet)
+    case result of
+        Left (e :: JWTError) ->
+            pure (Left (JwtSignError (show e)))
+        Right signed ->
+            pure (Right (TE.decodeUtf8 (BSL.toStrict (encodeCompact signed))))
 
 {- | Issue an access token, applying the custom-access-token hook if configured.
 
@@ -207,24 +247,57 @@ mergeValues :: Value -> Value -> Value
 mergeValues (Aeson.Object b) (Aeson.Object o) = Aeson.Object (KeyMap.unionWith mergeValues b o)
 mergeValues _ overlay = overlay
 
--- | Build the full JSON claims object for signing.
-buildPayload :: Text -> Text -> Integer -> Integer -> AccessTokenClaims -> Object
-buildPayload issuer audience iatSecs expSecs AccessTokenClaims{..} =
-    KeyMap.fromList $
-        [ (fromText "iss", String issuer)
-        , (fromText "sub", String claimSub)
-        , (fromText "aud", String audience)
-        , (fromText "iat", Number (fromInteger iatSecs))
-        , (fromText "exp", Number (fromInteger expSecs))
-        , (fromText "role", String claimRole)
-        , (fromText "aal", String claimAal)
-        , (fromText "amr", toJSON claimAmr)
-        , (fromText "session_id", String claimSessionId)
-        , (fromText "app_metadata", claimAppMetadata)
-        , (fromText "user_metadata", claimUserMetadata)
-        ]
-            ++ maybe [] (\e -> [(fromText "email", String e)]) claimEmail
-            ++ maybe [] (\p -> [(fromText "phone", String p)]) claimPhone
+{- | Build the @jose@ 'ClaimsSet' with all Supabase-required claims.
+
+@iat@\/@exp@ are floored to integer POSIX seconds so the emitted token
+conforms to the project's stricter "no fractional NumericDate" wire
+contract — @jose@ would otherwise pass sub-second precision through.
+-}
+buildClaimsSet :: JwtConfig -> AccessTokenClaims -> ClaimsSet
+buildClaimsSet JwtConfig{jwtIssuer, jwtAudience} AccessTokenClaims{..} =
+    let issSoUri = textToStringOrURI jwtIssuer
+        subSoUri = textToStringOrURI claimSub
+        audSoUri = textToStringOrURI jwtAudience
+        iatSeconds = floorPosix claimIssuedAt
+        expSeconds = floorPosix claimExpiresAt
+        base =
+            emptyClaimsSet
+                & JWT.claimIss ?~ issSoUri
+                & JWT.claimSub ?~ subSoUri
+                & JWT.claimAud ?~ Audience [audSoUri]
+                & JWT.claimIat ?~ NumericDate iatSeconds
+                & JWT.claimExp ?~ NumericDate expSeconds
+        extras =
+            [ ("role", String claimRole)
+            , ("aal", String claimAal)
+            , ("amr", toJSON claimAmr)
+            , ("session_id", String claimSessionId)
+            , ("app_metadata", claimAppMetadata)
+            , ("user_metadata", claimUserMetadata)
+            ]
+                ++ maybe [] (\e -> [("email", String e)]) claimEmail
+                ++ maybe [] (\p -> [("phone", String p)]) claimPhone
+     in foldr (\(k, v) cs -> addClaim k v cs) base extras
+
+{- | Build a 'StringOrURI' from arbitrary text. Strings containing a @:@ that
+fail URI parsing are encoded as a plain string fallback so the round-trip is
+total — this only matters for hostile inputs the type system can't refuse.
+-}
+textToStringOrURI :: Text -> StringOrURI
+textToStringOrURI t =
+    case preview stringOrUri t of
+        Just s -> s
+        Nothing ->
+            -- Defensive: jose's `stringOrUri` prism fails only for strings
+            -- with a `:` that don't parse as a URI. Fall back to truncating
+            -- at the `:` so we still produce something rather than panicking
+            -- at sign-time. Supabase issuers/audiences in practice are either
+            -- bare names ("authenticated") or full URIs.
+            case preview stringOrUri (T.takeWhile (/= ':') t) of
+                Just s -> s
+                Nothing -> case preview stringOrUri ("" :: Text) of
+                    Just empty_ -> empty_
+                    Nothing -> error "textToStringOrURI: stringOrUri prism failed on empty text"
 
 -- ---------------------------------------------------------------------------
 -- Validation
@@ -235,99 +308,64 @@ buildPayload issuer audience iatSecs expSecs AccessTokenClaims{..} =
 Returns the parsed 'AccessTokenClaims' on success.
 -}
 validateAccessToken :: JwtConfig -> Text -> IO (Either JwtError AccessTokenClaims)
-validateAccessToken cfg@JwtConfig{jwtSecret} token = do
-    now <- fmap utcTimeToPOSIXSeconds getCurrentTime
-    pure case T.splitOn "." token of
-        [headerB64, payloadB64, sigB64] ->
-            let signingInput = headerB64 <> "." <> payloadB64
-                expectedSig = computeHmac256 jwtSecret signingInput
-                -- Constant-time compare on the encoded bytes. constEq fast-exits
-                -- on length mismatch (which is fine — different length means
-                -- malformed token, no secret-dependent timing leak).
-                sigOk = constEq (TE.encodeUtf8 sigB64) (TE.encodeUtf8 expectedSig)
-             in if not sigOk
-                    then Left (JwtVerifyError "signature verification failed")
-                    else do
-                        -- Signature is verified — only NOW do we trust the header
-                        -- enough to parse it. Header policy is enforced after the
-                        -- sig check to avoid leaking parser timing on un-authenticated
-                        -- input.
-                        validateHeader headerB64
-                        payloadBytes <- decodeBase64url payloadB64
-                        obj <- parsePayloadJson payloadBytes
-                        extractClaims cfg now obj
-        _ -> Left (JwtVerifyError "malformed token: expected 3 dot-separated segments")
+validateAccessToken JwtConfig{jwtSecret, jwtIssuer, jwtAudience} token = do
+    let jwk = fromOctets (TE.encodeUtf8 jwtSecret)
+        expectedAud = textToStringOrURI jwtAudience
+        expectedIss = textToStringOrURI jwtIssuer
+        settings =
+            defaultJWTValidationSettings (== expectedAud)
+                & validationSettingsAlgorithms .~ Set.singleton JWS.HS256
+                & issuerPredicate .~ (== expectedIss)
+                & jwtValidationSettingsCheckIssuedAt .~ False
+        tokenBytes = BSL.fromStrict (TE.encodeUtf8 token)
+    decodeResult <- runJOSE (decodeCompact tokenBytes >>= verifyClaims settings jwk)
+    case decodeResult of
+        Left e -> pure (Left (mapJwtError e))
+        Right cs -> pure $ do
+            -- Post-signature checks below. jose has already verified the
+            -- HMAC over the header+payload, so re-parsing those bytes for
+            -- our project-specific stricter rules (typ policy, integer-only
+            -- NumericDate) is safe — the bytes are trusted.
+            enforceTypHeader token
+            checkIntegerNumericDates token
+            extractAccessTokenClaims cs
 
-{- | Decode the JOSE header and enforce algorithm policy: @alg@ MUST be
-@HS256@; if @typ@ is present it MUST be @JWT@. This is defence-in-depth on
-top of the HMAC verification: the signature already binds the header bytes,
-but rejecting non-HS256 explicitly forecloses any future code path that
-might dispatch on @alg@ and accidentally accept @none@ or an asymmetric
-algorithm.
--}
-validateHeader :: Text -> Either JwtError ()
-validateHeader headerB64 = do
-    bytes <- decodeBase64url headerB64
-    hdr <- case Aeson.decodeStrict' bytes of
-        Just (Object o) -> Right o
-        Just _ -> Left (JwtVerifyError "malformed header: not a JSON object")
-        Nothing -> Left (JwtVerifyError "malformed header: not valid JSON")
-    case KeyMap.lookup (fromText "alg") hdr of
-        Just (String "HS256") -> pure ()
-        Just (String other) ->
-            Left (JwtVerifyError ("unsupported alg: " <> T.unpack other))
-        Just _ ->
-            Left (JwtVerifyError "header alg is not a string")
-        Nothing ->
-            Left (JwtVerifyError "missing alg in header")
-    case KeyMap.lookup (fromText "typ") hdr of
-        Nothing -> pure () -- typ is optional per RFC 7519 §5.1
-        Just (String "JWT") -> pure ()
-        Just (String other) ->
-            Left (JwtVerifyError ("unsupported typ: " <> T.unpack other))
-        Just _ ->
-            Left (JwtVerifyError "header typ is not a string")
+-- | Map a 'JWTError' from @jose@ into our 'JwtError' partition.
+mapJwtError :: JWTError -> JwtError
+mapJwtError = \case
+    JWTExpired -> JwtVerifyError "token has expired"
+    JWTNotYetValid -> JwtVerifyError "token not yet valid (nbf)"
+    JWTIssuedAtFuture -> JwtVerifyError "token iat is in the future"
+    JWTNotInIssuer -> JwtClaimError "iss mismatch"
+    JWTNotInAudience -> JwtClaimError "aud mismatch"
+    JWTClaimsSetDecodeError msg -> JwtVerifyError ("malformed payload: " <> msg)
+    JWSError err -> JwtVerifyError ("jws verification failed: " <> show err)
 
--- | Parse the JSON payload from raw bytes.
-parsePayloadJson :: BS.ByteString -> Either JwtError Object
-parsePayloadJson bytes =
-    case Aeson.decodeStrict' bytes of
-        Nothing -> Left (JwtVerifyError "malformed payload: not valid JSON")
-        Just (Object obj) -> Right obj
-        Just _ -> Left (JwtVerifyError "malformed payload: not a JSON object")
-
--- | Extract and validate all claims from the decoded payload object.
-extractClaims :: JwtConfig -> POSIXTime -> Object -> Either JwtError AccessTokenClaims
-extractClaims JwtConfig{jwtIssuer, jwtAudience} now obj = do
-    -- Registered claims
-    issText <- requireText obj "iss"
-    if issText /= jwtIssuer
-        then Left (JwtClaimError ("iss mismatch: got " <> T.unpack issText))
-        else Right ()
-
-    audText <- requireText obj "aud"
-    if audText /= jwtAudience
-        then Left (JwtClaimError ("aud mismatch: got " <> T.unpack audText))
-        else Right ()
-
-    expSecs <- requireInteger obj "exp"
-    if fromInteger expSecs <= now
-        then Left (JwtVerifyError "token has expired")
-        else Right ()
-
-    iatSecs <- requireInteger obj "iat"
-    subText <- requireText obj "sub"
-
-    -- Extra claims
-    roleText <- requireText obj "role"
-    let emailVal = lookupText obj "email"
-    let phoneVal = lookupText obj "phone"
-    appMeta <- requireValue obj "app_metadata"
-    userMeta <- requireValue obj "user_metadata"
-    aalText <- requireText obj "aal"
-    amrEntries <- requireAmr obj "amr"
-    sessionId <- requireText obj "session_id"
-
+-- | Extract custom Supabase claims from a verified 'ClaimsSet'.
+extractAccessTokenClaims :: ClaimsSet -> Either JwtError AccessTokenClaims
+extractAccessTokenClaims cs = do
+    subText <- case preview (JWT.claimSub . _justStringOrURI) cs of
+        Just t -> Right t
+        Nothing -> Left (JwtClaimError "missing or non-string claim: sub")
+    iatTime <- case view JWT.claimIat cs of
+        Just (NumericDate t) -> Right t
+        Nothing -> Left (JwtClaimError "missing claim: iat")
+    expTime <- case view JWT.claimExp cs of
+        Just (NumericDate t) -> Right t
+        Nothing -> Left (JwtClaimError "missing claim: exp")
+    let customObj :: Object
+        customObj =
+            KeyMap.fromMap
+                ( Map.mapKeysMonotonic Key.fromText (view unregisteredClaims cs)
+                )
+    roleText <- requireText customObj "role"
+    let emailVal = lookupText customObj "email"
+    let phoneVal = lookupText customObj "phone"
+    appMeta <- requireValue customObj "app_metadata"
+    userMeta <- requireValue customObj "user_metadata"
+    aalText <- requireText customObj "aal"
+    amrEntries <- requireAmr customObj "amr"
+    sessionId <- requireText customObj "session_id"
     Right
         AccessTokenClaims
             { claimSub = subText
@@ -339,9 +377,57 @@ extractClaims JwtConfig{jwtIssuer, jwtAudience} now obj = do
             , claimAal = aalText
             , claimAmr = amrEntries
             , claimSessionId = sessionId
-            , claimIssuedAt = posixSecondsToUTCTime (fromInteger iatSecs)
-            , claimExpiresAt = posixSecondsToUTCTime (fromInteger expSecs)
+            , claimIssuedAt = iatTime
+            , claimExpiresAt = expTime
             }
+  where
+    -- Compose `_Just` with the `string` prism so `preview` on `claimSub` yields
+    -- `Maybe Text` rather than `Maybe (Maybe StringOrURI)`.
+    _justStringOrURI = traverse . string
+
+{- | Enforce the project's @typ@ header policy: if the @typ@ JOSE header is
+present it must be the string @\"JWT\"@. RFC 7519 §5.1 makes @typ@ optional,
+so its absence is accepted.
+
+@jose@'s 'verifyClaims' validates @alg@ but does not check @typ@. We keep the
+historical hardening that rejected @typ=JWE@ etc. so non-standard tokens are
+refused even when their signature is otherwise valid.
+-}
+enforceTypHeader :: Text -> Either JwtError ()
+enforceTypHeader token =
+    case T.splitOn "." token of
+        [headerB64, _, _] -> do
+            bytes <- decodeBase64url headerB64
+            hdr <- case Aeson.decodeStrict' bytes of
+                Just (Object o) -> Right o
+                Just _ -> Left (JwtVerifyError "malformed header: not a JSON object")
+                Nothing -> Left (JwtVerifyError "malformed header: not valid JSON")
+            case KeyMap.lookup (fromText "typ") hdr of
+                Nothing -> Right () -- typ is optional per RFC 7519 §5.1
+                Just (String "JWT") -> Right ()
+                Just (String other) ->
+                    Left (JwtVerifyError ("unsupported typ: " <> T.unpack other))
+                Just _ ->
+                    Left (JwtVerifyError "header typ is not a string")
+        _ -> Left (JwtVerifyError "malformed token: expected 3 dot-separated segments")
+
+{- | Re-parse the token's payload segment to confirm @iat@ and @exp@ are JSON
+integers, not fractional numbers. Called after signature verification, so the
+parsed bytes are trusted.
+-}
+checkIntegerNumericDates :: Text -> Either JwtError ()
+checkIntegerNumericDates token =
+    case T.splitOn "." token of
+        [_, payloadB64, _] -> do
+            payloadBytes <- decodeBase64url payloadB64
+            obj <- case Aeson.decodeStrict' payloadBytes of
+                Just (Object o) -> Right o
+                Just _ -> Left (JwtClaimError "malformed payload: not a JSON object")
+                Nothing -> Left (JwtClaimError "malformed payload: not valid JSON")
+            _ <- requireInteger obj "iat"
+            _ <- requireInteger obj "exp"
+            Right ()
+        _ -> Left (JwtVerifyError "malformed token: expected 3 dot-separated segments")
 
 -- ---------------------------------------------------------------------------
 -- Claim helpers
@@ -364,11 +450,9 @@ requireInteger :: Object -> Text -> Either JwtError Integer
 requireInteger obj key =
     case KeyMap.lookup (fromText key) obj of
         Nothing -> Left (JwtClaimError ("missing claim: " <> T.unpack key))
-        -- RFC 7519 §2 NumericDate is "a JSON numeric value representing the
-        -- number of seconds from 1970-01-01T00:00:00Z UTC". Fractional values
-        -- are allowed by the RFC but are a foot-gun across verifier languages
-        -- (rounding/truncation differences) — reject them here so the wire
-        -- contract is unambiguous.
+        -- RFC 7519 §2 NumericDate permits fractional values, but they are a
+        -- foot-gun across verifier languages (rounding/truncation differences)
+        -- — reject them here so the wire contract is unambiguous.
         Just (Number n) -> case floatingOrInteger n :: Either Double Integer of
             Right i -> Right i
             Left _ -> Left (JwtClaimError ("claim is not an integer: " <> T.unpack key))
@@ -390,25 +474,12 @@ requireAmr obj key =
                 Success entries -> Right entries
 
 -- ---------------------------------------------------------------------------
--- Crypto helpers
+-- Base64url helper (used only for the post-verification fractional check)
 -- ---------------------------------------------------------------------------
 
-{- | Compute HMAC-SHA256 over @signingInput@ using @secret@ as the key,
-returning a base64url-encoded (unpadded) result.
--}
-computeHmac256 :: Text -> Text -> Text
-computeHmac256 secret signingInput =
-    let key = TE.encodeUtf8 secret
-        msg = TE.encodeUtf8 signingInput
-        mac = hmac key msg :: HMAC SHA256
-        digest = convert (hmacGetDigest mac) :: BS.ByteString
-     in base64urlEncode digest
-
--- | Base64url-encode a strict 'ByteString', stripping padding @=@.
-base64urlEncode :: BS.ByteString -> Text
-base64urlEncode = TE.decodeUtf8 . stripPadding . B64URL.encode
-  where
-    stripPadding = BS.filter (/= 61) -- 61 == ord '='
+-- | Floor a 'UTCTime' to integer POSIX seconds.
+floorPosix :: UTCTime -> UTCTime
+floorPosix = posixSecondsToUTCTime . fromInteger . floor . utcTimeToPOSIXSeconds
 
 -- | Base64url-decode a text segment (with or without padding).
 decodeBase64url :: Text -> Either JwtError BS.ByteString
