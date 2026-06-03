@@ -1,4 +1,4 @@
-.PHONY: build ci clean-local coverage e2e format format-check lint rebase-check run test
+.PHONY: build check-derived-json check-served-stubs ci clean-local coverage e2e format format-check guards lint rebase-check run test
 
 build:
 	cabal build all
@@ -33,12 +33,39 @@ coverage:
 	hpc combine --union --output=combined.tix "$$tix_test" "$$tix_e2e"; \
 	hpc report combined.tix --hpcdir="$$mix_lib" --hpcdir="$$mix_test" --hpcdir="$$mix_e2e"
 
-ci: format-check lint build test
+ci: format-check lint guards build test
 
 clean-local:
 	rm -rf dist-newstyle/build/*/ghc-*/hauth-*
 
+# Regression guards for issue classes that previous PRs had to fix:
+#   * Hand-written JSON in API/Types (commit a166ccc); anyclass derivation
+#     would silently change wire shape.
+#   * notImplemented stubs in served APIs; new ones must be explicitly
+#     acknowledged (bump SERVED_STUBS) so reviewers can't miss them.
+guards: check-derived-json check-served-stubs
+
+check-derived-json:
+	@if grep -nE 'deriving[[:space:]]+anyclass[[:space:]]*\(.*(FromJSON|ToJSON)' src/Hauth/API/Types.hs >&2; then \
+		echo "ERROR: deriving anyclass FromJSON/ToJSON detected in src/Hauth/API/Types.hs." >&2; \
+		echo "       Wire shapes are hand-written and golden-tested; add explicit instances instead." >&2; \
+		exit 1; \
+	fi
+
+# Bump SERVED_STUBS when you intentionally add or remove a notImplemented
+# placeholder in src/Hauth/Server.hs (and ideally implement the handler in
+# the same PR).
+SERVED_STUBS := 10
+check-served-stubs:
+	@count=$$(grep -cE '^[[:space:]]+(:<\|>[[:space:]]+)?notImplemented[0-9]+([[:space:]]|$$)' src/Hauth/Server.hs); \
+	if [ "$$count" != "$(SERVED_STUBS)" ]; then \
+		echo "ERROR: src/Hauth/Server.hs has $$count served notImplemented stubs; allowlist expects $(SERVED_STUBS)." >&2; \
+		echo "       Implement the handler or bump SERVED_STUBS in the Makefile in the same PR." >&2; \
+		grep -nE '^[[:space:]]+(:<\|>[[:space:]]+)?notImplemented[0-9]+([[:space:]]|$$)' src/Hauth/Server.hs >&2; \
+		exit 1; \
+	fi
+
 rebase-check:
-	@! grep -rnE '^(<<<<<<<|>>>>>>>) ' app src test e2e 2>/dev/null || (echo "ERROR: unresolved conflict markers" >&2; exit 1)
+	@! grep -rnE '^(<<<<<<<|>>>>>>>) ' app src test e2e docs 2>/dev/null || (echo "ERROR: unresolved conflict markers" >&2; exit 1)
 	fourmolu --mode check app src test e2e
 	hlint app src test e2e

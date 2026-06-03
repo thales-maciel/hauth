@@ -34,10 +34,15 @@ jobs:
       - name: Reject unresolved conflict markers
         # `=======` is too generic to match safely (appears in ASCII art / comments); only check the angle-bracket markers.
         run: |
-          if grep -rnE '^(<<<<<<<|>>>>>>>) ' app src test e2e 2>/dev/null; then
+          if grep -rnE '^(<<<<<<<|>>>>>>>) ' app src test e2e docs 2>/dev/null; then
             echo "::error::Unresolved conflict markers found." >&2
             exit 1
           fi
+
+      - name: Regression guards
+        # See the `guards` target in Makefile: API/Types JSON derivation +
+        # served notImplemented stub allowlist.
+        run: make guards
 
       - name: Install fourmolu
         run: |
