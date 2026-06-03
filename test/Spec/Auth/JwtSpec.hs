@@ -1,4 +1,4 @@
-module Spec.Auth.JwtSpec (runSpec) where
+module Spec.Auth.JwtSpec (spec) where
 
 import Crypto.Hash (SHA256)
 import Crypto.MAC.HMAC (HMAC, hmac, hmacGetDigest)
@@ -21,7 +21,15 @@ import Hauth.Auth.Jwt (
     validateAccessToken,
  )
 import Hauth.Config (JwtConfig (..))
-import Spec.TestUtils (assertEqual, makeTestClaims, testCfg)
+import Spec.TestUtils (makeTestClaims, testCfg)
+import Test.Hspec (
+    Spec,
+    describe,
+    expectationFailure,
+    it,
+    shouldBe,
+    shouldSatisfy,
+ )
 
 {- | Forge a JWT with the given header and payload JSON, signed with the
 config's secret. Bypasses 'signAccessToken' so tests can exercise header
@@ -56,148 +64,130 @@ payloadObject token =
                         Nothing -> fail "payloadObject: JSON decode"
         _ -> fail "payloadObject: expected 3 segments"
 
-expectVerifyError :: String -> Either JwtError a -> IO ()
-expectVerifyError label = \case
-    Left (JwtVerifyError _) -> pure ()
-    Left err -> fail (label <> ": expected JwtVerifyError, got " <> show err)
-    Right _ -> fail (label <> ": expected Left, got Right")
+isVerifyError :: Either JwtError a -> Bool
+isVerifyError = \case
+    Left (JwtVerifyError _) -> True
+    _ -> False
 
-expectClaimError :: String -> Either JwtError a -> IO ()
-expectClaimError label = \case
-    Left (JwtClaimError _) -> pure ()
-    Left err -> fail (label <> ": expected JwtClaimError, got " <> show err)
-    Right _ -> fail (label <> ": expected Left, got Right")
+isVerifyOrClaimError :: Either JwtError a -> Bool
+isVerifyOrClaimError = \case
+    Left (JwtVerifyError _) -> True
+    Left (JwtClaimError _) -> True
+    _ -> False
 
-runSpec :: IO ()
-runSpec = do
-    now <- getCurrentTime
-    let testClaims = makeTestClaims now
-        pastTime = addUTCTime (-3600) now
+isClaimError :: Either JwtError a -> Bool
+isClaimError = \case
+    Left (JwtClaimError _) -> True
+    _ -> False
 
-    -- Round-trip: sign then validate
-    signResult <- signAccessToken testCfg testClaims
-    case signResult of
-        Left err -> fail ("jwt round-trip sign failed: " <> show err)
-        Right token -> do
-            validateResult <- validateAccessToken testCfg token
-            case validateResult of
-                Left err -> fail ("jwt round-trip validate failed: " <> show err)
+-- | Sign a token and return it, failing the example with a useful message on error.
+signOrFail :: JwtConfig -> AccessTokenClaims -> IO Text
+signOrFail cfg claims = do
+    r <- signAccessToken cfg claims
+    case r of
+        Left e -> fail ("signAccessToken failed: " <> show e)
+        Right t -> pure t
+
+spec :: Spec
+spec = do
+    describe "round-trip" $
+        it "sign then validate preserves the claim fields" $ do
+            now <- getCurrentTime
+            let claims = makeTestClaims now
+            tok <- signOrFail testCfg claims
+            result <- validateAccessToken testCfg tok
+            case result of
+                Left e -> expectationFailure ("validateAccessToken failed: " <> show e)
                 Right claims' -> do
-                    assertEqual "round-trip sub" (claimSub testClaims) (claimSub claims')
-                    assertEqual "round-trip role" (claimRole testClaims) (claimRole claims')
-                    assertEqual "round-trip email" (claimEmail testClaims) (claimEmail claims')
-                    assertEqual "round-trip phone" (claimPhone testClaims) (claimPhone claims')
-                    assertEqual "round-trip aal" (claimAal testClaims) (claimAal claims')
-                    assertEqual "round-trip session_id" (claimSessionId testClaims) (claimSessionId claims')
-                    assertEqual "round-trip amr length" (length (claimAmr testClaims)) (length (claimAmr claims'))
+                    claimSub claims' `shouldBe` claimSub claims
+                    claimRole claims' `shouldBe` claimRole claims
+                    claimEmail claims' `shouldBe` claimEmail claims
+                    claimPhone claims' `shouldBe` claimPhone claims
+                    claimAal claims' `shouldBe` claimAal claims
+                    claimSessionId claims' `shouldBe` claimSessionId claims
+                    length (claimAmr claims') `shouldBe` length (claimAmr claims)
 
-    -- Wrong audience: validate with different config should fail
-    let wrongAudCfg = testCfg{jwtAudience = "wrong-audience"}
-    signResult2 <- signAccessToken testCfg testClaims
-    case signResult2 of
-        Left err -> fail ("jwt wrong-aud sign failed: " <> show err)
-        Right token2 -> do
-            wrongAudResult <- validateAccessToken wrongAudCfg token2
-            case wrongAudResult of
-                Left (JwtClaimError _) -> pure ()
-                Left (JwtVerifyError _) -> pure ()
-                Left err -> fail ("jwt wrong-aud: unexpected error type: " <> show err)
-                Right _ -> fail "jwt wrong-aud: expected Left, got Right"
+    describe "claim policy" $ do
+        it "rejects when validator audience differs from token aud" $ do
+            now <- getCurrentTime
+            let wrongAudCfg = testCfg{jwtAudience = "wrong-audience"}
+            tok <- signOrFail testCfg (makeTestClaims now)
+            result <- validateAccessToken wrongAudCfg tok
+            result `shouldSatisfy` isVerifyOrClaimError
 
-    -- Tampered signature: flip a byte in the last segment
-    signResult3 <- signAccessToken testCfg testClaims
-    case signResult3 of
-        Left err -> fail ("jwt tamper sign failed: " <> show err)
-        Right token3 -> do
-            let tampered = T.init token3 <> if T.last token3 == 'A' then "B" else "A"
-            tamperedResult <- validateAccessToken testCfg tampered
-            case tamperedResult of
-                Left (JwtVerifyError _) -> pure ()
-                Left err -> fail ("jwt tamper: unexpected error type: " <> show err)
-                Right _ -> fail "jwt tamper: expected Left, got Right"
+        it "rejects a tampered signature byte" $ do
+            now <- getCurrentTime
+            tok <- signOrFail testCfg (makeTestClaims now)
+            let tampered = T.init tok <> if T.last tok == 'A' then "B" else "A"
+            result <- validateAccessToken testCfg tampered
+            result `shouldSatisfy` isVerifyError
 
-    -- Expired token: claimExpiresAt in the past
-    let expiredClaims = testClaims{claimExpiresAt = pastTime}
-    expiredResult <- signAccessToken testCfg expiredClaims
-    case expiredResult of
-        Left err -> fail ("jwt expired sign failed: " <> show err)
-        Right expiredToken -> do
-            expiredValidateResult <- validateAccessToken testCfg expiredToken
-            case expiredValidateResult of
-                Left (JwtVerifyError _) -> pure ()
-                Left (JwtClaimError _) -> pure ()
-                Left err -> fail ("jwt expired: unexpected error type: " <> show err)
-                Right _ -> fail "jwt expired: expected Left for expired token, got Right"
+        it "rejects an expired token" $ do
+            now <- getCurrentTime
+            let pastTime = addUTCTime (-3600) now
+                expiredClaims = (makeTestClaims now){claimExpiresAt = pastTime}
+            tok <- signOrFail testCfg expiredClaims
+            result <- validateAccessToken testCfg tok
+            result `shouldSatisfy` isVerifyOrClaimError
 
-    -- Claim shape: decode payload segment and check required keys
-    signResult4 <- signAccessToken testCfg testClaims
-    case signResult4 of
-        Left err -> fail ("jwt claim-shape sign failed: " <> show err)
-        Right token4 -> do
-            let segments = T.splitOn "." token4
-            case segments of
-                [_hdr, payloadB64, _sig] -> do
-                    case B64URL.decode (TE.encodeUtf8 payloadB64) of
-                        Left e -> fail ("jwt claim-shape: base64 decode failed: " <> e)
-                        Right payloadBytes ->
-                            case decodeStrict' payloadBytes of
-                                Nothing -> fail "jwt claim-shape: JSON decode failed"
-                                Just (obj :: Object) -> do
-                                    let requiredKeys = ["sub", "role", "aud", "iss", "iat", "exp", "aal", "amr", "session_id"]
-                                    mapM_
-                                        ( \k ->
-                                            if KeyMap.member k obj
-                                                then pure ()
-                                                else fail ("jwt claim-shape: missing key: " <> show k)
-                                        )
-                                        requiredKeys
-                _ -> fail ("jwt claim-shape: expected 3 segments, got " <> show (length segments))
+    describe "claim shape on the wire" $
+        it "payload contains every Supabase-required key" $ do
+            now <- getCurrentTime
+            tok <- signOrFail testCfg (makeTestClaims now)
+            obj <- payloadObject tok
+            mapM_
+                (\k -> KeyMap.member k obj `shouldBe` True)
+                ["sub", "role", "aud", "iss", "iat", "exp", "aal", "amr", "session_id"]
 
-    -- Header hardening: forge tokens with a real (HMAC-valid) signature but a
-    -- disallowed header. The signature passes; header validation must reject.
-    signedForPayload <- signAccessToken testCfg testClaims
-    payload <- case signedForPayload of
-        Left err -> fail ("jwt header tests: sign failed: " <> show err)
-        Right t -> payloadObject t
+    describe "header hardening" $ do
+        let forgeWithHeader header = do
+                now <- getCurrentTime
+                signed <- signOrFail testCfg (makeTestClaims now)
+                payload <- payloadObject signed
+                pure (forgeToken testCfg header (Aeson.Object payload))
 
-    let payloadValue = Aeson.Object payload
+        it "rejects alg=none even though the HMAC is valid" $ do
+            tok <- forgeWithHeader (object ["alg" .= ("none" :: Text), "typ" .= ("JWT" :: Text)])
+            result <- validateAccessToken testCfg tok
+            result `shouldSatisfy` isVerifyError
 
-    -- alg=none must be rejected even though Supabase ecosystem tokens are HS256.
-    let algNoneToken = forgeToken testCfg (object ["alg" .= ("none" :: Text), "typ" .= ("JWT" :: Text)]) payloadValue
-    algNoneResult <- validateAccessToken testCfg algNoneToken
-    expectVerifyError "jwt alg=none" algNoneResult
+        it "rejects alg=RS256 (only HS256 secrets in flight)" $ do
+            tok <- forgeWithHeader (object ["alg" .= ("RS256" :: Text), "typ" .= ("JWT" :: Text)])
+            result <- validateAccessToken testCfg tok
+            result `shouldSatisfy` isVerifyError
 
-    -- alg=RS256 must be rejected; we only sign with HS256 secrets.
-    let algRsToken = forgeToken testCfg (object ["alg" .= ("RS256" :: Text), "typ" .= ("JWT" :: Text)]) payloadValue
-    algRsResult <- validateAccessToken testCfg algRsToken
-    expectVerifyError "jwt alg=RS256" algRsResult
+        it "rejects missing alg" $ do
+            tok <- forgeWithHeader (object ["typ" .= ("JWT" :: Text)])
+            result <- validateAccessToken testCfg tok
+            result `shouldSatisfy` isVerifyError
 
-    -- Missing alg must be rejected.
-    let algMissingToken = forgeToken testCfg (object ["typ" .= ("JWT" :: Text)]) payloadValue
-    algMissingResult <- validateAccessToken testCfg algMissingToken
-    expectVerifyError "jwt missing alg" algMissingResult
+        it "accepts typ absent (RFC 7519 §5.1)" $ do
+            tok <- forgeWithHeader (object ["alg" .= ("HS256" :: Text)])
+            result <- validateAccessToken testCfg tok
+            result `shouldSatisfy` \case
+                Right _ -> True
+                _ -> False
 
-    -- typ absent is allowed (RFC 7519 §5.1).
-    let typAbsentToken = forgeToken testCfg (object ["alg" .= ("HS256" :: Text)]) payloadValue
-    typAbsentResult <- validateAccessToken testCfg typAbsentToken
-    case typAbsentResult of
-        Right _ -> pure ()
-        Left err -> fail ("jwt typ-absent: expected accept, got " <> show err)
+        it "rejects typ=JWE when present" $ do
+            tok <- forgeWithHeader (object ["alg" .= ("HS256" :: Text), "typ" .= ("JWE" :: Text)])
+            result <- validateAccessToken testCfg tok
+            result `shouldSatisfy` isVerifyError
 
-    -- typ=other must be rejected when present.
-    let typOtherToken = forgeToken testCfg (object ["alg" .= ("HS256" :: Text), "typ" .= ("JWE" :: Text)]) payloadValue
-    typOtherResult <- validateAccessToken testCfg typOtherToken
-    expectVerifyError "jwt typ=JWE" typOtherResult
+    describe "NumericDate strictness" $ do
+        let forgeWithPayloadField k v = do
+                now <- getCurrentTime
+                signed <- signOrFail testCfg (makeTestClaims now)
+                payload <- payloadObject signed
+                let payload' = Aeson.Object (KeyMap.insert k v payload)
+                    header = object ["alg" .= ("HS256" :: Text), "typ" .= ("JWT" :: Text)]
+                pure (forgeToken testCfg header payload')
 
-    -- Fractional exp: RFC 7519 NumericDate permits non-integers, but we reject
-    -- them so downstream consumers don't have to choose between floor/round/ceil.
-    let fractionalExpPayload = Aeson.Object (KeyMap.insert "exp" (Aeson.Number 9999999999.5) payload)
-        fractionalExpToken = forgeToken testCfg (object ["alg" .= ("HS256" :: Text), "typ" .= ("JWT" :: Text)]) fractionalExpPayload
-    fractionalExpResult <- validateAccessToken testCfg fractionalExpToken
-    expectClaimError "jwt fractional exp" fractionalExpResult
+        it "rejects fractional exp" $ do
+            tok <- forgeWithPayloadField "exp" (Aeson.Number 9999999999.5)
+            result <- validateAccessToken testCfg tok
+            result `shouldSatisfy` isClaimError
 
-    -- Fractional iat: same reasoning.
-    let fractionalIatPayload = Aeson.Object (KeyMap.insert "iat" (Aeson.Number 1780000000.25) payload)
-        fractionalIatToken = forgeToken testCfg (object ["alg" .= ("HS256" :: Text), "typ" .= ("JWT" :: Text)]) fractionalIatPayload
-    fractionalIatResult <- validateAccessToken testCfg fractionalIatToken
-    expectClaimError "jwt fractional iat" fractionalIatResult
+        it "rejects fractional iat" $ do
+            tok <- forgeWithPayloadField "iat" (Aeson.Number 1780000000.25)
+            result <- validateAccessToken testCfg tok
+            result `shouldSatisfy` isClaimError

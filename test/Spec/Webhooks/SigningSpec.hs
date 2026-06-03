@@ -1,10 +1,10 @@
-module Spec.Webhooks.SigningSpec (runSpec) where
+module Spec.Webhooks.SigningSpec (spec) where
 
 import Data.ByteArray (constEq)
 import qualified Data.ByteString as BS
 import Data.UUID (nil)
 import Hauth.Webhooks.Signing (SignedHeaders (..), signRequest, verifySignatureAt)
-import Spec.TestUtils (assertEqual)
+import Test.Hspec (Spec, describe, it, shouldBe)
 
 secret :: BS.ByteString
 secret = "super-secret-key-32-bytes-long!!"
@@ -20,45 +20,37 @@ body = "{\"event\":\"user.created\"}"
 now :: (Num a) => a
 now = 1767225600
 
-runSpec :: IO ()
-runSpec = do
-    let hdrs = signRequest secret nil now body
+spec :: Spec
+spec = do
+    describe "signRequest / verifySignatureAt" $ do
+        let hdrs = signRequest secret nil now body
 
-    -- Sign + verify roundtrip with same secret → True
-    assertEqual
-        "roundtrip with same secret"
-        True
-        (verifySignatureAt now secret (sigWebhookId hdrs) (sigWebhookTimestamp hdrs) (sigWebhookSignature hdrs) body)
+        it "verifies a roundtrip with the same secret" $
+            verifySignatureAt now secret (sigWebhookId hdrs) (sigWebhookTimestamp hdrs) (sigWebhookSignature hdrs) body
+                `shouldBe` True
 
-    -- Sign + verify with different secret → False
-    assertEqual
-        "different secret rejected"
-        False
-        (verifySignatureAt now altSecret (sigWebhookId hdrs) (sigWebhookTimestamp hdrs) (sigWebhookSignature hdrs) body)
+        it "rejects a signature produced with a different secret" $
+            verifySignatureAt now altSecret (sigWebhookId hdrs) (sigWebhookTimestamp hdrs) (sigWebhookSignature hdrs) body
+                `shouldBe` False
 
-    -- Sign + verify with tampered body → False
-    assertEqual
-        "tampered body rejected"
-        False
-        (verifySignatureAt now secret (sigWebhookId hdrs) (sigWebhookTimestamp hdrs) (sigWebhookSignature hdrs) "tampered-body")
+        it "rejects a tampered body" $
+            verifySignatureAt now secret (sigWebhookId hdrs) (sigWebhookTimestamp hdrs) (sigWebhookSignature hdrs) "tampered-body"
+                `shouldBe` False
 
-    -- Timestamp drift > 5 minutes → False
-    let staleTs = now - 301
-        staleHdrs = signRequest secret nil staleTs body
-    assertEqual
-        "stale timestamp rejected"
-        False
-        (verifySignatureAt now secret (sigWebhookId staleHdrs) (sigWebhookTimestamp staleHdrs) (sigWebhookSignature staleHdrs) body)
+        it "rejects a timestamp older than the 5-minute window" $ do
+            let staleTs = now - 301
+                staleHdrs = signRequest secret nil staleTs body
+            verifySignatureAt now secret (sigWebhookId staleHdrs) (sigWebhookTimestamp staleHdrs) (sigWebhookSignature staleHdrs) body
+                `shouldBe` False
 
-    -- Timestamp drift < 5 minutes → True
-    let freshTs = now - 299
-        freshHdrs = signRequest secret nil freshTs body
-    assertEqual
-        "fresh timestamp accepted"
-        True
-        (verifySignatureAt now secret (sigWebhookId freshHdrs) (sigWebhookTimestamp freshHdrs) (sigWebhookSignature freshHdrs) body)
+        it "accepts a timestamp within the 5-minute window" $ do
+            let freshTs = now - 299
+                freshHdrs = signRequest secret nil freshTs body
+            verifySignatureAt now secret (sigWebhookId freshHdrs) (sigWebhookTimestamp freshHdrs) (sigWebhookSignature freshHdrs) body
+                `shouldBe` True
 
-    -- Constant-time comparison is used (assert via code: constEq from Data.ByteArray)
-    let bs1 = "abc" :: BS.ByteString
-        bs2 = "abc" :: BS.ByteString
-    assertEqual "constEq is available and works" True (constEq bs1 bs2)
+    describe "constant-time comparison" $
+        it "constEq from Data.ByteArray is available and works" $ do
+            let bs1 = "abc" :: BS.ByteString
+                bs2 = "abc" :: BS.ByteString
+            constEq bs1 bs2 `shouldBe` True

@@ -1,17 +1,20 @@
-module Spec.Verify.DatabaseSpec (runSpec) where
+module Spec.Verify.DatabaseSpec (spec) where
 
 import Hauth.Verify (Check (..))
 import Hauth.Verify.Database (checks)
-import Spec.TestUtils (assertEqual)
+import Test.Hspec (Spec, describe, it, shouldBe)
 
-runSpec :: IO ()
-runSpec = do
-    testChecksExported
+spec :: Spec
+spec = do
+    describe "database checks exported" $ do
+        it "database checks count is 3" $
+            length checks `shouldBe` 3
 
--- | Verify the three checks are present and correctly named.
-testChecksExported :: IO ()
-testChecksExported = do
-    assertEqual "database checks count" 3 (length checks)
-    assertEqual "first check name" "config.parse" (checkName (head checks))
-    assertEqual "second check name" "database.connect" (checkName (checks !! 1))
-    assertEqual "third check name" "database.migrations" (checkName (checks !! 2))
+        it "first check name is config.parse" $
+            checkName (head checks) `shouldBe` "config.parse"
+
+        it "second check name is database.connect" $
+            checkName (checks !! 1) `shouldBe` "database.connect"
+
+        it "third check name is database.migrations" $
+            checkName (checks !! 2) `shouldBe` "database.migrations"

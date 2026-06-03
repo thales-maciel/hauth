@@ -1,4 +1,4 @@
-module Spec.Hooks.RunnerSpec (runSpec) where
+module Spec.Hooks.RunnerSpec (spec) where
 
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
@@ -38,7 +38,7 @@ import Network.Wai (
     responseLBS,
  )
 import qualified Network.Wai.Handler.Warp as Warp
-import Spec.TestUtils (assertEqual)
+import Test.Hspec (Spec, describe, expectationFailure, it, shouldBe)
 
 -- ---------------------------------------------------------------------------
 -- Helpers
@@ -130,105 +130,87 @@ allowWithDecision overlay =
 -- Tests
 -- ---------------------------------------------------------------------------
 
-runSpec :: IO ()
-runSpec = do
-    testAllowDecision
-    testRejectDecision
-    testAllowWithDecision
-    testTimeoutFailClosed
-    testTimeoutFailOpen
-    test500FailClosed
-    testMalformedResponseFailOpen
-    testSignatureIsValid
+spec :: Spec
+spec = do
+    describe "decisions" $ do
+        it "allow decision" $
+            withTestServer (respondWith allowDecision) $ \port -> do
+                let cfg = testConfig (hookUrl port) 5000 False
+                d <- runHook cfg testPayload
+                d `shouldBe` HookAllow
 
-testAllowDecision :: IO ()
-testAllowDecision =
-    withTestServer (respondWith allowDecision) \port -> do
-        let cfg = testConfig (hookUrl port) 5000 False
-        d <- runHook cfg testPayload
-        assertEqual "allow decision" HookAllow d
+        it "reject decision" $
+            withTestServer (respondWith (rejectDecision "not allowed")) $ \port -> do
+                let cfg = testConfig (hookUrl port) 5000 False
+                d <- runHook cfg testPayload
+                d `shouldBe` HookReject "not allowed"
 
-testRejectDecision :: IO ()
-testRejectDecision =
-    withTestServer (respondWith (rejectDecision "not allowed")) \port -> do
-        let cfg = testConfig (hookUrl port) 5000 False
-        d <- runHook cfg testPayload
-        assertEqual "reject decision" (HookReject "not allowed") d
+        it "allow_with decision" $ do
+            let overlay = Aeson.object [("extra_claim", Aeson.String "foo")]
+            withTestServer (respondWith (allowWithDecision overlay)) $ \port -> do
+                let cfg = testConfig (hookUrl port) 5000 False
+                d <- runHook cfg testPayload
+                d `shouldBe` HookAllowWith overlay
 
-testAllowWithDecision :: IO ()
-testAllowWithDecision = do
-    let overlay = Aeson.object [("extra_claim", Aeson.String "foo")]
-    withTestServer (respondWith (allowWithDecision overlay)) \port -> do
-        let cfg = testConfig (hookUrl port) 5000 False
-        d <- runHook cfg testPayload
-        assertEqual "allow_with decision" (HookAllowWith overlay) d
+    describe "timeouts and failures" $ do
+        it "timeout fail-closed rejects" $
+            withTestServer slowServer $ \port -> do
+                let cfg = testConfig (hookUrl port) 50 False -- 50 ms timeout
+                d <- runHook cfg testPayload
+                case d of
+                    HookReject _ -> pure ()
+                    other -> expectationFailure ("expected HookReject, got " <> show other)
 
-testTimeoutFailClosed :: IO ()
-testTimeoutFailClosed =
-    withTestServer slowServer \port -> do
-        let cfg = testConfig (hookUrl port) 50 False -- 50 ms timeout
-        d <- runHook cfg testPayload
-        case d of
-            HookReject _ -> pure ()
-            other -> fail ("testTimeoutFailClosed: expected HookReject, got " <> show other)
+        it "timeout fail-open allows" $
+            withTestServer slowServer $ \port -> do
+                let cfg = testConfig (hookUrl port) 50 True -- 50 ms timeout, fail open
+                d <- runHook cfg testPayload
+                d `shouldBe` HookAllow
 
-testTimeoutFailOpen :: IO ()
-testTimeoutFailOpen =
-    withTestServer slowServer \port -> do
-        let cfg = testConfig (hookUrl port) 50 True -- 50 ms timeout, fail open
-        d <- runHook cfg testPayload
-        assertEqual "timeout fail-open" HookAllow d
+        it "500 fail-closed rejects" $
+            withTestServer respondWithStatus500 $ \port -> do
+                let cfg = testConfig (hookUrl port) 5000 False
+                d <- runHook cfg testPayload
+                case d of
+                    HookReject _ -> pure ()
+                    other -> expectationFailure ("expected HookReject, got " <> show other)
 
-test500FailClosed :: IO ()
-test500FailClosed =
-    withTestServer respondWithStatus500 \port -> do
-        let cfg = testConfig (hookUrl port) 5000 False
-        d <- runHook cfg testPayload
-        case d of
-            HookReject _ -> pure ()
-            other -> fail ("test500FailClosed: expected HookReject, got " <> show other)
+        it "malformed body always rejects" $
+            withTestServer respondWithMalformed $ \port -> do
+                -- failOpen=true should NOT help for malformed body
+                let cfg = testConfig (hookUrl port) 5000 True
+                d <- runHook cfg testPayload
+                d `shouldBe` HookReject "invalid hook response"
 
-testMalformedResponseFailOpen :: IO ()
-testMalformedResponseFailOpen =
-    withTestServer respondWithMalformed \port -> do
-        -- failOpen=true should NOT help for malformed body
-        let cfg = testConfig (hookUrl port) 5000 True
-        d <- runHook cfg testPayload
-        assertEqual "malformed body always rejects" (HookReject "invalid hook response") d
+    describe "signatures" $ do
+        it "sends valid webhook signature headers" $ do
+            -- Capture the request headers sent by runHook and verify the signature.
+            capturedHeaders <- newEmptyMVar
+            let capturingApp req respond = do
+                    putMVar capturedHeaders (requestHeaders req)
+                    respond (responseLBS status200 [("Content-Type", "application/json")] (Aeson.encode allowDecision))
+            withTestServer capturingApp $ \port -> do
+                let cfg = testConfig (hookUrl port) 5000 False
+                _ <- runHook cfg testPayload
+                hdrs <- takeMVar capturedHeaders
+                let lookupHdr name = lookup name hdrs
+                case (lookupHdr "webhook-id", lookupHdr "webhook-timestamp", lookupHdr "webhook-signature") of
+                    (Just _wid, Just _wts, Just wsig) -> do
+                        let validFormat = BSC.isPrefixOf "v1," wsig
+                        if validFormat
+                            then pure ()
+                            else expectationFailure ("unexpected sig format: " <> show wsig)
+                    _ -> expectationFailure "missing webhook headers"
 
-testSignatureIsValid :: IO ()
-testSignatureIsValid = do
-    -- Capture the request headers sent by runHook and verify the signature.
-    capturedHeaders <- newEmptyMVar
-    let capturingApp req respond = do
-            putMVar capturedHeaders (requestHeaders req)
-            respond (responseLBS status200 [("Content-Type", "application/json")] (Aeson.encode allowDecision))
-    withTestServer capturingApp \port -> do
-        let cfg = testConfig (hookUrl port) 5000 False
-        _ <- runHook cfg testPayload
-        hdrs <- takeMVar capturedHeaders
-        let lookupHdr name = lookup name hdrs
-        case (lookupHdr "webhook-id", lookupHdr "webhook-timestamp", lookupHdr "webhook-signature") of
-            (Just _wid, Just _wts, Just wsig) -> do
-                -- We don't have the body here, but we can verify the signing roundtrip
-                -- by re-signing with the same inputs and checking the sig format.
-                let validFormat = BSC.isPrefixOf "v1," wsig
-                if validFormat
-                    then pure ()
-                    else fail ("testSignatureIsValid: unexpected sig format: " <> show wsig)
-            _ -> fail "testSignatureIsValid: missing webhook headers"
-
-    -- Also verify the signing roundtrip directly.
-    now <- getPOSIXTime
-    let body = "{\"hook_point\":\"before-user-created\"}"
-        hdrs' = signHookRequest testSecret nil now (BSC.pack body)
-        ok =
-            verifyHookSignature
-                testSecret
-                (sigWebhookId hdrs')
-                (sigWebhookTimestamp hdrs')
-                (sigWebhookSignature hdrs')
-                (BSC.pack body)
-    if ok
-        then pure ()
-        else fail "testSignatureIsValid: roundtrip verify failed"
+        it "signing roundtrip verifies" $ do
+            now <- getPOSIXTime
+            let body = "{\"hook_point\":\"before-user-created\"}"
+                hdrs' = signHookRequest testSecret nil now (BSC.pack body)
+                ok =
+                    verifyHookSignature
+                        testSecret
+                        (sigWebhookId hdrs')
+                        (sigWebhookTimestamp hdrs')
+                        (sigWebhookSignature hdrs')
+                        (BSC.pack body)
+            ok `shouldBe` True

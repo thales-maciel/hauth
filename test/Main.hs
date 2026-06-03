@@ -35,43 +35,45 @@ import qualified Spec.Verify.OauthSpec
 import qualified Spec.Verify.SmtpSpec
 import qualified Spec.VerifySpec
 import qualified Spec.Webhooks.SigningSpec
-import System.Exit (exitSuccess)
+import Test.Hspec (Spec, describe, hspec)
 
 main :: IO ()
-main = do
-    Spec.API.GoldenSpec.runSpec
-    Spec.APISpec.runSpec
-    Spec.Auth.AalAmrSpec.runSpec
-    Spec.Auth.CustomAccessTokenSpec.runSpec
-    Spec.CLISpec.runSpec
-    Spec.ConfigSpec.runSpec
-    Spec.MigrateSpec.runSpec
-    Spec.Crypto.PasswordSpec.runSpec
-    Spec.Auth.JwtSpec.runSpec
-    Spec.Auth.JwtPropertySpec.runSpec
-    Spec.Auth.ServiceRoleSpec.runSpec
-    Spec.Auth.LoginSpec.runSpec
-    Spec.Auth.LogoutSpec.runSpec
-    Spec.Auth.VerifySpec.runSpec
-    Spec.Auth.RecoverySpec.runSpec
-    Spec.Auth.UserUpdateSpec.runSpec
-    Spec.Auth.AdminSpec.runSpec
-    Spec.EmailSpec.runSpec
-    Spec.Hooks.RunnerSpec.runSpec
-    Spec.Hooks.TypesSpec.runSpec
-    Spec.SessionSpec.runSpec
-    Spec.UserSpec.runSpec
-    Spec.OAuth.GoogleSpec.runSpec
-    Spec.OAuthSpec.runSpec
-    Spec.OAuth.GithubSpec.runSpec
-    Spec.Mfa.TotpSpec.runSpec
-    Spec.Mfa.VerifySpec.runSpec
-    Spec.RefreshTokenSpec.runSpec
-    Spec.ServerSpec.runSpec
-    Spec.Verify.DatabaseSpec.runSpec
-    Spec.Verify.IdentitySpec.runSpec
-    Spec.Verify.SmtpSpec.runSpec
-    Spec.VerifySpec.runSpec
-    Spec.Verify.OauthSpec.runSpec
-    Spec.Webhooks.SigningSpec.runSpec
-    exitSuccess
+main = hspec specs
+
+specs :: Spec
+specs = do
+    describe "API golden encodings" Spec.API.GoldenSpec.spec
+    describe "API server" Spec.APISpec.spec
+    describe "auth/aal & amr" Spec.Auth.AalAmrSpec.spec
+    describe "auth/admin users" Spec.Auth.AdminSpec.spec
+    describe "auth/custom-access-token hook" Spec.Auth.CustomAccessTokenSpec.spec
+    describe "auth/JWT" Spec.Auth.JwtSpec.spec
+    describe "auth/JWT properties" Spec.Auth.JwtPropertySpec.spec
+    describe "auth/login" Spec.Auth.LoginSpec.spec
+    describe "auth/logout" Spec.Auth.LogoutSpec.spec
+    describe "auth/recovery" Spec.Auth.RecoverySpec.spec
+    describe "auth/service-role" Spec.Auth.ServiceRoleSpec.spec
+    describe "auth/user update" Spec.Auth.UserUpdateSpec.spec
+    describe "auth/verify" Spec.Auth.VerifySpec.spec
+    describe "CLI" Spec.CLISpec.spec
+    describe "config" Spec.ConfigSpec.spec
+    describe "crypto/password" Spec.Crypto.PasswordSpec.spec
+    describe "email rendering" Spec.EmailSpec.spec
+    describe "hooks/runner" Spec.Hooks.RunnerSpec.spec
+    describe "hooks/types" Spec.Hooks.TypesSpec.spec
+    describe "MFA/TOTP" Spec.Mfa.TotpSpec.spec
+    describe "MFA verify" Spec.Mfa.VerifySpec.spec
+    describe "migrations" Spec.MigrateSpec.spec
+    describe "OAuth/Github" Spec.OAuth.GithubSpec.spec
+    describe "OAuth/Google" Spec.OAuth.GoogleSpec.spec
+    describe "OAuth handlers" Spec.OAuthSpec.spec
+    describe "refresh tokens" Spec.RefreshTokenSpec.spec
+    describe "server wiring" Spec.ServerSpec.spec
+    describe "session helpers" Spec.SessionSpec.spec
+    describe "user identity" Spec.UserSpec.spec
+    describe "verify/database" Spec.Verify.DatabaseSpec.spec
+    describe "verify/identity" Spec.Verify.IdentitySpec.spec
+    describe "verify/oauth" Spec.Verify.OauthSpec.spec
+    describe "verify/smtp" Spec.Verify.SmtpSpec.spec
+    describe "verify subcommand" Spec.VerifySpec.spec
+    describe "webhook signing" Spec.Webhooks.SigningSpec.spec

@@ -1,4 +1,4 @@
-module Spec.ConfigSpec (runSpec) where
+module Spec.ConfigSpec (spec) where
 
 import Data.Aeson (encode)
 import qualified Data.Aeson as Aeson
@@ -11,6 +11,8 @@ import Hauth.API.Types (
  )
 import Hauth.Config (
     Config (..),
+    ConfigError (..),
+    ConfigFieldError (..),
     DatabaseConfig (..),
     EmailConfig (EmailConfig),
     JwtConfig (..),
@@ -26,103 +28,134 @@ import Hauth.Env (
     destroyAppEnv,
  )
 import Spec.TestUtils (
-    assertConfigFields,
-    assertEqual,
     invalidConfigBytes,
     testLogger,
     validConfigBytes,
  )
+import Test.Hspec (Spec, describe, expectationFailure, it, shouldBe)
 
-runSpec :: IO ()
-runSpec = do
-    case decodeConfigBytes "valid.json" validConfigBytes of
-        Left err ->
-            fail ("valid config failed: " <> show err)
-        Right config -> do
-            assertEqual "config database url" "postgresql://hauth:hauth@localhost:5432/hauth" (databaseUrl (configDatabase config))
-            assertEqual "config server port" 8080 (serverPort (configServer config))
-            env <- createAppEnvWithLogger testLogger config
-            assertEqual "env config" config (appConfig env)
-            destroyAppEnv env
-    assertConfigFields
-        "missing config sections"
-        ["database", "jwt", "site", "email", "oauth", "server"]
-        (decodeConfigBytes "missing.json" "{}")
-    assertConfigFields
-        "invalid config fields"
-        [ "database.url"
-        , "database.pool_size"
-        , "jwt.secret"
-        , "jwt.issuer"
-        , "jwt.audience"
-        , "jwt.access_token_ttl_seconds"
-        , "jwt.refresh_token_ttl_seconds"
-        , "site.url"
-        , "site.allowed_redirect_urls[0]"
-        , "email.from"
-        , "email.smtp_host"
-        , "email.smtp_port"
-        , "oauth.providers[0].name"
-        , "oauth.providers[0].client_id"
-        , "oauth.providers[0].client_secret"
-        , "oauth.providers[0].discovery_url"
-        , "server.host"
-        , "server.port"
-        ]
-        (decodeConfigBytes "invalid.json" invalidConfigBytes)
-    -- SettingsResponse tests
-    let twoProviderConfig =
-            settingsTestConfig
-                [ OAuthProviderConfig
-                    { oauthProviderName = "github"
-                    , oauthProviderClientId = "gh-id"
-                    , oauthProviderClientSecret = "gh-secret"
-                    , oauthProviderDiscoveryUrl = "https://github.com/.well-known/openid-configuration"
-                    }
-                , OAuthProviderConfig
-                    { oauthProviderName = "google"
-                    , oauthProviderClientId = "g-id"
-                    , oauthProviderClientSecret = "g-secret"
-                    , oauthProviderDiscoveryUrl = "https://accounts.google.com/.well-known/openid-configuration"
-                    }
-                ]
-        twoProviderSettings = buildSettingsResponse twoProviderConfig
-    assertEqual "settings external email" (Just True) (Map.lookup "email" (settingsExternal twoProviderSettings))
-    assertEqual "settings external phone" (Just False) (Map.lookup "phone" (settingsExternal twoProviderSettings))
-    assertEqual "settings external github" (Just True) (Map.lookup "github" (settingsExternal twoProviderSettings))
-    assertEqual "settings external google" (Just True) (Map.lookup "google" (settingsExternal twoProviderSettings))
-    assertEqual "settings external_email_enabled" True (settingsExternalEmailEnabled twoProviderSettings)
-    assertEqual "settings external_phone_enabled" False (settingsExternalPhoneEnabled twoProviderSettings)
-    assertEqual "settings disable_signup" False (settingsDisableSignup twoProviderSettings)
-    assertEqual "settings mailer_autoconfirm" False (settingsMailerAutoconfirm twoProviderSettings)
-    assertEqual "settings phone_autoconfirm" False (settingsPhoneAutoconfirm twoProviderSettings)
-    assertEqual "settings sms_provider" "" (settingsSmsProvider twoProviderSettings)
-    -- JSON round-trip: top-level keys must match Supabase contract
-    let settingsJson = BSL.toStrict (encode twoProviderSettings)
-    case Aeson.decodeStrict' settingsJson of
-        Nothing -> fail "settings JSON: decode failed"
-        Just (obj :: Aeson.Object) -> do
-            let requiredKeys = ["external", "external_email_enabled", "external_phone_enabled", "disable_signup", "mailer_autoconfirm", "phone_autoconfirm", "sms_provider"]
-            mapM_
-                ( \k ->
-                    if KeyMap.member k obj
-                        then pure ()
-                        else fail ("settings JSON: missing key: " <> show k)
-                )
-                requiredKeys
-    -- Provider name case-folding: "GitHub" becomes "github" in external map
-    let mixedCaseConfig =
-            settingsTestConfig
-                [ OAuthProviderConfig
-                    { oauthProviderName = "GitHub"
-                    , oauthProviderClientId = "gh-id"
-                    , oauthProviderClientSecret = "gh-secret"
-                    , oauthProviderDiscoveryUrl = "https://github.com/.well-known/openid-configuration"
-                    }
-                ]
-        mixedCaseSettings = buildSettingsResponse mixedCaseConfig
-    assertEqual "settings provider case-fold" (Just True) (Map.lookup "github" (settingsExternal mixedCaseSettings))
-    assertEqual "settings provider case-fold absent" Nothing (Map.lookup "GitHub" (settingsExternal mixedCaseSettings))
+spec :: Spec
+spec = do
+    describe "decodeConfigBytes (valid)" $
+        it "decodes valid config and creates AppEnv" $
+            case decodeConfigBytes "valid.json" validConfigBytes of
+                Left err ->
+                    expectationFailure ("valid config failed: " <> show err)
+                Right config -> do
+                    databaseUrl (configDatabase config)
+                        `shouldBe` "postgresql://hauth:hauth@localhost:5432/hauth"
+                    serverPort (configServer config) `shouldBe` 8080
+                    env <- createAppEnvWithLogger testLogger config
+                    appConfig env `shouldBe` config
+                    destroyAppEnv env
+
+    describe "decodeConfigBytes (invalid)" $ do
+        it "reports all missing top-level config sections" $
+            case decodeConfigBytes "missing.json" "{}" of
+                Left (ConfigValidationError _ errs) ->
+                    fmap configFieldPath errs
+                        `shouldBe` ["database", "jwt", "site", "email", "oauth", "server"]
+                _ -> expectationFailure "expected ConfigValidationError"
+
+        it "reports all invalid field paths" $
+            case decodeConfigBytes "invalid.json" invalidConfigBytes of
+                Left (ConfigValidationError _ errs) ->
+                    fmap configFieldPath errs
+                        `shouldBe` [ "database.url"
+                                   , "database.pool_size"
+                                   , "jwt.secret"
+                                   , "jwt.issuer"
+                                   , "jwt.audience"
+                                   , "jwt.access_token_ttl_seconds"
+                                   , "jwt.refresh_token_ttl_seconds"
+                                   , "site.url"
+                                   , "site.allowed_redirect_urls[0]"
+                                   , "email.from"
+                                   , "email.smtp_host"
+                                   , "email.smtp_port"
+                                   , "oauth.providers[0].name"
+                                   , "oauth.providers[0].client_id"
+                                   , "oauth.providers[0].client_secret"
+                                   , "oauth.providers[0].discovery_url"
+                                   , "server.host"
+                                   , "server.port"
+                                   ]
+                _ -> expectationFailure "expected ConfigValidationError"
+
+    describe "buildSettingsResponse" $ do
+        let twoProviderConfig =
+                settingsTestConfig
+                    [ OAuthProviderConfig
+                        { oauthProviderName = "github"
+                        , oauthProviderClientId = "gh-id"
+                        , oauthProviderClientSecret = "gh-secret"
+                        , oauthProviderDiscoveryUrl = "https://github.com/.well-known/openid-configuration"
+                        }
+                    , OAuthProviderConfig
+                        { oauthProviderName = "google"
+                        , oauthProviderClientId = "g-id"
+                        , oauthProviderClientSecret = "g-secret"
+                        , oauthProviderDiscoveryUrl = "https://accounts.google.com/.well-known/openid-configuration"
+                        }
+                    ]
+            twoProviderSettings = buildSettingsResponse twoProviderConfig
+
+        it "external email is True" $
+            Map.lookup "email" (settingsExternal twoProviderSettings) `shouldBe` Just True
+        it "external phone is False" $
+            Map.lookup "phone" (settingsExternal twoProviderSettings) `shouldBe` Just False
+        it "external github is True" $
+            Map.lookup "github" (settingsExternal twoProviderSettings) `shouldBe` Just True
+        it "external google is True" $
+            Map.lookup "google" (settingsExternal twoProviderSettings) `shouldBe` Just True
+        it "external_email_enabled is True" $
+            settingsExternalEmailEnabled twoProviderSettings `shouldBe` True
+        it "external_phone_enabled is False" $
+            settingsExternalPhoneEnabled twoProviderSettings `shouldBe` False
+        it "disable_signup is False" $
+            settingsDisableSignup twoProviderSettings `shouldBe` False
+        it "mailer_autoconfirm is False" $
+            settingsMailerAutoconfirm twoProviderSettings `shouldBe` False
+        it "phone_autoconfirm is False" $
+            settingsPhoneAutoconfirm twoProviderSettings `shouldBe` False
+        it "sms_provider is empty" $
+            settingsSmsProvider twoProviderSettings `shouldBe` ""
+
+        it "JSON has top-level Supabase contract keys" $ do
+            let settingsJson = BSL.toStrict (encode twoProviderSettings)
+            case Aeson.decodeStrict' settingsJson of
+                Nothing -> expectationFailure "decode failed"
+                Just (obj :: Aeson.Object) -> do
+                    let requiredKeys =
+                            [ "external"
+                            , "external_email_enabled"
+                            , "external_phone_enabled"
+                            , "disable_signup"
+                            , "mailer_autoconfirm"
+                            , "phone_autoconfirm"
+                            , "sms_provider"
+                            ]
+                    mapM_
+                        ( \k ->
+                            if KeyMap.member k obj
+                                then pure ()
+                                else expectationFailure ("missing key: " <> show k)
+                        )
+                        requiredKeys
+
+        it "case-folds provider name to lowercase in external map" $ do
+            let mixedCaseConfig =
+                    settingsTestConfig
+                        [ OAuthProviderConfig
+                            { oauthProviderName = "GitHub"
+                            , oauthProviderClientId = "gh-id"
+                            , oauthProviderClientSecret = "gh-secret"
+                            , oauthProviderDiscoveryUrl = "https://github.com/.well-known/openid-configuration"
+                            }
+                        ]
+                mixedCaseSettings = buildSettingsResponse mixedCaseConfig
+            Map.lookup "github" (settingsExternal mixedCaseSettings) `shouldBe` Just True
+            Map.lookup "GitHub" (settingsExternal mixedCaseSettings) `shouldBe` Nothing
 
 -- | Build a minimal test 'Config' with the given OAuth providers.
 settingsTestConfig :: [OAuthProviderConfig] -> Config

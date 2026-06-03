@@ -5,9 +5,9 @@ inputs to 'validateAccessToken' — tampered signatures, garbage segments,
 bad base64, wrong segment counts, random alg headers, non-object header
 and payload, boundary exp\/iat, and fractional NumericDate.
 -}
-module Spec.Auth.JwtPropertySpec (runSpec) where
+module Spec.Auth.JwtPropertySpec (spec) where
 
-import Control.Monad (unless, when)
+import Control.Monad (when)
 import Crypto.Hash (SHA256)
 import Crypto.MAC.HMAC (HMAC, hmac, hmacGetDigest)
 import Data.Aeson (Value (..), object, (.=))
@@ -19,7 +19,6 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base64.URL as B64URL
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BSL
-import Data.IORef (atomicModifyIORef', newIORef, readIORef)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
@@ -38,6 +37,7 @@ import qualified Hedgehog as H
 import qualified Hedgehog.Gen as Gen
 import qualified Hedgehog.Range as Range
 import Spec.TestUtils (makeTestClaims, testCfg)
+import Test.Hspec (Spec, describe, it, shouldBe)
 
 -- ---------------------------------------------------------------------------
 -- Generators
@@ -400,26 +400,39 @@ expectVerifyError ctx = \case
         failure
 
 -- ---------------------------------------------------------------------------
--- Spec runner
+-- Spec
 -- ---------------------------------------------------------------------------
 
-runSpec :: IO ()
-runSpec = do
-    now <- getCurrentTime
-    failedRef <- newIORef False
-    let run name p = do
-            ok <- H.check p
-            unless ok $ do
-                putStrLn ("Spec.Auth.JwtPropertySpec: " <> name <> " FAILED")
-                atomicModifyIORef' failedRef (const (True, ()))
-    run "roundtrip" (propRoundTrip now)
-    run "tamper-signature" (propTamperSignature now)
-    run "garbage-three-segments" propGarbageThreeSegments
-    run "wrong-segment-count" propWrongSegmentCount
-    run "bad-base64" propBadBase64
-    run "random-alg-rejected" (propRandomAlgRejected now)
-    run "non-object-header-payload" (propNonObjectHeaderPayload now)
-    run "exp-boundary" propExpBoundary
-    run "fractional-numeric-date" (propFractionalNumericDate now)
-    failed <- readIORef failedRef
-    when failed $ fail "Spec.Auth.JwtPropertySpec: one or more properties failed"
+{- | Run a Hedgehog 'Property' as an Hspec example. Hedgehog prints the shrunk
+counterexample to stdout on failure; Hspec adds the spec-tree context.
+-}
+runProperty :: Property -> IO ()
+runProperty p = do
+    ok <- H.check p
+    ok `shouldBe` True
+
+spec :: Spec
+spec = describe "JWT property tests" $ do
+    it "round-trips signed claims" $ do
+        now <- getCurrentTime
+        runProperty (propRoundTrip now)
+    it "rejects single-byte signature tamper" $ do
+        now <- getCurrentTime
+        runProperty (propTamperSignature now)
+    it "rejects arbitrary 3-segment base64url garbage" $
+        runProperty propGarbageThreeSegments
+    it "rejects wrong segment counts" $
+        runProperty propWrongSegmentCount
+    it "rejects non-base64 segments without crashing" $
+        runProperty propBadBase64
+    it "rejects every alg value other than HS256" $ do
+        now <- getCurrentTime
+        runProperty (propRandomAlgRejected now)
+    it "rejects non-object header or payload" $ do
+        now <- getCurrentTime
+        runProperty (propNonObjectHeaderPayload now)
+    it "rejects tokens at or before the exp boundary, accepts past it" $
+        runProperty propExpBoundary
+    it "rejects fractional NumericDate values" $ do
+        now <- getCurrentTime
+        runProperty (propFractionalNumericDate now)

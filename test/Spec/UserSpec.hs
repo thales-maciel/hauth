@@ -1,4 +1,4 @@
-module Spec.UserSpec (runSpec) where
+module Spec.UserSpec (spec) where
 
 import Data.Aeson (Object)
 import qualified Data.Aeson as Aeson
@@ -21,92 +21,122 @@ import Hauth.User (
     validateSignupEmail,
     validateSignupPassword,
  )
-import Spec.TestUtils (assertEqual)
+import Test.Hspec (Spec, describe, expectationFailure, it, shouldBe)
 
-runSpec :: IO ()
-runSpec = do
-    ctok1 <- generateConfirmationToken
-    assertEqual "generateConfirmationToken non-empty" True (not (T.null ctok1))
-    assertEqual "generateConfirmationToken length 43" 43 (T.length ctok1)
-    ctok2 <- generateConfirmationToken
-    assertEqual "generateConfirmationToken two calls differ" True (ctok1 /= ctok2)
-    now3 <- getCurrentTime
-    let testUserId = UserId UUID.nil
-        testUser =
-            User
-                { userId = testUserId
-                , userEmail = Just "test@example.com"
-                , userEncryptedPassword = Just "$argon2id$v=19$..."
-                , userEmailConfirmedAt = Nothing
-                , userConfirmationToken = Just ctok1
-                , userConfirmationSentAt = Just now3
-                , userRawAppMetaData = Aeson.object []
-                , userRawUserMetaData = Aeson.object []
-                , userRole = "authenticated"
-                , userAud = "authenticated"
-                , userCreatedAt = now3
-                , userUpdatedAt = now3
-                }
-    assertEqual "user userId" testUserId (userId testUser)
-    assertEqual "user email" (Just "test@example.com") (userEmail testUser)
-    assertEqual "user role" "authenticated" (userRole testUser)
-    assertEqual "user aud" "authenticated" (userAud testUser)
-    assertEqual "user emailConfirmedAt" Nothing (userEmailConfirmedAt testUser)
-    assertEqual "user confirmationToken" (Just ctok1) (userConfirmationToken testUser)
-    let signupResp = buildSignupResponse testUser
-        signupJson = Aeson.encode signupResp
-    case Aeson.decode signupJson of
-        Nothing -> fail "buildSignupResponse: JSON decode failed"
-        Just (obj :: Object) -> do
-            let requiredSignupKeys =
-                    [ "id"
-                    , "aud"
-                    , "role"
-                    , "email"
-                    , "confirmation_sent_at"
-                    , "created_at"
-                    , "updated_at"
-                    , "app_metadata"
-                    , "user_metadata"
-                    ]
-            mapM_
-                ( \k ->
-                    if KeyMap.member k obj
-                        then pure ()
-                        else fail ("buildSignupResponse: missing key: " <> show k)
-                )
-                requiredSignupKeys
-    assertEqual
-        "validateSignupEmail rejects empty"
-        (Left (SignupEmailInvalid ""))
-        (validateSignupEmail "")
-    assertEqual
-        "validateSignupEmail rejects no-at"
-        (Left (SignupEmailInvalid "no-at"))
-        (validateSignupEmail "no-at")
-    assertEqual
-        "validateSignupEmail rejects @no-local"
-        (Left (SignupEmailInvalid "@no-local"))
-        (validateSignupEmail "@no-local")
-    assertEqual
-        "validateSignupEmail accepts a@b.co"
-        (Right "a@b.co")
-        (validateSignupEmail "a@b.co")
-    case validateSignupPassword "" of
-        Left (SignupPasswordTooShort _ _) -> pure ()
-        other -> fail ("validateSignupPassword empty: expected SignupPasswordTooShort, got " <> show other)
-    case validateSignupPassword "short" of
-        Left (SignupPasswordTooShort _ _) -> pure ()
-        other -> fail ("validateSignupPassword short: expected SignupPasswordTooShort, got " <> show other)
-    assertEqual
-        "validateSignupPassword accepts 8+"
-        (Right "abcdefgh")
-        (validateSignupPassword "abcdefgh")
-    let cheapSettings2 =
-            defaultArgon2Settings
-                { argon2Iterations = 1
-                , argon2Memory = 8
-                , argon2Parallelism = 1
-                }
-    hash3 <- hashPassword cheapSettings2 "correct horse"
-    assertEqual "signup hash+verify roundtrip" True (Password.verifyPassword hash3 "correct horse")
+spec :: Spec
+spec = do
+    describe "generateConfirmationToken" $ do
+        it "produces a non-empty 43-char token" $ do
+            ctok <- generateConfirmationToken
+            T.null ctok `shouldBe` False
+            T.length ctok `shouldBe` 43
+
+        it "two calls produce different tokens" $ do
+            ctok1 <- generateConfirmationToken
+            ctok2 <- generateConfirmationToken
+            (ctok1 /= ctok2) `shouldBe` True
+
+    describe "User record" $
+        it "round-trips field values" $ do
+            ctok <- generateConfirmationToken
+            now <- getCurrentTime
+            let testUserId = UserId UUID.nil
+                testUser =
+                    User
+                        { userId = testUserId
+                        , userEmail = Just "test@example.com"
+                        , userEncryptedPassword = Just "$argon2id$v=19$..."
+                        , userEmailConfirmedAt = Nothing
+                        , userConfirmationToken = Just ctok
+                        , userConfirmationSentAt = Just now
+                        , userRawAppMetaData = Aeson.object []
+                        , userRawUserMetaData = Aeson.object []
+                        , userRole = "authenticated"
+                        , userAud = "authenticated"
+                        , userCreatedAt = now
+                        , userUpdatedAt = now
+                        }
+            userId testUser `shouldBe` testUserId
+            userEmail testUser `shouldBe` Just "test@example.com"
+            userRole testUser `shouldBe` "authenticated"
+            userAud testUser `shouldBe` "authenticated"
+            userEmailConfirmedAt testUser `shouldBe` Nothing
+            userConfirmationToken testUser `shouldBe` Just ctok
+
+    describe "buildSignupResponse" $
+        it "encodes the required JSON keys" $ do
+            now <- getCurrentTime
+            ctok <- generateConfirmationToken
+            let testUser =
+                    User
+                        { userId = UserId UUID.nil
+                        , userEmail = Just "test@example.com"
+                        , userEncryptedPassword = Just "$argon2id$v=19$..."
+                        , userEmailConfirmedAt = Nothing
+                        , userConfirmationToken = Just ctok
+                        , userConfirmationSentAt = Just now
+                        , userRawAppMetaData = Aeson.object []
+                        , userRawUserMetaData = Aeson.object []
+                        , userRole = "authenticated"
+                        , userAud = "authenticated"
+                        , userCreatedAt = now
+                        , userUpdatedAt = now
+                        }
+                signupResp = buildSignupResponse testUser
+                signupJson = Aeson.encode signupResp
+            case Aeson.decode signupJson of
+                Nothing -> expectationFailure "JSON decode failed"
+                Just (obj :: Object) -> do
+                    let requiredSignupKeys =
+                            [ "id"
+                            , "aud"
+                            , "role"
+                            , "email"
+                            , "confirmation_sent_at"
+                            , "created_at"
+                            , "updated_at"
+                            , "app_metadata"
+                            , "user_metadata"
+                            ]
+                    mapM_
+                        ( \k ->
+                            if KeyMap.member k obj
+                                then pure ()
+                                else expectationFailure ("missing key: " <> show k)
+                        )
+                        requiredSignupKeys
+
+    describe "validateSignupEmail" $ do
+        it "rejects empty" $
+            validateSignupEmail "" `shouldBe` Left (SignupEmailInvalid "")
+        it "rejects no-at" $
+            validateSignupEmail "no-at" `shouldBe` Left (SignupEmailInvalid "no-at")
+        it "rejects @no-local" $
+            validateSignupEmail "@no-local" `shouldBe` Left (SignupEmailInvalid "@no-local")
+        it "accepts a@b.co" $
+            validateSignupEmail "a@b.co" `shouldBe` Right "a@b.co"
+
+    describe "validateSignupPassword" $ do
+        it "rejects empty as too short" $
+            case validateSignupPassword "" of
+                Left (SignupPasswordTooShort _ _) -> pure ()
+                other -> expectationFailure ("expected SignupPasswordTooShort, got " <> show other)
+
+        it "rejects short as too short" $
+            case validateSignupPassword "short" of
+                Left (SignupPasswordTooShort _ _) -> pure ()
+                other -> expectationFailure ("expected SignupPasswordTooShort, got " <> show other)
+
+        it "accepts 8+ chars" $
+            validateSignupPassword "abcdefgh" `shouldBe` Right "abcdefgh"
+
+    describe "signup password hashing" $
+        it "hash + verify round-trip succeeds" $ do
+            let cheapSettings =
+                    defaultArgon2Settings
+                        { argon2Iterations = 1
+                        , argon2Memory = 8
+                        , argon2Parallelism = 1
+                        }
+            hash <- hashPassword cheapSettings "correct horse"
+            Password.verifyPassword hash "correct horse" `shouldBe` True

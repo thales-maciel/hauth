@@ -1,4 +1,4 @@
-module Spec.Auth.VerifySpec (runSpec) where
+module Spec.Auth.VerifySpec (spec) where
 
 import Data.Aeson (Object, Value (..))
 import qualified Data.Aeson as Aeson
@@ -13,85 +13,68 @@ import Hauth.Auth.Verify (
     classifyVerifyRequest,
     parseOtpType,
  )
-import Spec.TestUtils (assertEqual)
+import Test.Hspec (Spec, describe, expectationFailure, it, shouldBe)
 
-runSpec :: IO ()
-runSpec = do
-    assertEqual
-        "parseOtpType signup"
-        (Right OtpSignup)
-        (parseOtpType "signup")
-    assertEqual
-        "parseOtpType recovery"
-        (Right OtpRecovery)
-        (parseOtpType "recovery")
-    assertEqual
-        "parseOtpType magiclink"
-        (Right OtpMagicLink)
-        (parseOtpType "magiclink")
-    assertEqual
-        "parseOtpType invite"
-        (Right OtpInvite)
-        (parseOtpType "invite")
-    assertEqual
-        "parseOtpType email_change"
-        (Right OtpEmailChange)
-        (parseOtpType "email_change")
-    assertEqual
-        "parseOtpType bogus"
-        (Left (VerifyUnsupportedOtpType "bogus"))
-        (parseOtpType "bogus")
+spec :: Spec
+spec = do
+    describe "parseOtpType" $ do
+        it "parses signup" $
+            parseOtpType "signup" `shouldBe` Right OtpSignup
+        it "parses recovery" $
+            parseOtpType "recovery" `shouldBe` Right OtpRecovery
+        it "parses magiclink" $
+            parseOtpType "magiclink" `shouldBe` Right OtpMagicLink
+        it "parses invite" $
+            parseOtpType "invite" `shouldBe` Right OtpInvite
+        it "parses email_change" $
+            parseOtpType "email_change" `shouldBe` Right OtpEmailChange
+        it "rejects bogus" $
+            parseOtpType "bogus" `shouldBe` Left (VerifyUnsupportedOtpType "bogus")
 
-    -- classifyVerifyRequest
-    let emptyTokenReq =
-            VerifyRequest
-                { verifyToken = ""
-                , verifyType = "signup"
-                , verifyEmail = Nothing
-                , verifyPassword = Nothing
-                }
-    assertEqual
-        "classifyVerifyRequest empty token"
-        (Left VerifyMissingToken)
-        (classifyVerifyRequest emptyTokenReq)
+    describe "classifyVerifyRequest" $ do
+        it "rejects empty token" $ do
+            let emptyTokenReq =
+                    VerifyRequest
+                        { verifyToken = ""
+                        , verifyType = "signup"
+                        , verifyEmail = Nothing
+                        , verifyPassword = Nothing
+                        }
+            classifyVerifyRequest emptyTokenReq `shouldBe` Left VerifyMissingToken
 
-    let unsupportedTypeReq =
-            VerifyRequest
-                { verifyToken = "some-token"
-                , verifyType = "unknown_type"
-                , verifyEmail = Nothing
-                , verifyPassword = Nothing
-                }
-    case classifyVerifyRequest unsupportedTypeReq of
-        Left (VerifyUnsupportedOtpType _) -> pure ()
-        other ->
-            fail
-                ( "classifyVerifyRequest unsupported type: expected Left VerifyUnsupportedOtpType, got "
-                    <> show other
-                )
+        it "rejects unsupported type" $ do
+            let unsupportedTypeReq =
+                    VerifyRequest
+                        { verifyToken = "some-token"
+                        , verifyType = "unknown_type"
+                        , verifyEmail = Nothing
+                        , verifyPassword = Nothing
+                        }
+            case classifyVerifyRequest unsupportedTypeReq of
+                Left (VerifyUnsupportedOtpType _) -> pure ()
+                other ->
+                    expectationFailure
+                        ( "expected Left VerifyUnsupportedOtpType, got "
+                            <> show other
+                        )
 
-    let validSignupReq =
-            VerifyRequest
-                { verifyToken = "valid-token-abc"
-                , verifyType = "signup"
-                , verifyEmail = Nothing
-                , verifyPassword = Nothing
-                }
-    assertEqual
-        "classifyVerifyRequest valid signup"
-        (Right OtpSignup)
-        (classifyVerifyRequest validSignupReq)
+        it "accepts valid signup" $ do
+            let validSignupReq =
+                    VerifyRequest
+                        { verifyToken = "valid-token-abc"
+                        , verifyType = "signup"
+                        , verifyEmail = Nothing
+                        , verifyPassword = Nothing
+                        }
+            classifyVerifyRequest validSignupReq `shouldBe` Right OtpSignup
 
-    -- MessageResponse JSON shape
-    let msgResp = MessageResponse "Verification email sent if needed"
-    case Aeson.decode (Aeson.encode msgResp) of
-        Nothing ->
-            fail "MessageResponse: JSON decode failed"
-        Just (obj :: Object) -> do
-            if KeyMap.member "message" obj
-                then pure ()
-                else fail "MessageResponse JSON: missing 'message' key"
-            assertEqual
-                "MessageResponse message value"
-                (Just (String "Verification email sent if needed"))
-                (KeyMap.lookup "message" obj)
+    describe "MessageResponse JSON shape" $
+        it "encodes a message field" $ do
+            let msgResp = MessageResponse "Verification email sent if needed"
+            case Aeson.decode (Aeson.encode msgResp) of
+                Nothing ->
+                    expectationFailure "JSON decode failed"
+                Just (obj :: Object) -> do
+                    KeyMap.member "message" obj `shouldBe` True
+                    KeyMap.lookup "message" obj
+                        `shouldBe` Just (String "Verification email sent if needed")

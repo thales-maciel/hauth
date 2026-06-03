@@ -1,4 +1,4 @@
-module Spec.OAuth.GoogleSpec (runSpec) where
+module Spec.OAuth.GoogleSpec (spec) where
 
 import qualified Data.Aeson as Aeson
 import qualified Data.Text.Encoding as TE
@@ -10,103 +10,78 @@ import Hauth.OAuth.Google (
     googleProviderName,
     parseGoogleUserinfo,
  )
-import Spec.TestUtils (assertEqual)
+import Test.Hspec (Spec, describe, expectationFailure, it, shouldBe)
 
-runSpec :: IO ()
-runSpec = do
-    -- googleProviderName is "google"
-    assertEqual
-        "googleProviderName is google"
-        "google"
-        googleProviderName
+spec :: Spec
+spec = do
+    describe "googleProviderName" $ do
+        it "googleProviderName is google" $
+            googleProviderName `shouldBe` "google"
 
-    -- parseGoogleUserinfo: valid blob with sub, email, name, picture
-    let validBlob =
-            Aeson.object
-                [ "sub" Aeson..= ("108876543210987654321" :: Aeson.Value)
-                , "email" Aeson..= ("alice@gmail.com" :: Aeson.Value)
-                , "name" Aeson..= ("Alice Example" :: Aeson.Value)
-                , "picture" Aeson..= ("https://lh3.googleusercontent.com/photo.jpg" :: Aeson.Value)
-                ]
-    case parseGoogleUserinfo validBlob of
-        Left e ->
-            fail ("parseGoogleUserinfo valid: expected Right, got Left: " <> show e)
-        Right claims -> do
-            assertEqual
-                "parseGoogleUserinfo provider"
-                "google"
-                (identityProvider claims)
-            assertEqual
-                "parseGoogleUserinfo sub"
-                "108876543210987654321"
-                (identityProviderId claims)
-            assertEqual
-                "parseGoogleUserinfo email"
-                (Just "alice@gmail.com")
-                (identityEmail claims)
-            assertEqual
-                "parseGoogleUserinfo identityData equals input"
-                validBlob
-                (identityData claims)
+    describe "parseGoogleUserinfo" $ do
+        it "parses a valid blob with sub, email, name, picture" $ do
+            let validBlob =
+                    Aeson.object
+                        [ "sub" Aeson..= ("108876543210987654321" :: Aeson.Value)
+                        , "email" Aeson..= ("alice@gmail.com" :: Aeson.Value)
+                        , "name" Aeson..= ("Alice Example" :: Aeson.Value)
+                        , "picture" Aeson..= ("https://lh3.googleusercontent.com/photo.jpg" :: Aeson.Value)
+                        ]
+            case parseGoogleUserinfo validBlob of
+                Left e ->
+                    expectationFailure ("parseGoogleUserinfo valid: expected Right, got Left: " <> show e)
+                Right claims -> do
+                    identityProvider claims `shouldBe` "google"
+                    identityProviderId claims `shouldBe` "108876543210987654321"
+                    identityEmail claims `shouldBe` Just "alice@gmail.com"
+                    identityData claims `shouldBe` validBlob
 
-    -- parseGoogleUserinfo: missing sub field
-    let noSubBlob =
-            Aeson.object
-                [ "email" Aeson..= ("alice@gmail.com" :: Aeson.Value)
-                ]
-    case parseGoogleUserinfo noSubBlob of
-        Left GoogleMissingSub -> pure ()
-        Left e ->
-            fail ("parseGoogleUserinfo missing sub: expected GoogleMissingSub, got: " <> show e)
-        Right _ ->
-            fail "parseGoogleUserinfo missing sub: expected Left, got Right"
+        it "returns GoogleMissingSub when sub field is missing" $ do
+            let noSubBlob =
+                    Aeson.object
+                        [ "email" Aeson..= ("alice@gmail.com" :: Aeson.Value)
+                        ]
+            case parseGoogleUserinfo noSubBlob of
+                Left GoogleMissingSub -> pure ()
+                Left e ->
+                    expectationFailure ("parseGoogleUserinfo missing sub: expected GoogleMissingSub, got: " <> show e)
+                Right _ ->
+                    expectationFailure "parseGoogleUserinfo missing sub: expected Left, got Right"
 
-    -- parseGoogleUserinfo: non-object input
-    case parseGoogleUserinfo (Aeson.String "not-an-object") of
-        Left (GoogleUserinfoInvalid _) -> pure ()
-        Left e ->
-            fail ("parseGoogleUserinfo non-object: expected GoogleUserinfoInvalid, got: " <> show e)
-        Right _ ->
-            fail "parseGoogleUserinfo non-object: expected Left, got Right"
+        it "returns GoogleUserinfoInvalid on non-object input" $
+            case parseGoogleUserinfo (Aeson.String "not-an-object") of
+                Left (GoogleUserinfoInvalid _) -> pure ()
+                Left e ->
+                    expectationFailure ("parseGoogleUserinfo non-object: expected GoogleUserinfoInvalid, got: " <> show e)
+                Right _ ->
+                    expectationFailure "parseGoogleUserinfo non-object: expected Left, got Right"
 
-    -- buildGoogleTokenForm: correct keys and values
-    let providerCfg =
-            OAuthProviderConfig
-                { oauthProviderName = "google"
-                , oauthProviderClientId = "test-client-id"
-                , oauthProviderClientSecret = "test-client-secret"
-                , oauthProviderDiscoveryUrl = "https://accounts.google.com/.well-known/openid-configuration"
-                }
-        callbackUrl = "https://app.example.com/auth/v1/callback"
-        authCode = "test-auth-code"
-        form = buildGoogleTokenForm providerCfg callbackUrl authCode
+    describe "buildGoogleTokenForm" $ do
+        let providerCfg =
+                OAuthProviderConfig
+                    { oauthProviderName = "google"
+                    , oauthProviderClientId = "test-client-id"
+                    , oauthProviderClientSecret = "test-client-secret"
+                    , oauthProviderDiscoveryUrl = "https://accounts.google.com/.well-known/openid-configuration"
+                    }
+            callbackUrl = "https://app.example.com/auth/v1/callback"
+            authCode = "test-auth-code"
+            form = buildGoogleTokenForm providerCfg callbackUrl authCode
 
-    assertEqual
-        "buildGoogleTokenForm has 5 fields"
-        5
-        (length form)
+        it "buildGoogleTokenForm has 5 fields" $
+            length form `shouldBe` 5
 
-    assertEqual
-        "buildGoogleTokenForm code key"
-        (Just (TE.encodeUtf8 authCode))
-        (lookup "code" form)
+        it "buildGoogleTokenForm code key" $
+            lookup "code" form `shouldBe` Just (TE.encodeUtf8 authCode)
 
-    assertEqual
-        "buildGoogleTokenForm client_id key"
-        (Just (TE.encodeUtf8 "test-client-id"))
-        (lookup "client_id" form)
+        it "buildGoogleTokenForm client_id key" $
+            lookup "client_id" form `shouldBe` Just (TE.encodeUtf8 "test-client-id")
 
-    assertEqual
-        "buildGoogleTokenForm client_secret key"
-        (Just (TE.encodeUtf8 "test-client-secret"))
-        (lookup "client_secret" form)
+        it "buildGoogleTokenForm client_secret key" $
+            lookup "client_secret" form `shouldBe` Just (TE.encodeUtf8 "test-client-secret")
 
-    assertEqual
-        "buildGoogleTokenForm redirect_uri key"
-        (Just (TE.encodeUtf8 callbackUrl))
-        (lookup "redirect_uri" form)
+        it "buildGoogleTokenForm redirect_uri key" $
+            lookup "redirect_uri" form `shouldBe` Just (TE.encodeUtf8 callbackUrl)
 
-    assertEqual
-        "buildGoogleTokenForm grant_type is authorization_code"
-        (Just "authorization_code")
-        (lookup "grant_type" form)
+        it "buildGoogleTokenForm grant_type is authorization_code" $
+            lookup "grant_type" form `shouldBe` Just "authorization_code"

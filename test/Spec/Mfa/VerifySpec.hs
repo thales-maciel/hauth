@@ -1,4 +1,4 @@
-module Spec.Mfa.VerifySpec (runSpec) where
+module Spec.Mfa.VerifySpec (spec) where
 
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
@@ -16,7 +16,7 @@ import Hauth.Mfa.TotpVerify (
     totpCodeAtStep,
     verifyTotpCode,
  )
-import Spec.TestUtils (assertEqual)
+import Test.Hspec (Spec, describe, expectationFailure, it, shouldBe)
 
 -- | The 20-byte ASCII secret from RFC 6238: "12345678901234567890"
 rfcSecret :: TotpSecret
@@ -46,194 +46,134 @@ rfcSecret =
             ]
         )
 
-runSpec :: IO ()
-runSpec = do
-    -- -----------------------------------------------------------------
-    -- currentTimeStep
-    -- -----------------------------------------------------------------
-    assertEqual
-        "currentTimeStep 1234567890 = floor(1234567890/30)"
-        41152263
-        (currentTimeStep 1234567890)
+spec :: Spec
+spec = do
+    describe "currentTimeStep" $ do
+        it "1234567890 = floor(1234567890/30)" $
+            currentTimeStep 1234567890 `shouldBe` 41152263
+        it "0 = 0" $
+            currentTimeStep 0 `shouldBe` 0
+        it "30 = 1" $
+            currentTimeStep 30 `shouldBe` 1
+        it "59 = 1" $
+            currentTimeStep 59 `shouldBe` 1
+        it "60 = 2" $
+            currentTimeStep 60 `shouldBe` 2
 
-    assertEqual
-        "currentTimeStep 0 = 0"
-        0
-        (currentTimeStep 0)
+    describe "totpCodeAtStep" $ do
+        -- RFC 6238 step=1 (t=30..59) — 8-digit is 94287082 -> 6-digit "287082"
+        it "rfcSecret 1 = 287082" $
+            totpCodeAtStep rfcSecret 1 `shouldBe` "287082"
+        -- Step 2 independently verified
+        it "rfcSecret 2 = 359152" $
+            totpCodeAtStep rfcSecret 2 `shouldBe` "359152"
+        -- Always 6 characters (zero-padded)
+        it "always 6 chars" $
+            T.length (totpCodeAtStep rfcSecret 1) `shouldBe` 6
 
-    assertEqual
-        "currentTimeStep 30 = 1"
-        1
-        (currentTimeStep 30)
+    describe "verifyTotpCode core verification" $ do
+        it "correct code at exact step" $
+            let step1 = 1 :: Int
+                step1Time = fromIntegral step1 * 30 :: POSIXTime
+                code1 = totpCodeAtStep rfcSecret (fromIntegral step1)
+             in verifyTotpCode rfcSecret code1 step1Time `shouldBe` TotpVerified
+        it "000000 is invalid for step 1 (unless coincidence)" $
+            let step1 = 1 :: Int
+                step1Time = fromIntegral step1 * 30 :: POSIXTime
+             in verifyTotpCode rfcSecret "000000" step1Time `shouldBe` TotpInvalid
 
-    assertEqual
-        "currentTimeStep 59 = 1"
-        1
-        (currentTimeStep 59)
+    describe "verifyTotpCode skew window" $ do
+        it "code from step N-1 verifies at step N (skew -1)" $
+            let step10 = 10 :: Int
+                step10Time = fromIntegral step10 * 30 :: POSIXTime
+                codeStep9 = totpCodeAtStep rfcSecret 9
+             in verifyTotpCode rfcSecret codeStep9 step10Time `shouldBe` TotpVerified
+        it "code from step N+1 verifies at step N (skew +1)" $
+            let step10 = 10 :: Int
+                step10Time = fromIntegral step10 * 30 :: POSIXTime
+                codeStep11 = totpCodeAtStep rfcSecret 11
+             in verifyTotpCode rfcSecret codeStep11 step10Time `shouldBe` TotpVerified
+        it "code from step N-2 does not verify at step N" $
+            let step10 = 10 :: Int
+                step10Time = fromIntegral step10 * 30 :: POSIXTime
+                codeStep8 = totpCodeAtStep rfcSecret 8
+             in verifyTotpCode rfcSecret codeStep8 step10Time `shouldBe` TotpInvalid
 
-    assertEqual
-        "currentTimeStep 60 = 2"
-        2
-        (currentTimeStep 60)
+    describe "verifyTotpCode wrong-length codes" $ do
+        it "5-digit code is invalid" $
+            let step1Time = fromIntegral (1 :: Int) * 30 :: POSIXTime
+             in verifyTotpCode rfcSecret "12345" step1Time `shouldBe` TotpInvalid
+        it "7-digit code is invalid" $
+            let step1Time = fromIntegral (1 :: Int) * 30 :: POSIXTime
+             in verifyTotpCode rfcSecret "1234567" step1Time `shouldBe` TotpInvalid
+        it "empty code is invalid" $
+            let step1Time = fromIntegral (1 :: Int) * 30 :: POSIXTime
+             in verifyTotpCode rfcSecret "" step1Time `shouldBe` TotpInvalid
 
-    -- -----------------------------------------------------------------
-    -- totpCodeAtStep — fixed 6-digit vectors derived from RFC 6238 SHA1
-    -- secret (our 6-digit truncation of the RFC's 8-digit vectors)
-    -- -----------------------------------------------------------------
+    describe "ChallengeFactorResponse JSON shape" $
+        it "round-trip encodes id and expires_at" $ do
+            let now = read "2024-01-01 00:00:00 UTC"
+                resp =
+                    ChallengeFactorResponse
+                        { challengeFactorId = "00000000-0000-0000-0000-000000000001"
+                        , challengeExpiresAt = now
+                        }
+            case Aeson.decode (Aeson.encode resp) of
+                Nothing ->
+                    expectationFailure "ChallengeFactorResponse: JSON round-trip decode failed"
+                Just obj ->
+                    mapM_
+                        ( \k ->
+                            if KeyMap.member k (obj :: KeyMap.KeyMap Aeson.Value)
+                                then pure ()
+                                else expectationFailure ("ChallengeFactorResponse JSON: missing key: " <> show k)
+                        )
+                        ["id", "expires_at"]
 
-    -- RFC 6238 step=1 (t=30..59) — 8-digit is 94287082 → 6-digit "287082"
-    assertEqual
-        "totpCodeAtStep rfcSecret 1 = 287082"
-        "287082"
-        (totpCodeAtStep rfcSecret 1)
-
-    -- Step 2 independently verified
-    assertEqual
-        "totpCodeAtStep rfcSecret 2 = 359152"
-        "359152"
-        (totpCodeAtStep rfcSecret 2)
-
-    -- Always 6 characters (zero-padded)
-    assertEqual
-        "totpCodeAtStep always 6 chars"
-        6
-        (T.length (totpCodeAtStep rfcSecret 1))
-
-    -- -----------------------------------------------------------------
-    -- verifyTotpCode — core verification
-    -- -----------------------------------------------------------------
-
-    let step1 = 1 :: Int
-        step1Time = fromIntegral step1 * 30 :: POSIXTime
-        code1 = totpCodeAtStep rfcSecret (fromIntegral step1)
-
-    assertEqual
-        "verifyTotpCode: correct code at exact step"
-        TotpVerified
-        (verifyTotpCode rfcSecret code1 step1Time)
-
-    assertEqual
-        "verifyTotpCode: 000000 is invalid for step 1 (unless coincidence)"
-        TotpInvalid
-        (verifyTotpCode rfcSecret "000000" step1Time)
-
-    -- -----------------------------------------------------------------
-    -- ±1 skew window
-    -- -----------------------------------------------------------------
-
-    let step10 = 10 :: Int
-        step10Time = fromIntegral step10 * 30 :: POSIXTime
-        codeStep9 = totpCodeAtStep rfcSecret 9
-        codeStep11 = totpCodeAtStep rfcSecret 11
-        codeStep8 = totpCodeAtStep rfcSecret 8
-
-    -- Code from step N-1 verifies when "now" is step N
-    assertEqual
-        "verifyTotpCode: code from step N-1 verifies at step N (skew -1)"
-        TotpVerified
-        (verifyTotpCode rfcSecret codeStep9 step10Time)
-
-    -- Code from step N+1 verifies when "now" is step N
-    assertEqual
-        "verifyTotpCode: code from step N+1 verifies at step N (skew +1)"
-        TotpVerified
-        (verifyTotpCode rfcSecret codeStep11 step10Time)
-
-    -- Code from step N-2 does NOT verify when "now" is step N
-    assertEqual
-        "verifyTotpCode: code from step N-2 does not verify at step N"
-        TotpInvalid
-        (verifyTotpCode rfcSecret codeStep8 step10Time)
-
-    -- -----------------------------------------------------------------
-    -- Wrong-length codes
-    -- -----------------------------------------------------------------
-
-    assertEqual
-        "verifyTotpCode: 5-digit code is invalid"
-        TotpInvalid
-        (verifyTotpCode rfcSecret "12345" step1Time)
-
-    assertEqual
-        "verifyTotpCode: 7-digit code is invalid"
-        TotpInvalid
-        (verifyTotpCode rfcSecret "1234567" step1Time)
-
-    assertEqual
-        "verifyTotpCode: empty code is invalid"
-        TotpInvalid
-        (verifyTotpCode rfcSecret "" step1Time)
-
-    -- -----------------------------------------------------------------
-    -- JSON shape — ChallengeFactorResponse
-    -- -----------------------------------------------------------------
-
-    do
-        let now = read "2024-01-01 00:00:00 UTC"
-            resp =
-                ChallengeFactorResponse
-                    { challengeFactorId = "00000000-0000-0000-0000-000000000001"
-                    , challengeExpiresAt = now
-                    }
-        case Aeson.decode (Aeson.encode resp) of
-            Nothing ->
-                fail "ChallengeFactorResponse: JSON round-trip decode failed"
-            Just obj ->
-                mapM_
-                    ( \k ->
-                        if KeyMap.member k (obj :: KeyMap.KeyMap Aeson.Value)
-                            then pure ()
-                            else fail ("ChallengeFactorResponse JSON: missing key: " <> show k)
-                    )
-                    ["id", "expires_at"]
-
-    -- -----------------------------------------------------------------
-    -- JSON shape — VerifyFactorResponse
-    -- -----------------------------------------------------------------
-
-    do
-        let sessUser =
-                Aeson.object
-                    [ "id" Aeson..= ("00000000-0000-0000-0000-000000000000" :: T.Text)
-                    , "aud" Aeson..= ("authenticated" :: T.Text)
-                    , "role" Aeson..= ("authenticated" :: T.Text)
-                    , "email" Aeson..= ("user@example.com" :: T.Text)
-                    , "email_confirmed_at" Aeson..= (Nothing :: Maybe T.Text)
-                    , "created_at" Aeson..= ("2024-01-01T00:00:00Z" :: T.Text)
-                    , "updated_at" Aeson..= ("2024-01-01T00:00:00Z" :: T.Text)
-                    , "app_metadata" Aeson..= Aeson.object []
-                    , "user_metadata" Aeson..= Aeson.object []
-                    ]
-            sessionJson =
-                Aeson.object
-                    [ "access_token" Aeson..= ("tok" :: T.Text)
-                    , "token_type" Aeson..= ("bearer" :: T.Text)
-                    , "expires_in" Aeson..= (3600 :: Int)
-                    , "refresh_token" Aeson..= ("rtok" :: T.Text)
-                    , "user" Aeson..= sessUser
-                    ]
-            verifyJson =
-                Aeson.object
-                    [ "access_token" Aeson..= ("tok" :: T.Text)
-                    , "token_type" Aeson..= ("bearer" :: T.Text)
-                    , "expires_in" Aeson..= (3600 :: Int)
-                    , "refresh_token" Aeson..= ("rtok" :: T.Text)
-                    , "user" Aeson..= sessUser
-                    ]
-        case Aeson.decode (Aeson.encode sessionJson) :: Maybe SessionResponse of
-            Nothing ->
-                fail "SessionResponse JSON: decode failed"
-            Just _ -> pure ()
-        case Aeson.decode (Aeson.encode verifyJson) :: Maybe Aeson.Value of
-            Nothing ->
-                fail "VerifyFactorResponse JSON: encode failed"
-            Just (Aeson.Object obj) ->
-                mapM_
-                    ( \k ->
-                        if KeyMap.member k obj
-                            then pure ()
-                            else fail ("VerifyFactorResponse JSON: missing top-level key: " <> show k)
-                    )
-                    ["access_token", "token_type", "expires_in", "refresh_token", "user"]
-            Just _ ->
-                fail "VerifyFactorResponse JSON: not an object"
+    describe "VerifyFactorResponse JSON shape" $
+        it "round-trips and contains required top-level keys" $ do
+            let sessUser =
+                    Aeson.object
+                        [ "id" Aeson..= ("00000000-0000-0000-0000-000000000000" :: T.Text)
+                        , "aud" Aeson..= ("authenticated" :: T.Text)
+                        , "role" Aeson..= ("authenticated" :: T.Text)
+                        , "email" Aeson..= ("user@example.com" :: T.Text)
+                        , "email_confirmed_at" Aeson..= (Nothing :: Maybe T.Text)
+                        , "created_at" Aeson..= ("2024-01-01T00:00:00Z" :: T.Text)
+                        , "updated_at" Aeson..= ("2024-01-01T00:00:00Z" :: T.Text)
+                        , "app_metadata" Aeson..= Aeson.object []
+                        , "user_metadata" Aeson..= Aeson.object []
+                        ]
+                sessionJson =
+                    Aeson.object
+                        [ "access_token" Aeson..= ("tok" :: T.Text)
+                        , "token_type" Aeson..= ("bearer" :: T.Text)
+                        , "expires_in" Aeson..= (3600 :: Int)
+                        , "refresh_token" Aeson..= ("rtok" :: T.Text)
+                        , "user" Aeson..= sessUser
+                        ]
+                verifyJson =
+                    Aeson.object
+                        [ "access_token" Aeson..= ("tok" :: T.Text)
+                        , "token_type" Aeson..= ("bearer" :: T.Text)
+                        , "expires_in" Aeson..= (3600 :: Int)
+                        , "refresh_token" Aeson..= ("rtok" :: T.Text)
+                        , "user" Aeson..= sessUser
+                        ]
+            case Aeson.decode (Aeson.encode sessionJson) :: Maybe SessionResponse of
+                Nothing ->
+                    expectationFailure "SessionResponse JSON: decode failed"
+                Just _ -> pure ()
+            case Aeson.decode (Aeson.encode verifyJson) :: Maybe Aeson.Value of
+                Nothing ->
+                    expectationFailure "VerifyFactorResponse JSON: encode failed"
+                Just (Aeson.Object obj) ->
+                    mapM_
+                        ( \k ->
+                            if KeyMap.member k obj
+                                then pure ()
+                                else expectationFailure ("VerifyFactorResponse JSON: missing top-level key: " <> show k)
+                        )
+                        ["access_token", "token_type", "expires_in", "refresh_token", "user"]
+                Just _ ->
+                    expectationFailure "VerifyFactorResponse JSON: not an object"

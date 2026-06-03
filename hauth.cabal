@@ -205,6 +205,8 @@ test-suite hauth-test
     , file-embed >=0.0.15 && <0.1
     , hauth
     , hedgehog >=1.4 && <1.6
+    , hspec >=2.11 && <2.12
+    , hspec-hedgehog >=0.3 && <0.4
     , http-client >=0.7 && <0.8
     , http-types >=0.12 && <0.13
     , memory >=0.18 && <0.19

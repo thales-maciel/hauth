@@ -1,4 +1,4 @@
-module Spec.Verify.OauthSpec (runSpec) where
+module Spec.Verify.OauthSpec (spec) where
 
 import Control.Concurrent (forkIO, killThread, threadDelay)
 import Control.Exception (SomeException, bracket, try)
@@ -25,15 +25,7 @@ import Network.HTTP.Client (
 import Network.HTTP.Types (status200, status500)
 import Network.Wai (Application, responseLBS)
 import qualified Network.Wai.Handler.Warp as Warp
-import Spec.TestUtils (assertEqual)
-
-runSpec :: IO ()
-runSpec = do
-    testNoProviders
-    testDiscoveryOk
-    testDiscoveryFail
-    testCallbackAllowlistOk
-    testCallbackAllowlistWarn
+import Test.Hspec (Spec, describe, expectationFailure, it, shouldBe, shouldSatisfy)
 
 -- ---------------------------------------------------------------------------
 -- Helpers
@@ -130,61 +122,57 @@ runNamedCheck cfg name = do
 -- Tests
 -- ---------------------------------------------------------------------------
 
-testNoProviders :: IO ()
-testNoProviders = do
-    let cfg =
-            Config
-                { configDatabase = DatabaseConfig "postgresql://x:x@localhost/x" 1
-                , configJwt = JwtConfig "0123456789abcdef0123456789abcdef" "h" "a" 3600 2592000
-                , configSite = SiteConfig "http://localhost:3000" []
-                , configEmail = EmailConfig "n@e.com" "localhost" 1025 Nothing Nothing
-                , configOAuth = OAuthConfig []
-                , configServer = ServerConfig "127.0.0.1" 8080
-                }
-    assertEqual "no providers: empty checks" 0 (length (checks cfg))
+spec :: Spec
+spec = do
+    describe "no providers" $ do
+        it "no providers: empty checks" $ do
+            let cfg =
+                    Config
+                        { configDatabase = DatabaseConfig "postgresql://x:x@localhost/x" 1
+                        , configJwt = JwtConfig "0123456789abcdef0123456789abcdef" "h" "a" 3600 2592000
+                        , configSite = SiteConfig "http://localhost:3000" []
+                        , configEmail = EmailConfig "n@e.com" "localhost" 1025 Nothing Nothing
+                        , configOAuth = OAuthConfig []
+                        , configServer = ServerConfig "127.0.0.1" 8080
+                        }
+            length (checks cfg) `shouldBe` 0
 
-testDiscoveryOk :: IO ()
-testDiscoveryOk =
-    withFakeServer okApp $ \port -> do
-        let url = "http://127.0.0.1:" <> T.pack (show port) <> "/openid-configuration"
-            provider = fakeProvider "testprovider" url
-            cfg = configWith "http://localhost:3000" [] provider
-        outcome <- runNamedCheck cfg "oauth.testprovider.discovery"
-        assertEqual "discovery ok: outcome" CheckOk outcome
+    describe "discovery" $ do
+        it "discovery ok: outcome" $
+            withFakeServer okApp $ \port -> do
+                let url = "http://127.0.0.1:" <> T.pack (show port) <> "/openid-configuration"
+                    provider = fakeProvider "testprovider" url
+                    cfg = configWith "http://localhost:3000" [] provider
+                outcome <- runNamedCheck cfg "oauth.testprovider.discovery"
+                outcome `shouldBe` CheckOk
 
-testDiscoveryFail :: IO ()
-testDiscoveryFail =
-    withFakeServer errorApp $ \port -> do
-        let url = "http://127.0.0.1:" <> T.pack (show port) <> "/openid-configuration"
-            provider = fakeProvider "failprovider" url
-            cfg = configWith "http://localhost:3000" [] provider
-        outcome <- runNamedCheck cfg "oauth.failprovider.discovery"
-        case outcome of
-            CheckFail msg ->
-                if "500" `T.isInfixOf` msg
-                    then pure ()
-                    else fail ("discovery fail: unexpected message: " <> T.unpack msg)
-            other ->
-                fail ("discovery fail: expected CheckFail, got " <> show other)
+        it "discovery fail: returns CheckFail with 500 in message" $
+            withFakeServer errorApp $ \port -> do
+                let url = "http://127.0.0.1:" <> T.pack (show port) <> "/openid-configuration"
+                    provider = fakeProvider "failprovider" url
+                    cfg = configWith "http://localhost:3000" [] provider
+                outcome <- runNamedCheck cfg "oauth.failprovider.discovery"
+                case outcome of
+                    CheckFail msg ->
+                        msg `shouldSatisfy` T.isInfixOf "500"
+                    other ->
+                        expectationFailure ("expected CheckFail, got " <> show other)
 
-testCallbackAllowlistOk :: IO ()
-testCallbackAllowlistOk = do
-    let provider = fakeProvider "google" "http://127.0.0.1:1/unused"
-        allowlist = ["http://localhost:3000/auth/v1/callback"]
-        cfg = configWith "http://localhost:3000" allowlist provider
-    outcome <- runNamedCheck cfg "oauth.google.callback_allowlist"
-    assertEqual "allowlist ok: outcome" CheckOk outcome
+    describe "callback allowlist" $ do
+        it "allowlist ok: outcome" $ do
+            let provider = fakeProvider "google" "http://127.0.0.1:1/unused"
+                allowlist = ["http://localhost:3000/auth/v1/callback"]
+                cfg = configWith "http://localhost:3000" allowlist provider
+            outcome <- runNamedCheck cfg "oauth.google.callback_allowlist"
+            outcome `shouldBe` CheckOk
 
-testCallbackAllowlistWarn :: IO ()
-testCallbackAllowlistWarn = do
-    let provider = fakeProvider "github" "http://127.0.0.1:1/unused"
-        allowlist = ["http://localhost:3000/other"]
-        cfg = configWith "http://localhost:3000" allowlist provider
-    outcome <- runNamedCheck cfg "oauth.github.callback_allowlist"
-    case outcome of
-        CheckWarn msg ->
-            if "callback URL" `T.isInfixOf` msg
-                then pure ()
-                else fail ("allowlist warn: unexpected message: " <> T.unpack msg)
-        other ->
-            fail ("allowlist warn: expected CheckWarn, got " <> show other)
+        it "allowlist warn: returns CheckWarn with callback URL in message" $ do
+            let provider = fakeProvider "github" "http://127.0.0.1:1/unused"
+                allowlist = ["http://localhost:3000/other"]
+                cfg = configWith "http://localhost:3000" allowlist provider
+            outcome <- runNamedCheck cfg "oauth.github.callback_allowlist"
+            case outcome of
+                CheckWarn msg ->
+                    msg `shouldSatisfy` T.isInfixOf "callback URL"
+                other ->
+                    expectationFailure ("expected CheckWarn, got " <> show other)
