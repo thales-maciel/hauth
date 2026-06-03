@@ -27,7 +27,13 @@ import GHC.Clock (getMonotonicTimeNSec)
 import Hauth.API.Auth (AnonymousPrincipal)
 import Hauth.API.Types
 import Hauth.Config (Config (..), DatabaseConfig (..), JwtConfig (..))
-import Hauth.Env (AppEnv (..), withDatabaseConnection)
+import Hauth.Env (
+    AppEnv (..),
+    BackgroundServiceName (..),
+    BackgroundServiceStatus (..),
+    backgroundServiceStatusChecks,
+    withDatabaseConnection,
+ )
 import Servant.Server (Handler, ServerError (errBody), err503)
 import System.Timeout (timeout)
 
@@ -68,7 +74,8 @@ runDeepChecks env = do
     processCheck <- checkProcess
     configCheck <- checkConfig env
     postgresCheck <- checkPostgres env
-    pure [processCheck, configCheck, postgresCheck]
+    backgroundChecks <- checkBackgroundServices env
+    pure ([processCheck, configCheck, postgresCheck] <> backgroundChecks)
 
 checkProcess :: IO DeepHealthCheck
 checkProcess =
@@ -114,3 +121,32 @@ checkPostgres env = do
             , deepHealthCheckOutcome = outcome
             , deepHealthCheckLatencyMs = latencyMs
             }
+
+checkBackgroundServices :: AppEnv -> IO [DeepHealthCheck]
+checkBackgroundServices env =
+    fmap toCheck <$> backgroundServiceStatusChecks env
+  where
+    toCheck (name, status) =
+        DeepHealthCheck
+            { deepHealthCheckName = backgroundServiceName name
+            , deepHealthCheckOutcome = backgroundServiceOutcome status
+            , deepHealthCheckLatencyMs = Nothing
+            }
+
+backgroundServiceName :: BackgroundServiceName -> T.Text
+backgroundServiceName = \case
+    WebhookWorker ->
+        "webhook_worker"
+    TemplateListener ->
+        "template_listener"
+
+backgroundServiceOutcome :: BackgroundServiceStatus -> CheckOutcome
+backgroundServiceOutcome = \case
+    BackgroundServiceRunning ->
+        CheckOk
+    BackgroundServiceNotStarted ->
+        CheckFailed "not started"
+    BackgroundServiceFailed reason ->
+        CheckFailed reason
+    BackgroundServiceStopped ->
+        CheckFailed "stopped"

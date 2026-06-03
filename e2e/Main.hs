@@ -7,6 +7,7 @@ import qualified E2E.EmailTemplatesCrudSpec
 import qualified E2E.EmailTemplatesLoaderSpec
 import qualified E2E.EmailTemplatesSchemaSpec
 import qualified E2E.EmailTemplatesSpec
+import qualified E2E.HealthSpec
 import E2E.Helpers (TestEnv, truncateAll, withTestEnv)
 import qualified E2E.HooksCrudSpec
 import qualified E2E.HooksSpec
@@ -38,6 +39,7 @@ allSpecs = do
     describe "MFA TOTP" E2E.MfaSpec.spec
     describe "admin users API" E2E.AdminSpec.spec
     describe "compatibility placeholder routes" E2E.CompatibilityPlaceholdersSpec.spec
+    describe "health checks" E2E.HealthSpec.spec
     describe "OAuth (limited)" E2E.OAuthSpec.spec
     describe "hooks types (loadHookConfig)" E2E.HooksTypesSpec.spec
     describe "verify database checks" E2E.VerifyDatabaseSpec.spec

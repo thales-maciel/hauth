@@ -39,7 +39,7 @@ import Hauth.Env (
     createAppEnv,
     destroyAppEnv,
     logMessage,
-    startBackgroundServices,
+    startRequiredBackgroundServices,
     stopBackgroundServices,
  )
 import Hauth.Server.Admin (
@@ -120,7 +120,7 @@ type AuthContext =
 runServer :: Config -> IO ()
 runServer config =
     bracket (createAppEnv config) destroyAppEnv \env@AppEnv{appConfig, appLogger} ->
-        bracket (startBackgroundServices env) stopBackgroundServices \_ -> do
+        bracket (startRequiredBackgroundServices env) stopBackgroundServices \_ -> do
             let Config{configServer = ServerConfig{serverHost, serverPort}} = appConfig
             logMessage appLogger LogInfo ("hauth listening on http://" <> serverHost <> ":" <> T.pack (show serverPort))
             Warp.runSettings
