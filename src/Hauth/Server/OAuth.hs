@@ -240,7 +240,7 @@ handleGoogleCallback env code flowState = do
                                 ]
                     }
         Right ic -> pure ic
-    issueOAuthSession env configJwt jwtAccessTokenTtlSeconds identityClaims
+    issueOAuthSession env jwtAccessTokenTtlSeconds identityClaims
 
 googleErrorMessage :: GoogleExchangeError -> T.Text
 googleErrorMessage = \case
@@ -288,7 +288,7 @@ handleGithubCallback env code _flowState = do
                                 ]
                     }
         Right c -> pure c
-    issueOAuthSession env configJwt jwtAccessTokenTtlSeconds claims
+    issueOAuthSession env jwtAccessTokenTtlSeconds claims
 
 githubErrorMessage :: GithubExchangeError -> T.Text
 githubErrorMessage = \case
@@ -304,11 +304,10 @@ githubErrorMessage = \case
 
 issueOAuthSession ::
     AppEnv ->
-    JwtConfig ->
     Int ->
     IdentityClaims ->
     AppHandler SessionResponse
-issueOAuthSession env configJwt jwtAccessTokenTtlSeconds claims = do
+issueOAuthSession env jwtAccessTokenTtlSeconds claims = do
     (userId, _isNewUser) <-
         liftIO (withDatabaseConnection env (`findOrCreateIdentity` claims))
     mUser <- liftIO (withDatabaseConnection env (`User.getUserById` userId))
