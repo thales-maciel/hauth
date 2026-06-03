@@ -1,5 +1,6 @@
 module Main (main) where
 
+import qualified Spec.API.GoldenSpec
 import qualified Spec.APISpec
 import qualified Spec.Auth.AalAmrSpec
 import qualified Spec.Auth.AdminSpec
@@ -37,6 +38,7 @@ import System.Exit (exitSuccess)
 
 main :: IO ()
 main = do
+    Spec.API.GoldenSpec.runSpec
     Spec.APISpec.runSpec
     Spec.Auth.AalAmrSpec.runSpec
     Spec.Auth.CustomAccessTokenSpec.runSpec
