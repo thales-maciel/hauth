@@ -1,12 +1,17 @@
 {- | HMAC-SHA256 request signing following the Standard Webhooks convention.
 
-Tolerance: 'verifySignature' rejects timestamps more than 5 minutes from the
-current system time in either direction.
+Verification is parameterised over the current time: 'verifySignatureAt'
+takes the reference instant explicitly so tests can pin it; 'verifySignature'
+is the thin @IO@ wrapper that reads the wall clock.
+
+Tolerance: timestamps more than 5 minutes from the reference time in either
+direction are rejected.
 -}
 module Hauth.Webhooks.Signing (
     SignedHeaders (..),
     signRequest,
     verifySignature,
+    verifySignatureAt,
 ) where
 
 import Crypto.Hash (SHA256)
@@ -18,7 +23,6 @@ import qualified Data.ByteString.Char8 as BSC
 import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 import Data.UUID (UUID)
 import qualified Data.UUID as UUID
-import System.IO.Unsafe (unsafePerformIO)
 
 -- | The three Standard Webhooks signing headers.
 data SignedHeaders = SignedHeaders
@@ -52,10 +56,41 @@ signRequest secret deliveryId ts body =
     digest = hmacGetDigest (hmac secret signed :: HMAC SHA256)
     sig = convertToBase Base64 (convert digest :: BS.ByteString) :: BS.ByteString
 
-{- | Verify a signed request.
+{- | Pure verifier. Takes the reference instant explicitly so the function is
+total and time-independent — tests can pin a deterministic @now@; production
+code calls 'verifySignature' which threads in the wall clock.
 
-Returns False on tamper, wrong secret, or timestamp drift exceeding 5 minutes.
-Uses constant-time comparison to prevent timing attacks.
+Returns False on tamper, wrong secret, or timestamp drift exceeding
+'driftTolerance' from the supplied reference. Uses constant-time comparison.
+-}
+verifySignatureAt ::
+    -- | Reference time (treated as \"now\" for the drift check).
+    POSIXTime ->
+    -- | Secret (raw bytes).
+    BS.ByteString ->
+    -- | webhook-id header value.
+    BS.ByteString ->
+    -- | webhook-timestamp header value.
+    BS.ByteString ->
+    -- | webhook-signature header value.
+    BS.ByteString ->
+    -- | Body.
+    BS.ByteString ->
+    Bool
+verifySignatureAt now secret wId wTs wSig body =
+    case parseTimestamp wTs of
+        Nothing -> False
+        Just ts ->
+            abs (now - ts) <= driftTolerance
+                && let signed = wId <> "." <> wTs <> "." <> body
+                       digest = hmacGetDigest (hmac secret signed :: HMAC SHA256)
+                       rawSig = convertToBase Base64 (convert digest :: BS.ByteString) :: BS.ByteString
+                       expected = "v1," <> rawSig :: BS.ByteString
+                       candidate = BS.takeWhile (/= 0x20) wSig
+                    in constEq expected candidate
+
+{- | Wall-clock wrapper over 'verifySignatureAt'. Use this in handlers; pin a
+fixed instant via 'verifySignatureAt' in tests.
 -}
 verifySignature ::
     -- | Secret (raw bytes).
@@ -68,20 +103,10 @@ verifySignature ::
     BS.ByteString ->
     -- | Body.
     BS.ByteString ->
-    -- | Constant-time comparison; tolerates timestamp drift up to 5 minutes.
-    Bool
-verifySignature secret wId wTs wSig body =
-    case parseTimestamp wTs of
-        Nothing -> False
-        Just ts ->
-            let now = unsafePerformIO getPOSIXTime
-             in abs (now - ts) <= driftTolerance
-                    && let signed = wId <> "." <> wTs <> "." <> body
-                           digest = hmacGetDigest (hmac secret signed :: HMAC SHA256)
-                           rawSig = convertToBase Base64 (convert digest :: BS.ByteString) :: BS.ByteString
-                           expected = "v1," <> rawSig :: BS.ByteString
-                           candidate = BS.takeWhile (/= 0x20) wSig
-                        in constEq expected candidate
+    IO Bool
+verifySignature secret wId wTs wSig body = do
+    now <- getPOSIXTime
+    pure (verifySignatureAt now secret wId wTs wSig body)
 
 -- | Maximum allowed timestamp drift (seconds).
 driftTolerance :: POSIXTime

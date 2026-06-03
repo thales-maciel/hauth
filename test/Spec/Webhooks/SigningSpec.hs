@@ -2,9 +2,8 @@ module Spec.Webhooks.SigningSpec (runSpec) where
 
 import Data.ByteArray (constEq)
 import qualified Data.ByteString as BS
-import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.UUID (nil)
-import Hauth.Webhooks.Signing (SignedHeaders (..), signRequest, verifySignature)
+import Hauth.Webhooks.Signing (SignedHeaders (..), signRequest, verifySignatureAt)
 import Spec.TestUtils (assertEqual)
 
 secret :: BS.ByteString
@@ -16,29 +15,32 @@ altSecret = "different-secret-key-32-bytes!!!"
 body :: BS.ByteString
 body = "{\"event\":\"user.created\"}"
 
+-- Pin a deterministic instant so the drift-tolerance cases below don't drift
+-- with real wall-clock time. 2026-01-01T00:00:00Z.
+now :: (Num a) => a
+now = 1767225600
+
 runSpec :: IO ()
 runSpec = do
-    now <- getPOSIXTime
-
     let hdrs = signRequest secret nil now body
 
     -- Sign + verify roundtrip with same secret → True
     assertEqual
         "roundtrip with same secret"
         True
-        (verifySignature secret (sigWebhookId hdrs) (sigWebhookTimestamp hdrs) (sigWebhookSignature hdrs) body)
+        (verifySignatureAt now secret (sigWebhookId hdrs) (sigWebhookTimestamp hdrs) (sigWebhookSignature hdrs) body)
 
     -- Sign + verify with different secret → False
     assertEqual
         "different secret rejected"
         False
-        (verifySignature altSecret (sigWebhookId hdrs) (sigWebhookTimestamp hdrs) (sigWebhookSignature hdrs) body)
+        (verifySignatureAt now altSecret (sigWebhookId hdrs) (sigWebhookTimestamp hdrs) (sigWebhookSignature hdrs) body)
 
     -- Sign + verify with tampered body → False
     assertEqual
         "tampered body rejected"
         False
-        (verifySignature secret (sigWebhookId hdrs) (sigWebhookTimestamp hdrs) (sigWebhookSignature hdrs) "tampered-body")
+        (verifySignatureAt now secret (sigWebhookId hdrs) (sigWebhookTimestamp hdrs) (sigWebhookSignature hdrs) "tampered-body")
 
     -- Timestamp drift > 5 minutes → False
     let staleTs = now - 301
@@ -46,7 +48,7 @@ runSpec = do
     assertEqual
         "stale timestamp rejected"
         False
-        (verifySignature secret (sigWebhookId staleHdrs) (sigWebhookTimestamp staleHdrs) (sigWebhookSignature staleHdrs) body)
+        (verifySignatureAt now secret (sigWebhookId staleHdrs) (sigWebhookTimestamp staleHdrs) (sigWebhookSignature staleHdrs) body)
 
     -- Timestamp drift < 5 minutes → True
     let freshTs = now - 299
@@ -54,7 +56,7 @@ runSpec = do
     assertEqual
         "fresh timestamp accepted"
         True
-        (verifySignature secret (sigWebhookId freshHdrs) (sigWebhookTimestamp freshHdrs) (sigWebhookSignature freshHdrs) body)
+        (verifySignatureAt now secret (sigWebhookId freshHdrs) (sigWebhookTimestamp freshHdrs) (sigWebhookSignature freshHdrs) body)
 
     -- Constant-time comparison is used (assert via code: constEq from Data.ByteArray)
     let bs1 = "abc" :: BS.ByteString

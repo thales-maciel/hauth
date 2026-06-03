@@ -45,14 +45,15 @@ spec = do
                                 mHdrs <- readIORef resultRef
                                 case mHdrs of
                                     Nothing -> fail "server never received a request"
-                                    Just (wId, wTs, wSig, reqBody) ->
-                                        verifySignature
-                                            "test-secret-ok"
-                                            wId
-                                            wTs
-                                            wSig
-                                            reqBody
-                                            `shouldBe` True
+                                    Just (wId, wTs, wSig, reqBody) -> do
+                                        ok <-
+                                            verifySignature
+                                                "test-secret-ok"
+                                                wId
+                                                wTs
+                                                wSig
+                                                reqBody
+                                        ok `shouldBe` True
 
         it "500 response triggers retry → attempts increments, status stays 'pending'" $ \env ->
             withDatabaseConnection (testAppEnv env) \conn ->
