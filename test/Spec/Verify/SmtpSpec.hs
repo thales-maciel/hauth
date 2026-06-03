@@ -1,4 +1,4 @@
-module Spec.Verify.SmtpSpec (runSpec) where
+module Spec.Verify.SmtpSpec (spec) where
 
 import Control.Exception (bracket)
 import Data.Text (Text)
@@ -30,41 +30,33 @@ import Network.Socket (
     setSocketOption,
     socket,
  )
-import Spec.TestUtils (assertEqual)
+import Test.Hspec (Spec, describe, expectationFailure, it, shouldBe, shouldSatisfy)
 
-runSpec :: IO ()
-runSpec = do
-    testTcpRefused
-    testTcpConnects
-    testHandshakeConnects
+spec :: Spec
+spec = do
+    describe "smtp.tcp" $ do
+        it "returns CheckFail when port is not listening" $ do
+            let env = mkEnv "127.0.0.1" 1
+            outcome <- runCheck "smtp.tcp" env
+            case outcome of
+                CheckFail msg ->
+                    msg `shouldSatisfy` T.isInfixOf "connection refused"
+                other ->
+                    expectationFailure ("expected CheckFail, got " <> show other)
 
--- | TCP check against a port that is not listening should return CheckFail.
-testTcpRefused :: IO ()
-testTcpRefused = do
-    let env = mkEnv "127.0.0.1" 1
-    outcome <- runCheck "smtp.tcp" env
-    case outcome of
-        CheckFail msg ->
-            assertContainsText "refused msg" "connection refused" msg
-        other ->
-            fail ("testTcpRefused: expected CheckFail, got " <> show other)
+        it "returns CheckOk when connecting to a listening socket" $
+            withListeningSocket $ \port -> do
+                let env = mkEnv "127.0.0.1" port
+                outcome <- runCheck "smtp.tcp" env
+                outcome `shouldBe` CheckOk
 
--- | TCP check against a listening socket should return CheckOk.
-testTcpConnects :: IO ()
-testTcpConnects = do
-    withListeningSocket \port -> do
-        let env = mkEnv "127.0.0.1" port
-        outcome <- runCheck "smtp.tcp" env
-        assertEqual "tcp connects" CheckOk outcome
-
--- | Handshake check against a port that is not listening should return CheckFail.
-testHandshakeConnects :: IO ()
-testHandshakeConnects = do
-    let env = mkEnv "127.0.0.1" 1
-    outcome <- runCheck "smtp.handshake" env
-    case outcome of
-        CheckFail _ -> pure ()
-        other -> fail ("testHandshakeConnects: expected CheckFail for closed port, got " <> show other)
+    describe "smtp.handshake" $ do
+        it "returns CheckFail when port is not listening" $ do
+            let env = mkEnv "127.0.0.1" 1
+            outcome <- runCheck "smtp.handshake" env
+            case outcome of
+                CheckFail _ -> pure ()
+                other -> expectationFailure ("expected CheckFail for closed port, got " <> show other)
 
 -- | Bind a listening socket on an ephemeral port, run an action with the port number.
 withListeningSocket :: (Int -> IO a) -> IO a
@@ -73,7 +65,7 @@ withListeningSocket action = do
     case addrs of
         [] -> fail "could not resolve 127.0.0.1"
         (addr : _) ->
-            bracket (socket (addrFamily addr) Stream (addrProtocol addr)) close \sock -> do
+            bracket (socket (addrFamily addr) Stream (addrProtocol addr)) close $ \sock -> do
                 setSocketOption sock ReuseAddr 1
                 bind sock (addrAddress addr)
                 listen sock 5
@@ -98,19 +90,6 @@ runCheck name env =
     case filter (\c -> checkName c == name) checks of
         [] -> fail ("no check named " <> T.unpack name)
         (c : _) -> checkRun c env
-
-assertContainsText :: String -> Text -> Text -> IO ()
-assertContainsText label needle haystack =
-    if T.isInfixOf needle haystack
-        then pure ()
-        else
-            fail
-                ( label
-                    <> ": expected "
-                    <> show needle
-                    <> " in "
-                    <> show haystack
-                )
 
 -- | Build a minimal AppEnv pointing at the given SMTP host/port.
 mkEnv :: Text -> Int -> AppEnv
@@ -151,7 +130,7 @@ mkEnv smtpHost smtpPort =
                         , serverPort = 8080
                         }
                 }
-        , appLogger = Logger \_level _msg -> pure ()
+        , appLogger = Logger $ \_level _msg -> pure ()
         , appConnectionPool = error "smtp tests do not use the connection pool"
         , appTemplateCache = error "template cache not used in smtp checks"
         , appBackgroundServiceStatuses = error "background services not used in smtp checks"

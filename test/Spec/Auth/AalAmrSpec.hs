@@ -1,5 +1,5 @@
 -- | Pure unit tests for 'Hauth.Auth.AalAmr'.  No live database required.
-module Spec.Auth.AalAmrSpec (runSpec) where
+module Spec.Auth.AalAmrSpec (spec) where
 
 import Data.Time (UTCTime (..))
 import Data.Time.Calendar (fromGregorian)
@@ -12,7 +12,7 @@ import Hauth.Auth.AalAmr (
  )
 import Hauth.Auth.Jwt (AmrEntry (..))
 import Hauth.Session (Session (..), SessionId (..))
-import Spec.TestUtils (assertEqual)
+import Test.Hspec (Spec, describe, it, shouldBe)
 
 -- ---------------------------------------------------------------------------
 -- Fixture sessions
@@ -49,39 +49,36 @@ sessionWithFactor =
 -- Tests
 -- ---------------------------------------------------------------------------
 
-runSpec :: IO ()
-runSpec = do
-    -- aalForSession
-    assertEqual "aalForSession: no factor → aal1" "aal1" (aalForSession sessionWithNoFactor)
-    assertEqual "aalForSession: with factor → aal2" "aal2" (aalForSession sessionWithFactor)
+spec :: Spec
+spec = do
+    describe "aalForSession" $ do
+        it "returns aal1 when there is no factor" $
+            aalForSession sessionWithNoFactor `shouldBe` "aal1"
+        it "returns aal2 when a factor is attached" $
+            aalForSession sessionWithFactor `shouldBe` "aal2"
 
-    -- deriveSessionAuthState: no initiating method override
-    assertEqual
-        "deriveSessionAuthState Nothing noFactor -> aal1 [password]"
-        (SessionAuthState "aal1" ["password"])
-        (deriveSessionAuthState Nothing sessionWithNoFactor)
+    describe "deriveSessionAuthState (no initiating method override)" $ do
+        it "no factor -> aal1 [password]" $
+            deriveSessionAuthState Nothing sessionWithNoFactor
+                `shouldBe` SessionAuthState "aal1" ["password"]
+        it "with factor -> aal2 [password, totp]" $
+            deriveSessionAuthState Nothing sessionWithFactor
+                `shouldBe` SessionAuthState "aal2" ["password", "totp"]
 
-    assertEqual
-        "deriveSessionAuthState Nothing withFactor -> aal2 [password, totp]"
-        (SessionAuthState "aal2" ["password", "totp"])
-        (deriveSessionAuthState Nothing sessionWithFactor)
+    describe "deriveSessionAuthState (oauth override)" $ do
+        it "no factor -> aal1 [oauth]" $
+            deriveSessionAuthState (Just "oauth") sessionWithNoFactor
+                `shouldBe` SessionAuthState "aal1" ["oauth"]
+        it "with factor -> aal2 [oauth, totp]" $
+            deriveSessionAuthState (Just "oauth") sessionWithFactor
+                `shouldBe` SessionAuthState "aal2" ["oauth", "totp"]
 
-    -- deriveSessionAuthState: oauth override
-    assertEqual
-        "deriveSessionAuthState (Just oauth) noFactor -> aal1 [oauth]"
-        (SessionAuthState "aal1" ["oauth"])
-        (deriveSessionAuthState (Just "oauth") sessionWithNoFactor)
-
-    assertEqual
-        "deriveSessionAuthState (Just oauth) withFactor -> aal2 [oauth, totp]"
-        (SessionAuthState "aal2" ["oauth", "totp"])
-        (deriveSessionAuthState (Just "oauth") sessionWithFactor)
-
-    -- buildAmrEntries
-    let ts = 1780000000
-        entries = buildAmrEntries ["password", "totp"] ts
-    assertEqual "buildAmrEntries: list length" 2 (length entries)
-    assertEqual "buildAmrEntries: method 0" "password" (amrMethod (head entries))
-    assertEqual "buildAmrEntries: method 1" "totp" (amrMethod (entries !! 1))
-    assertEqual "buildAmrEntries: timestamp 0" (floor ts :: Integer) (amrTimestamp (head entries))
-    assertEqual "buildAmrEntries: timestamp 1" (floor ts :: Integer) (amrTimestamp (entries !! 1))
+    describe "buildAmrEntries" $
+        it "builds one entry per method, all sharing the timestamp" $ do
+            let ts = 1780000000
+                entries = buildAmrEntries ["password", "totp"] ts
+            length entries `shouldBe` 2
+            amrMethod (head entries) `shouldBe` "password"
+            amrMethod (entries !! 1) `shouldBe` "totp"
+            amrTimestamp (head entries) `shouldBe` (floor ts :: Integer)
+            amrTimestamp (entries !! 1) `shouldBe` (floor ts :: Integer)

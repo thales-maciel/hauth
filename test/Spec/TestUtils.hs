@@ -1,8 +1,4 @@
 module Spec.TestUtils (
-    assertEqual,
-    assertCliError,
-    assertConfigFields,
-    assertContains,
     testLogger,
     validConfigBytes,
     invalidConfigBytes,
@@ -13,36 +9,10 @@ module Spec.TestUtils (
 import Data.Aeson (Value (..))
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.ByteString.Char8 as BSC
-import Data.Text (Text)
-import qualified Data.Text as T
 import Data.Time.Clock (UTCTime, addUTCTime)
 import Hauth.Auth.Jwt (AccessTokenClaims (..), AmrEntry (..))
-import Hauth.CLI (CliError (..))
-import Hauth.Config (
-    Config (..),
-    ConfigError (..),
-    ConfigFieldError (..),
-    JwtConfig (..),
- )
+import Hauth.Config (JwtConfig (..))
 import Hauth.Env (Logger (..))
-
-assertEqual :: (Eq a, Show a) => String -> a -> a -> IO ()
-assertEqual label expected actual =
-    if actual == expected
-        then pure ()
-        else fail (label <> ": expected " <> show expected <> ", got " <> show actual)
-
-assertCliError :: String -> Either CliError a -> IO ()
-assertCliError _ (Left CliError{}) =
-    pure ()
-assertCliError label (Right _) =
-    fail (label <> ": expected CLI error")
-
-assertConfigFields :: String -> [String] -> Either ConfigError Config -> IO ()
-assertConfigFields label expected (Left (ConfigValidationError _ errors)) =
-    assertEqual label expected (fmap configFieldPath errors)
-assertConfigFields label _ actual =
-    fail (label <> ": expected config validation error, got " <> show actual)
 
 testLogger :: Logger
 testLogger =
@@ -132,18 +102,6 @@ invalidConfigBytes =
             , "  }"
             , "}"
             ]
-
-assertContains :: String -> Text -> Text -> IO ()
-assertContains label needle haystack =
-    if T.isInfixOf needle haystack
-        then pure ()
-        else
-            fail
-                ( label
-                    <> ": expected "
-                    <> show needle
-                    <> " to appear in body"
-                )
 
 testCfg :: JwtConfig
 testCfg =

@@ -1,4 +1,4 @@
-module Spec.OAuth.GithubSpec (runSpec) where
+module Spec.OAuth.GithubSpec (spec) where
 
 import Data.Aeson (Value (..))
 import qualified Data.Aeson as Aeson
@@ -14,155 +14,122 @@ import Hauth.OAuth.Github (
     parseGithubUser,
     pickPrimaryEmail,
  )
-import Spec.TestUtils (assertEqual)
+import Test.Hspec (Spec, describe, it, shouldBe)
 
-runSpec :: IO ()
-runSpec = do
-    -- githubProviderName
-    assertEqual "githubProviderName is 'github'" "github" githubProviderName
+spec :: Spec
+spec = do
+    describe "githubProviderName" $ do
+        it "githubProviderName is 'github'" $
+            githubProviderName `shouldBe` "github"
 
-    -- parseGithubUser: valid with email
-    let userWithEmail =
-            Aeson.object
-                [ "id" Aeson..= (1234 :: Int)
-                , "login" Aeson..= ("alice" :: T.Text)
-                , "email" Aeson..= ("a@b.com" :: T.Text)
+    describe "parseGithubUser" $ do
+        it "parseGithubUser with id and email" $ do
+            let userWithEmail =
+                    Aeson.object
+                        [ "id" Aeson..= (1234 :: Int)
+                        , "login" Aeson..= ("alice" :: T.Text)
+                        , "email" Aeson..= ("a@b.com" :: T.Text)
+                        ]
+            parseGithubUser userWithEmail `shouldBe` Right ("1234", Just "a@b.com")
+
+        it "parseGithubUser missing id returns GithubMissingId" $ do
+            let userNoId =
+                    Aeson.object
+                        ["login" Aeson..= ("x" :: T.Text)]
+            parseGithubUser userNoId `shouldBe` Left GithubMissingId
+
+        it "parseGithubUser with id but no email returns Nothing email" $ do
+            let userNoEmail =
+                    Aeson.object
+                        ["id" Aeson..= (99 :: Int)]
+            parseGithubUser userNoEmail `shouldBe` Right ("99", Nothing)
+
+        it "parseGithubUser with null email returns Nothing email" $ do
+            let userNullEmail =
+                    Aeson.object
+                        [ "id" Aeson..= (42 :: Int)
+                        , "email" Aeson..= Null
+                        ]
+            parseGithubUser userNullEmail `shouldBe` Right ("42", Nothing)
+
+        it "parseGithubUser on non-object returns GithubUserInvalid" $
+            parseGithubUser (String "oops")
+                `shouldBe` Left (GithubUserInvalid "expected a JSON object")
+
+    describe "parseGithubEmails" $ do
+        it "parseGithubEmails valid array" $ do
+            let emailsJson =
+                    Aeson.toJSON
+                        [ Aeson.object
+                            [ "email" Aeson..= ("a@b.com" :: T.Text)
+                            , "primary" Aeson..= True
+                            , "verified" Aeson..= True
+                            ]
+                        , Aeson.object
+                            [ "email" Aeson..= ("c@d.com" :: T.Text)
+                            , "primary" Aeson..= False
+                            , "verified" Aeson..= True
+                            ]
+                        ]
+            parseGithubEmails emailsJson
+                `shouldBe` Right [("a@b.com", True, True), ("c@d.com", False, True)]
+
+        it "parseGithubEmails empty array" $
+            parseGithubEmails (Aeson.toJSON ([] :: [Value]))
+                `shouldBe` Right ([] :: [(T.Text, Bool, Bool)])
+
+        it "parseGithubEmails non-array returns error" $
+            parseGithubEmails (String "nope")
+                `shouldBe` Left (GithubEmailsInvalid "expected a JSON array")
+
+    describe "pickPrimaryEmail" $ do
+        it "pickPrimaryEmail single primary+verified" $
+            pickPrimaryEmail [("primary@example.com", True, True)]
+                `shouldBe` Just "primary@example.com"
+
+        it "pickPrimaryEmail no primary, returns first verified" $
+            pickPrimaryEmail
+                [ ("unverified@example.com", False, False)
+                , ("verified@example.com", False, True)
                 ]
-    assertEqual
-        "parseGithubUser with id and email"
-        (Right ("1234", Just "a@b.com"))
-        (parseGithubUser userWithEmail)
+                `shouldBe` Just "verified@example.com"
 
-    -- parseGithubUser: missing id
-    let userNoId =
-            Aeson.object
-                ["login" Aeson..= ("x" :: T.Text)]
-    assertEqual
-        "parseGithubUser missing id returns GithubMissingId"
-        (Left GithubMissingId)
-        (parseGithubUser userNoId)
+        it "pickPrimaryEmail none verified returns Nothing" $
+            pickPrimaryEmail [("a@b.com", False, False)]
+                `shouldBe` Nothing
 
-    -- parseGithubUser: id present but no email field
-    let userNoEmail =
-            Aeson.object
-                ["id" Aeson..= (99 :: Int)]
-    assertEqual
-        "parseGithubUser with id but no email returns Nothing email"
-        (Right ("99", Nothing))
-        (parseGithubUser userNoEmail)
+        it "pickPrimaryEmail empty list returns Nothing" $
+            pickPrimaryEmail [] `shouldBe` Nothing
 
-    -- parseGithubUser: id present with null email treated as Nothing
-    let userNullEmail =
-            Aeson.object
-                [ "id" Aeson..= (42 :: Int)
-                , "email" Aeson..= Null
+        it "pickPrimaryEmail prefers primary+verified" $
+            pickPrimaryEmail
+                [ ("v@example.com", False, True)
+                , ("p@example.com", True, True)
                 ]
-    assertEqual
-        "parseGithubUser with null email returns Nothing email"
-        (Right ("42", Nothing))
-        (parseGithubUser userNullEmail)
+                `shouldBe` Just "p@example.com"
 
-    -- parseGithubUser: not an object
-    assertEqual
-        "parseGithubUser on non-object returns GithubUserInvalid"
-        (Left (GithubUserInvalid "expected a JSON object"))
-        (parseGithubUser (String "oops"))
+    describe "buildGithubTokenForm" $ do
+        let providerCfg =
+                OAuthProviderConfig
+                    { oauthProviderName = "github"
+                    , oauthProviderClientId = "my-client-id"
+                    , oauthProviderClientSecret = "my-secret"
+                    , oauthProviderDiscoveryUrl = "https://github.com/.well-known/openid-configuration"
+                    }
+            callbackUrl = "https://example.com/auth/v1/callback"
+            authCode = "auth-code-xyz"
+            form = buildGithubTokenForm providerCfg callbackUrl authCode
+            lookupForm :: BS.ByteString -> Maybe T.Text
+            lookupForm key = fmap TE.decodeUtf8 (lookup key form)
 
-    -- parseGithubEmails: valid array
-    let emailsJson =
-            Aeson.toJSON
-                [ Aeson.object
-                    [ "email" Aeson..= ("a@b.com" :: T.Text)
-                    , "primary" Aeson..= True
-                    , "verified" Aeson..= True
-                    ]
-                , Aeson.object
-                    [ "email" Aeson..= ("c@d.com" :: T.Text)
-                    , "primary" Aeson..= False
-                    , "verified" Aeson..= True
-                    ]
-                ]
-    assertEqual
-        "parseGithubEmails valid array"
-        (Right [("a@b.com", True, True), ("c@d.com", False, True)])
-        (parseGithubEmails emailsJson)
+        it "buildGithubTokenForm client_id value" $
+            lookupForm "client_id" `shouldBe` Just "my-client-id"
 
-    -- parseGithubEmails: empty array
-    assertEqual
-        "parseGithubEmails empty array"
-        (Right ([] :: [(T.Text, Bool, Bool)]))
-        (parseGithubEmails (Aeson.toJSON ([] :: [Value])))
+        it "buildGithubTokenForm client_secret value" $
+            lookupForm "client_secret" `shouldBe` Just "my-secret"
 
-    -- parseGithubEmails: not an array
-    assertEqual
-        "parseGithubEmails non-array returns error"
-        (Left (GithubEmailsInvalid "expected a JSON array"))
-        (parseGithubEmails (String "nope"))
+        it "buildGithubTokenForm code value" $
+            lookupForm "code" `shouldBe` Just authCode
 
-    -- pickPrimaryEmail: single primary+verified
-    assertEqual
-        "pickPrimaryEmail single primary+verified"
-        (Just "primary@example.com")
-        (pickPrimaryEmail [("primary@example.com", True, True)])
-
-    -- pickPrimaryEmail: no primary, one verified
-    assertEqual
-        "pickPrimaryEmail no primary, returns first verified"
-        (Just "verified@example.com")
-        ( pickPrimaryEmail
-            [ ("unverified@example.com", False, False)
-            , ("verified@example.com", False, True)
-            ]
-        )
-
-    -- pickPrimaryEmail: none verified
-    assertEqual
-        "pickPrimaryEmail none verified returns Nothing"
-        Nothing
-        (pickPrimaryEmail [("a@b.com", False, False)])
-
-    -- pickPrimaryEmail: empty list
-    assertEqual
-        "pickPrimaryEmail empty list returns Nothing"
-        Nothing
-        (pickPrimaryEmail [])
-
-    -- pickPrimaryEmail: prefers primary+verified over just verified
-    assertEqual
-        "pickPrimaryEmail prefers primary+verified"
-        (Just "p@example.com")
-        ( pickPrimaryEmail
-            [ ("v@example.com", False, True)
-            , ("p@example.com", True, True)
-            ]
-        )
-
-    -- buildGithubTokenForm
-    let providerCfg =
-            OAuthProviderConfig
-                { oauthProviderName = "github"
-                , oauthProviderClientId = "my-client-id"
-                , oauthProviderClientSecret = "my-secret"
-                , oauthProviderDiscoveryUrl = "https://github.com/.well-known/openid-configuration"
-                }
-        callbackUrl = "https://example.com/auth/v1/callback"
-        authCode = "auth-code-xyz"
-        form = buildGithubTokenForm providerCfg callbackUrl authCode
-        lookupForm :: BS.ByteString -> Maybe T.Text
-        lookupForm key = fmap TE.decodeUtf8 (lookup key form)
-    assertEqual
-        "buildGithubTokenForm client_id value"
-        (Just "my-client-id")
-        (lookupForm "client_id")
-    assertEqual
-        "buildGithubTokenForm client_secret value"
-        (Just "my-secret")
-        (lookupForm "client_secret")
-    assertEqual
-        "buildGithubTokenForm code value"
-        (Just authCode)
-        (lookupForm "code")
-    assertEqual
-        "buildGithubTokenForm redirect_uri value"
-        (Just callbackUrl)
-        (lookupForm "redirect_uri")
+        it "buildGithubTokenForm redirect_uri value" $
+            lookupForm "redirect_uri" `shouldBe` Just callbackUrl

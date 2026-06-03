@@ -1,4 +1,4 @@
-module Spec.Verify.IdentitySpec (runSpec) where
+module Spec.Verify.IdentitySpec (spec) where
 
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -14,13 +14,55 @@ import Hauth.Config (
 import Hauth.Env (AppEnv (..), Logger (..))
 import Hauth.Verify.Identity (checks, placeholderJwtSecret)
 import Hauth.Verify.Types (Check (..), CheckOutcome (..))
-import Spec.TestUtils (assertEqual)
+import Test.Hspec (Spec, describe, expectationFailure, it, shouldBe)
 
-runSpec :: IO ()
-runSpec = do
-    testJwtSecret
-    testSiteUrl
-    testRedirectAllowlist
+spec :: Spec
+spec = do
+    describe "jwt.secret check" $ do
+        it "too-short secret -> FAIL" $ do
+            r <- runNamed "jwt.secret" (withJwtSecret "shortshortshorts")
+            isFail r `shouldBe` True
+
+        it "placeholder secret -> FAIL" $ do
+            r <- runNamed "jwt.secret" (withJwtSecret placeholderJwtSecret)
+            isFail r `shouldBe` True
+
+        it "strong secret -> OK" $ do
+            r <- runNamed "jwt.secret" (withJwtSecret "aabbccddeeff00112233445566778899")
+            r `shouldBe` CheckOk
+
+    describe "site.url check" $ do
+        it "malformed -> FAIL" $ do
+            r <- runNamed "site.url" (withSiteUrl "not-a-url")
+            isFail r `shouldBe` True
+
+        it "http://example.com -> WARN" $ do
+            r <- runNamed "site.url" (withSiteUrl "http://example.com")
+            isWarn r `shouldBe` True
+
+        it "https://example.com -> OK" $ do
+            r <- runNamed "site.url" (withSiteUrl "https://example.com")
+            r `shouldBe` CheckOk
+
+        it "http://localhost:3000 -> OK" $ do
+            r <- runNamed "site.url" (withSiteUrl "http://localhost:3000")
+            r `shouldBe` CheckOk
+
+    describe "site.redirect_allowlist check" $ do
+        it "empty -> WARN" $ do
+            r <- runNamed "site.redirect_allowlist" (withRedirectUrls [])
+            isWarn r `shouldBe` True
+
+        it "duplicate entries -> WARN" $ do
+            r <-
+                runNamed
+                    "site.redirect_allowlist"
+                    (withRedirectUrls ["https://example.com/cb", "https://example.com/cb"])
+            isWarn r `shouldBe` True
+
+        it "unparseable URL -> FAIL" $ do
+            r <- runNamed "site.redirect_allowlist" (withRedirectUrls ["not-a-url"])
+            isFail r `shouldBe` True
 
 -- | Fake AppEnv that never touches the DB.
 fakeEnv :: Config -> AppEnv
@@ -78,7 +120,9 @@ withRedirectUrls us = baseConfig{configSite = (configSite baseConfig){siteAllowe
 runNamed :: Text -> Config -> IO CheckOutcome
 runNamed name cfg =
     case filter (\c -> checkName c == name) checks of
-        [] -> fail ("check not found: " <> T.unpack name)
+        [] -> do
+            expectationFailure ("check not found: " <> T.unpack name)
+            error "unreachable"
         (c : _) -> checkRun c (fakeEnv cfg)
 
 isFail :: CheckOutcome -> Bool
@@ -88,45 +132,3 @@ isFail _ = False
 isWarn :: CheckOutcome -> Bool
 isWarn (CheckWarn _) = True
 isWarn _ = False
-
--- jwt.secret checks
-
-testJwtSecret :: IO ()
-testJwtSecret = do
-    r1 <- runNamed "jwt.secret" (withJwtSecret "shortshortshorts")
-    assertEqual "jwt.secret: too short -> FAIL" True (isFail r1)
-
-    r2 <- runNamed "jwt.secret" (withJwtSecret placeholderJwtSecret)
-    assertEqual "jwt.secret: placeholder -> FAIL" True (isFail r2)
-
-    r3 <- runNamed "jwt.secret" (withJwtSecret "aabbccddeeff00112233445566778899")
-    assertEqual "jwt.secret: strong -> OK" CheckOk r3
-
--- site.url checks
-
-testSiteUrl :: IO ()
-testSiteUrl = do
-    r1 <- runNamed "site.url" (withSiteUrl "not-a-url")
-    assertEqual "site.url: malformed -> FAIL" True (isFail r1)
-
-    r2 <- runNamed "site.url" (withSiteUrl "http://example.com")
-    assertEqual "site.url: http://example.com -> WARN" True (isWarn r2)
-
-    r3 <- runNamed "site.url" (withSiteUrl "https://example.com")
-    assertEqual "site.url: https -> OK" CheckOk r3
-
-    r4 <- runNamed "site.url" (withSiteUrl "http://localhost:3000")
-    assertEqual "site.url: http://localhost -> OK" CheckOk r4
-
--- redirect_allowlist checks
-
-testRedirectAllowlist :: IO ()
-testRedirectAllowlist = do
-    r1 <- runNamed "site.redirect_allowlist" (withRedirectUrls [])
-    assertEqual "redirect_allowlist: empty -> WARN" True (isWarn r1)
-
-    r2 <- runNamed "site.redirect_allowlist" (withRedirectUrls ["https://example.com/cb", "https://example.com/cb"])
-    assertEqual "redirect_allowlist: dupes -> WARN" True (isWarn r2)
-
-    r3 <- runNamed "site.redirect_allowlist" (withRedirectUrls ["not-a-url"])
-    assertEqual "redirect_allowlist: unparseable -> FAIL" True (isFail r3)

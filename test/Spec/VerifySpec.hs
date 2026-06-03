@@ -1,4 +1,4 @@
-module Spec.VerifySpec (runSpec) where
+module Spec.VerifySpec (spec) where
 
 import Data.Aeson (Value (..), decode)
 import qualified Data.Aeson.Key as Key
@@ -13,13 +13,7 @@ import Hauth.Verify (
     formatJson,
     formatText,
  )
-import Spec.TestUtils (assertEqual)
-
-runSpec :: IO ()
-runSpec = do
-    testRunChecksAggregation
-    testFormatText
-    testFormatJson
+import Test.Hspec (Spec, describe, expectationFailure, it, shouldBe, shouldSatisfy)
 
 -- | A pure check that always returns CheckOk.
 okCheck :: Text -> Check
@@ -59,70 +53,64 @@ buildReport checks = do
         failed = length [() | (_, CheckFail _) <- results]
     pure Report{reportResults = results, reportPassed = passed, reportWarned = warned, reportFailed = failed}
 
-testRunChecksAggregation :: IO ()
-testRunChecksAggregation = do
-    -- All ok
-    r1 <- buildReport [okCheck "a", okCheck "b"]
-    assertEqual "all ok: passed" 2 (reportPassed r1)
-    assertEqual "all ok: warned" 0 (reportWarned r1)
-    assertEqual "all ok: failed" 0 (reportFailed r1)
-
-    -- Mix of ok, warn, fail
-    r2 <- buildReport [okCheck "a", warnCheck "b" "slow", failCheck "c" "down"]
-    assertEqual "mix: passed" 1 (reportPassed r2)
-    assertEqual "mix: warned" 1 (reportWarned r2)
-    assertEqual "mix: failed" 1 (reportFailed r2)
-
-    -- All fail
-    r3 <- buildReport [failCheck "x" "err1", failCheck "y" "err2"]
-    assertEqual "all fail: passed" 0 (reportPassed r3)
-    assertEqual "all fail: failed" 2 (reportFailed r3)
-
-    -- Empty
-    r4 <- buildReport []
-    assertEqual "empty: passed" 0 (reportPassed r4)
-    assertEqual "empty: results" 0 (length (reportResults r4))
-
-testFormatText :: IO ()
-testFormatText = do
-    r <- buildReport [okCheck "verify.framework", warnCheck "db.connect" "slow", failCheck "jwt.key" "missing"]
-    let txt = formatText r
-    assertContainsT "text has ok" "ok  " txt
-    assertContainsT "text has warn" "warn" txt
-    assertContainsT "text has FAIL" "FAIL" txt
-    assertContainsT "text has check name" "verify.framework" txt
-    assertContainsT "text has summary" "passed:" txt
-    assertContainsT "text has failed count" "failed: 1" txt
-
-testFormatJson :: IO ()
-testFormatJson = do
-    r <- buildReport [okCheck "verify.framework", failCheck "db.connect" "unreachable"]
-    let bs = formatJson r
-    case decode (BSL.fromStrict bs) of
-        Nothing -> fail "formatJson: invalid JSON"
-        Just (Object obj) -> do
-            assertHasKey "passed" obj
-            assertHasKey "warned" obj
-            assertHasKey "failed" obj
-            assertHasKey "checks" obj
-        Just _ ->
-            fail "formatJson: expected JSON object"
-
-assertContainsT :: String -> Text -> Text -> IO ()
-assertContainsT label needle haystack =
-    if T.isInfixOf needle haystack
-        then pure ()
-        else
-            fail
-                ( label
-                    <> ": expected "
-                    <> show needle
-                    <> " in "
-                    <> show haystack
-                )
-
 assertHasKey :: String -> KeyMap.KeyMap Value -> IO ()
 assertHasKey key obj =
     case KeyMap.lookup (Key.fromString key) obj of
-        Nothing -> fail ("formatJson: missing key " <> show key)
+        Nothing -> expectationFailure ("formatJson: missing key " <> show key)
         Just _ -> pure ()
+
+spec :: Spec
+spec = do
+    describe "runChecks aggregation" $ do
+        it "all ok" $ do
+            r1 <- buildReport [okCheck "a", okCheck "b"]
+            reportPassed r1 `shouldBe` 2
+            reportWarned r1 `shouldBe` 0
+            reportFailed r1 `shouldBe` 0
+        it "mix of ok, warn, fail" $ do
+            r2 <- buildReport [okCheck "a", warnCheck "b" "slow", failCheck "c" "down"]
+            reportPassed r2 `shouldBe` 1
+            reportWarned r2 `shouldBe` 1
+            reportFailed r2 `shouldBe` 1
+        it "all fail" $ do
+            r3 <- buildReport [failCheck "x" "err1", failCheck "y" "err2"]
+            reportPassed r3 `shouldBe` 0
+            reportFailed r3 `shouldBe` 2
+        it "empty" $ do
+            r4 <- buildReport []
+            reportPassed r4 `shouldBe` 0
+            length (reportResults r4) `shouldBe` 0
+
+    describe "formatText" $ do
+        it "renders ok marker" $ do
+            r <- buildReport [okCheck "verify.framework", warnCheck "db.connect" "slow", failCheck "jwt.key" "missing"]
+            formatText r `shouldSatisfy` T.isInfixOf "ok  "
+        it "renders warn marker" $ do
+            r <- buildReport [okCheck "verify.framework", warnCheck "db.connect" "slow", failCheck "jwt.key" "missing"]
+            formatText r `shouldSatisfy` T.isInfixOf "warn"
+        it "renders FAIL marker" $ do
+            r <- buildReport [okCheck "verify.framework", warnCheck "db.connect" "slow", failCheck "jwt.key" "missing"]
+            formatText r `shouldSatisfy` T.isInfixOf "FAIL"
+        it "includes check name" $ do
+            r <- buildReport [okCheck "verify.framework", warnCheck "db.connect" "slow", failCheck "jwt.key" "missing"]
+            formatText r `shouldSatisfy` T.isInfixOf "verify.framework"
+        it "includes summary header" $ do
+            r <- buildReport [okCheck "verify.framework", warnCheck "db.connect" "slow", failCheck "jwt.key" "missing"]
+            formatText r `shouldSatisfy` T.isInfixOf "passed:"
+        it "includes failed count" $ do
+            r <- buildReport [okCheck "verify.framework", warnCheck "db.connect" "slow", failCheck "jwt.key" "missing"]
+            formatText r `shouldSatisfy` T.isInfixOf "failed: 1"
+
+    describe "formatJson" $
+        it "encodes passed, warned, failed, checks keys" $ do
+            r <- buildReport [okCheck "verify.framework", failCheck "db.connect" "unreachable"]
+            let bs = formatJson r
+            case decode (BSL.fromStrict bs) of
+                Nothing -> expectationFailure "formatJson: invalid JSON"
+                Just (Object obj) -> do
+                    assertHasKey "passed" obj
+                    assertHasKey "warned" obj
+                    assertHasKey "failed" obj
+                    assertHasKey "checks" obj
+                Just _ ->
+                    expectationFailure "formatJson: expected JSON object"

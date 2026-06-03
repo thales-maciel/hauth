@@ -1,4 +1,4 @@
-module Spec.OAuthSpec (runSpec) where
+module Spec.OAuthSpec (spec) where
 
 import Data.Aeson (Object, Value (..))
 import qualified Data.Aeson as Aeson
@@ -19,10 +19,10 @@ import Hauth.OAuth (
     lookupProvider,
     validateRedirectTo,
  )
-import Spec.TestUtils (assertContains, assertEqual)
+import Test.Hspec (Spec, describe, expectationFailure, it, shouldBe, shouldSatisfy)
 
-runSpec :: IO ()
-runSpec = do
+spec :: Spec
+spec = do
     let oauthCfg =
             OAuthConfig
                 { oauthProviders =
@@ -40,79 +40,121 @@ runSpec = do
                         }
                     ]
                 }
-    case lookupProvider oauthCfg "google" of
-        Left e -> fail ("lookupProvider exact match: expected Right, got Left: " <> show e)
-        Right cfg -> assertEqual "lookupProvider exact match name" "google" (oauthProviderName cfg)
-    case lookupProvider oauthCfg "GOOGLE" of
-        Left e -> fail ("lookupProvider case-insensitive: expected Right, got Left: " <> show e)
-        Right cfg -> assertEqual "lookupProvider GOOGLE match name" "google" (oauthProviderName cfg)
-    case lookupProvider oauthCfg "facebook" of
-        Left (OAuthUnknownProvider n) ->
-            assertEqual "lookupProvider unknown provider name" "facebook" n
-        Left other ->
-            fail ("lookupProvider unknown: expected OAuthUnknownProvider, got " <> show other)
-        Right _ ->
-            fail "lookupProvider unknown: expected Left, got Right"
-    let oauthSiteCfg =
-            SiteConfig
-                { siteUrl = "https://app.example.com"
-                , siteAllowedRedirectUrls = ["https://app.example.com/auth/callback", "https://app.example.com/login"]
-                }
-    assertEqual
-        "validateRedirectTo allowed"
-        (Right "https://app.example.com/auth/callback")
-        (validateRedirectTo oauthSiteCfg "https://app.example.com/auth/callback")
-    case validateRedirectTo oauthSiteCfg "https://evil.example.com/steal" of
-        Left _ -> pure ()
-        Right _ -> fail "validateRedirectTo disallowed: expected Left, got Right"
-    stateA <- generateState
-    assertEqual "generateState non-empty" True (not (T.null stateA))
-    assertEqual "generateState length 43" 43 (T.length stateA)
-    stateB <- generateState
-    assertEqual "generateState two calls differ" True (stateA /= stateB)
-    nowForExpiry <- getCurrentTime
-    let createdRecently = addUTCTime (negate 300) nowForExpiry
-        createdLongAgo = addUTCTime (negate 1200) nowForExpiry
-    assertEqual
-        "isFlowStateExpired 5 min ago not expired"
-        False
-        (isFlowStateExpired nowForExpiry createdRecently 600)
-    assertEqual
-        "isFlowStateExpired 20 min ago expired"
-        True
-        (isFlowStateExpired nowForExpiry createdLongAgo 600)
-    let stubCfg =
-            OAuthProviderConfig
-                { oauthProviderName = "google"
-                , oauthProviderClientId = "my-client-id"
-                , oauthProviderClientSecret = "my-secret"
-                , oauthProviderDiscoveryUrl = "https://accounts.google.com/.well-known/openid-configuration"
-                }
-        stubUrl = buildStubAuthorizeUrl stubCfg "test-state-token" "https://app.example.com/callback" "https://app.example.com/login"
-    assertContains "buildStubAuthorizeUrl state=" "state=" stubUrl
-    assertContains "buildStubAuthorizeUrl client_id=" "client_id=" stubUrl
-    assertContains "buildStubAuthorizeUrl redirect_uri=" "redirect_uri=" stubUrl
-    assertContains "buildStubAuthorizeUrl state value" "test-state-token" stubUrl
-    assertContains "buildStubAuthorizeUrl client_id value" "my-client-id" stubUrl
-    let oauthResp =
-            OAuthAuthorizeResponse
-                { oauthAuthorizeUrl = "https://accounts.google.com/o/oauth2/auth?state=xyz"
-                , oauthAuthorizeState = "xyz"
-                }
-    case Aeson.decode (Aeson.encode oauthResp) of
-        Nothing -> fail "OAuthAuthorizeResponse: JSON decode failed"
-        Just (obj :: Object) -> do
-            if KeyMap.member "url" obj
-                then pure ()
-                else fail "OAuthAuthorizeResponse JSON: missing 'url' key"
-            if KeyMap.member "state" obj
-                then pure ()
-                else fail "OAuthAuthorizeResponse JSON: missing 'state' key"
-            assertEqual
-                "OAuthAuthorizeResponse url value"
-                (Just (String "https://accounts.google.com/o/oauth2/auth?state=xyz"))
-                (KeyMap.lookup "url" obj)
-            assertEqual
-                "OAuthAuthorizeResponse state value"
-                (Just (String "xyz"))
-                (KeyMap.lookup "state" obj)
+
+    describe "lookupProvider" $ do
+        it "lookupProvider exact match name" $
+            case lookupProvider oauthCfg "google" of
+                Left e -> expectationFailure ("expected Right, got Left: " <> show e)
+                Right cfg -> oauthProviderName cfg `shouldBe` "google"
+
+        it "lookupProvider GOOGLE match name (case-insensitive)" $
+            case lookupProvider oauthCfg "GOOGLE" of
+                Left e -> expectationFailure ("expected Right, got Left: " <> show e)
+                Right cfg -> oauthProviderName cfg `shouldBe` "google"
+
+        it "lookupProvider unknown provider name" $
+            case lookupProvider oauthCfg "facebook" of
+                Left (OAuthUnknownProvider n) ->
+                    n `shouldBe` "facebook"
+                Left other ->
+                    expectationFailure ("expected OAuthUnknownProvider, got " <> show other)
+                Right _ ->
+                    expectationFailure "expected Left, got Right"
+
+    describe "validateRedirectTo" $ do
+        let oauthSiteCfg =
+                SiteConfig
+                    { siteUrl = "https://app.example.com"
+                    , siteAllowedRedirectUrls = ["https://app.example.com/auth/callback", "https://app.example.com/login"]
+                    }
+
+        it "validateRedirectTo allowed" $
+            validateRedirectTo oauthSiteCfg "https://app.example.com/auth/callback"
+                `shouldBe` Right "https://app.example.com/auth/callback"
+
+        it "validateRedirectTo disallowed returns Left" $
+            case validateRedirectTo oauthSiteCfg "https://evil.example.com/steal" of
+                Left _ -> pure ()
+                Right _ -> expectationFailure "expected Left, got Right"
+
+    describe "generateState" $ do
+        it "generateState non-empty" $ do
+            stateA <- generateState
+            not (T.null stateA) `shouldBe` True
+
+        it "generateState length 43" $ do
+            stateA <- generateState
+            T.length stateA `shouldBe` 43
+
+        it "generateState two calls differ" $ do
+            stateA <- generateState
+            stateB <- generateState
+            (stateA /= stateB) `shouldBe` True
+
+    describe "isFlowStateExpired" $ do
+        it "isFlowStateExpired 5 min ago not expired" $ do
+            nowForExpiry <- getCurrentTime
+            let createdRecently = addUTCTime (negate 300) nowForExpiry
+            isFlowStateExpired nowForExpiry createdRecently 600 `shouldBe` False
+
+        it "isFlowStateExpired 20 min ago expired" $ do
+            nowForExpiry <- getCurrentTime
+            let createdLongAgo = addUTCTime (negate 1200) nowForExpiry
+            isFlowStateExpired nowForExpiry createdLongAgo 600 `shouldBe` True
+
+    describe "buildStubAuthorizeUrl" $ do
+        let stubCfg =
+                OAuthProviderConfig
+                    { oauthProviderName = "google"
+                    , oauthProviderClientId = "my-client-id"
+                    , oauthProviderClientSecret = "my-secret"
+                    , oauthProviderDiscoveryUrl = "https://accounts.google.com/.well-known/openid-configuration"
+                    }
+            stubUrl = buildStubAuthorizeUrl stubCfg "test-state-token" "https://app.example.com/callback" "https://app.example.com/login"
+
+        it "buildStubAuthorizeUrl state=" $
+            stubUrl `shouldSatisfy` T.isInfixOf "state="
+
+        it "buildStubAuthorizeUrl client_id=" $
+            stubUrl `shouldSatisfy` T.isInfixOf "client_id="
+
+        it "buildStubAuthorizeUrl redirect_uri=" $
+            stubUrl `shouldSatisfy` T.isInfixOf "redirect_uri="
+
+        it "buildStubAuthorizeUrl state value" $
+            stubUrl `shouldSatisfy` T.isInfixOf "test-state-token"
+
+        it "buildStubAuthorizeUrl client_id value" $
+            stubUrl `shouldSatisfy` T.isInfixOf "my-client-id"
+
+    describe "OAuthAuthorizeResponse JSON" $ do
+        let oauthResp =
+                OAuthAuthorizeResponse
+                    { oauthAuthorizeUrl = "https://accounts.google.com/o/oauth2/auth?state=xyz"
+                    , oauthAuthorizeState = "xyz"
+                    }
+
+        it "has url key" $
+            case Aeson.decode (Aeson.encode oauthResp) of
+                Nothing -> expectationFailure "JSON decode failed"
+                Just (obj :: Object) ->
+                    KeyMap.member "url" obj `shouldBe` True
+
+        it "has state key" $
+            case Aeson.decode (Aeson.encode oauthResp) of
+                Nothing -> expectationFailure "JSON decode failed"
+                Just (obj :: Object) ->
+                    KeyMap.member "state" obj `shouldBe` True
+
+        it "url value" $
+            case Aeson.decode (Aeson.encode oauthResp) of
+                Nothing -> expectationFailure "JSON decode failed"
+                Just (obj :: Object) ->
+                    KeyMap.lookup "url" obj
+                        `shouldBe` Just (String "https://accounts.google.com/o/oauth2/auth?state=xyz")
+
+        it "state value" $
+            case Aeson.decode (Aeson.encode oauthResp) of
+                Nothing -> expectationFailure "JSON decode failed"
+                Just (obj :: Object) ->
+                    KeyMap.lookup "state" obj `shouldBe` Just (String "xyz")
