@@ -1,0 +1,57 @@
+name: Docs
+
+# Docs-only PRs are excluded from the main CI workflow via paths-ignore
+# (see .github/workflows/ci.yml). This workflow gives them at least a
+# cheap validation pass so operator-facing markdown can't ship totally
+# unchecked.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.md'
+      - 'docs/**'
+      - '.github/workflows/docs.yml'
+  pull_request:
+    paths:
+      - '**.md'
+      - 'docs/**'
+      - '.github/workflows/docs.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate docs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reject unresolved conflict markers
+        # Same scan the main CI workflow runs; included here so docs-only
+        # PRs (which skip the main workflow) still catch this.
+        run: |
+          if grep -rnE '^(<<<<<<<|>>>>>>>) ' docs README.md 2>/dev/null; then
+            echo "::error::Unresolved conflict markers found." >&2
+            exit 1
+          fi
+
+      - name: Link check
+        uses: lycheeverse/lychee-action@v2
+        with:
+          # `--no-progress` keeps the log tidy in CI. `--accept` whitelists
+          # plain redirects (3xx) that some sites use for canonical URLs.
+          args: >-
+            --no-progress
+            --accept 200,204,206,301,302,308,403,429
+            --max-concurrency 8
+            './docs/**/*.md'
+            './README.md'
+          fail: true
