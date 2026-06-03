@@ -30,7 +30,6 @@ fakeEnv cfg =
         , appLogger = Logger \_level _msg -> pure ()
         , appConnectionPool = error "connection pool not used in identity checks"
         , appTemplateCache = error "template cache not used in identity checks"
-        , appEnvWebhookWorker = Nothing
         }
 
 baseConfig :: Config

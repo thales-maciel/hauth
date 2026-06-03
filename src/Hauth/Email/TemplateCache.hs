@@ -1,11 +1,29 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE TemplateHaskell #-}
 
+{- | Email template cache.
+
+Construction is split into two pieces so callers can build a usable cache
+during 'AppEnv' setup (cheap, no DB I/O, embedded-only fallback) and start the
+DB-backed LISTEN/NOTIFY listener after migrations have run:
+
+* 'newTemplateCache' — pure data structure; 'lookupTemplate' against this
+  always succeeds via the embedded fallback.
+* 'startTemplateCacheListener' — opens a dedicated Postgres connection, loads
+  rows from @auth.email_templates@, and spawns a managed thread that reloads
+  on @email_templates_updated@ NOTIFY. Returns an opaque handle whose
+  lifetime is bounded by 'stopTemplateCacheListener'.
+
+This separation removes the eager-startup coupling that previously forced
+@createAppEnv@ to tolerate an un-migrated schema.
+-}
 module Hauth.Email.TemplateCache (
     Template (..),
     TemplateCache,
+    TemplateCacheListener,
     newTemplateCache,
-    stopTemplateCache,
+    startTemplateCacheListener,
+    stopTemplateCacheListener,
     lookupTemplate,
 ) where
 
@@ -39,15 +57,23 @@ data Template = Template
     }
     deriving stock (Eq, Show)
 
-{- | Opaque cache backed by an in-memory map plus a managed background thread
-that LISTENs for @email_templates_updated@ NOTIFY. Both the thread and its
-dedicated Postgres connection are owned by the cache and torn down by
-'stopTemplateCache' — they must NOT outlive 'destroyAppEnv'.
+{- | Read-side cache: an in-memory map updated by a background listener (when
+one is running). 'lookupTemplate' against an empty map falls back to the
+TH-embedded template bundle, so a cache without a listener is still usable
+— it just never picks up DB overrides.
 -}
-data TemplateCache = TemplateCache
+newtype TemplateCache = TemplateCache
     { cacheRef :: IORef (Map Text Template)
-    , cacheThread :: Async ()
-    , cacheConnRef :: IORef (Maybe Connection)
+    }
+
+{- | Handle for the DB-backed listener thread + its dedicated Postgres
+connection. Created by 'startTemplateCacheListener'; must be released by
+'stopTemplateCacheListener' — neither the thread nor the connection are
+GC-rooted from anywhere else.
+-}
+data TemplateCacheListener = TemplateCacheListener
+    { listenerThread :: Async ()
+    , listenerConnRef :: IORef (Maybe Connection)
     }
 
 -- | TH-embedded template files for fallback.
@@ -73,9 +99,8 @@ embeddedTemplate name = do
             }
 
 {- | Load all rows from auth.email_templates. Returns an empty map if the
-table doesn't exist yet (pre-migration deployments / unit-test setups
-without a migrated schema). The 'lookupTemplate' fallback then serves
-embedded defaults.
+table doesn't exist yet (pre-migration deployments / test setups without a
+migrated schema). The 'lookupTemplate' fallback then serves embedded defaults.
 -}
 loadFromDb :: Connection -> IO (Map Text Template)
 loadFromDb conn = do
@@ -94,47 +119,55 @@ loadFromDb conn = do
                     | (name, subj, txt, html) <- rows
                     ]
 
-{- | Create a new 'TemplateCache' backed by the DB, with LISTEN/NOTIFY reload.
-Spawns a managed background thread that listens on
-@email_templates_updated@. Hold the returned value in 'AppEnv' and pair it
-with 'stopTemplateCache' in 'destroyAppEnv' — the thread and connection
-are not GC-rooted from anywhere else.
-
-If the initial connection fails (DB unreachable; operator hasn't migrated
-yet; unit-test environment with a bogus URL), the cache starts empty and
-'lookupTemplate' falls back to embedded defaults. The managed reconnect
-loop will pick up the DB once it comes online.
+{- | Create an empty 'TemplateCache'. Pure construction — no I/O beyond
+allocating an 'IORef'. Lookups against the returned cache will always fall
+through to the embedded template bundle until 'startTemplateCacheListener'
+populates the map from the DB.
 -}
-newTemplateCache :: Text -> IO TemplateCache
-newTemplateCache url = do
-    ref <- newIORef Map.empty
+newTemplateCache :: IO TemplateCache
+newTemplateCache = TemplateCache <$> newIORef Map.empty
+
+{- | Open a Postgres connection, load the initial template rows, and spawn a
+managed background thread that reloads on @email_templates_updated@ NOTIFY.
+
+Tolerates an unreachable DB at startup (operator hasn't migrated yet; tests
+without a Postgres harness): the cache stays empty, lookups fall back to
+embedded, and the managed reconnect loop picks up the DB when it comes online.
+
+The returned handle must be released by 'stopTemplateCacheListener'.
+-}
+startTemplateCacheListener :: Text -> TemplateCache -> IO TemplateCacheListener
+startTemplateCacheListener url TemplateCache{cacheRef = ref} = do
     connRef <- newIORef Nothing
     initial <- tryNoAsync (connectPostgreSQL (TE.encodeUtf8 url))
-    case initial of
+    t <- case initial of
         Right conn -> do
             writeIORef connRef (Just conn)
             loadInto ref conn
-            t <- async (loopWithConn ref connRef url conn)
-            pure (TemplateCache ref t connRef)
-        Left _ -> do
-            t <- async (reconnect ref connRef url)
-            pure (TemplateCache ref t connRef)
+            async (loopWithConn ref connRef url conn)
+        Left _ ->
+            async (reconnect ref connRef url)
+    pure
+        TemplateCacheListener
+            { listenerThread = t
+            , listenerConnRef = connRef
+            }
 
 {- | Cancel the listener thread and close its dedicated connection. Idempotent.
-Must be called by 'destroyAppEnv' — otherwise every 'createAppEnv' leaks a
-live thread + Postgres session.
+Must be called when the owning 'AppEnv' is shut down — otherwise the listener
+thread + Postgres session leak.
 -}
-stopTemplateCache :: TemplateCache -> IO ()
-stopTemplateCache TemplateCache{cacheThread, cacheConnRef} = do
-    cancel cacheThread
+stopTemplateCacheListener :: TemplateCacheListener -> IO ()
+stopTemplateCacheListener TemplateCacheListener{listenerThread, listenerConnRef} = do
+    cancel listenerThread
     -- bracket_ inside loopWithConn closes the conn on cancel-induced exit and
-    -- writes Nothing to cacheConnRef; the lookup below is defence-in-depth for
-    -- the narrow window between connect-success and bracket entry.
-    mConn <- readIORef cacheConnRef
+    -- writes Nothing to listenerConnRef; the lookup below is defence-in-depth
+    -- for the narrow window between connect-success and bracket entry.
+    mConn <- readIORef listenerConnRef
     case mConn of
         Just c -> do
             _ <- tryNoAsync (close c)
-            writeIORef cacheConnRef Nothing
+            writeIORef listenerConnRef Nothing
         Nothing -> pure ()
 
 loadInto :: IORef (Map Text Template) -> Connection -> IO ()

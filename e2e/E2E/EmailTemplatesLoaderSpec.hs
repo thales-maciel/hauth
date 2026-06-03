@@ -7,7 +7,6 @@ import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, bracket_, try)
 import Database.PostgreSQL.Simple (Only (..), execute)
 import E2E.Helpers (TestEnv (..))
-import Hauth.Config (Config (..), DatabaseConfig (..))
 import Hauth.Email.TemplateCache (
     Template (..),
     lookupTemplate,
@@ -45,7 +44,6 @@ spec = do
                         templateSubject t `shouldBe` "Password reset requested"
 
         it "falls back to embedded template when DB row is absent" \env -> do
-            let dbUrl = databaseUrl (configDatabase (testConfig env))
             withDatabaseConnection (testAppEnv env) \conn ->
                 bracket_
                     (execute conn "DELETE FROM auth.email_templates WHERE name = 'invite'" ())
@@ -57,8 +55,9 @@ spec = do
                         ()
                     )
                     do
-                        -- Fresh cache initialised while the invite row is absent.
-                        freshCache <- newTemplateCache dbUrl
+                        -- Fresh empty cache (no listener) — lookups go straight to
+                        -- the embedded fallback regardless of DB state.
+                        freshCache <- newTemplateCache
                         t <- lookupTemplate freshCache "invite"
                         -- Subject comes from the embedded templates/invite.subject file.
                         templateSubject t `shouldBe` "You've been invited"

@@ -43,6 +43,8 @@ import Hauth.Env (
     Logger (..),
     createAppEnvWithLogger,
     destroyAppEnv,
+    startBackgroundServices,
+    stopBackgroundServices,
     withDatabaseConnection,
  )
 import Hauth.Migrate (runMigrate)
@@ -68,8 +70,10 @@ data TestEnv = TestEnv
     }
 
 -- Builds Config from HAUTH_E2E_DATABASE_URL (defaulting to a local mise URL),
--- constructs AppEnv, runs migrate up, hands control to the action, then tears
--- AppEnv down. The body is responsible for truncating between tests.
+-- constructs AppEnv, runs migrate up (BEFORE starting background services so
+-- the worker + template-cache listener don't race the schema), hands control
+-- to the action, tears services + AppEnv down. The body is responsible for
+-- truncating between tests.
 withTestEnv :: (TestEnv -> IO a) -> IO a
 withTestEnv action = do
     dbUrl <-
@@ -78,9 +82,11 @@ withTestEnv action = do
     let cfg = testingConfig dbUrl
     appEnv <- createAppEnvWithLogger silentLogger cfg
     _ <- runMigrate cfg MigrateUp
+    services <- startBackgroundServices appEnv
     let env = TestEnv appEnv cfg
     truncateAll env
     result <- action env
+    stopBackgroundServices services
     destroyAppEnv appEnv
     pure result
 

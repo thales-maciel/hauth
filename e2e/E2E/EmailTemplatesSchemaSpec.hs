@@ -10,7 +10,6 @@ there is no silent skip.
 -}
 module E2E.EmailTemplatesSchemaSpec (spec) where
 
-import Control.Exception (bracket)
 import Data.List (sort)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -20,7 +19,6 @@ import Hauth.Email.TemplateCache (
     Template (..),
     lookupTemplate,
     newTemplateCache,
-    stopTemplateCache,
  )
 import Hauth.Env (withDatabaseConnection)
 import Test.Hspec (SpecWith, describe, it, shouldBe)
@@ -78,14 +76,11 @@ checkRow conn embed name = do
 -- Embedded defaults via a disconnected cache
 -- ---------------------------------------------------------------------------
 
-{- | Start a 'TemplateCache' pointed at a deliberately unreachable URL so it
-never connects to the database.  'lookupTemplate' then serves the
-TH-embedded fallback for every known name — exactly the content that
-migration 0011 should have written into the live schema.
+{- | Build a 'TemplateCache' with no DB listener attached. Lookups against
+this cache always fall through to the TH-embedded bundle — exactly the
+content that migration 0011 should have written into the live schema.
 -}
 withEmbeddedCache :: ((Text -> IO Template) -> IO a) -> IO a
-withEmbeddedCache action =
-    bracket
-        (newTemplateCache "postgresql://nobody@127.0.0.1:1/nonexistent")
-        stopTemplateCache
-        (action . lookupTemplate)
+withEmbeddedCache action = do
+    cache <- newTemplateCache
+    action (lookupTemplate cache)
