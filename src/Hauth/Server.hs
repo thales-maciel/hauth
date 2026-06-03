@@ -33,7 +33,15 @@ import Hauth.API
 import Hauth.API.Auth
 import Hauth.Auth.Jwt (AccessTokenClaims (..), validateAccessToken)
 import Hauth.Config (Config (..), ServerConfig (..))
-import Hauth.Env (AppEnv (..), LogLevel (..), createAppEnv, destroyAppEnv, logMessage)
+import Hauth.Env (
+    AppEnv (..),
+    LogLevel (..),
+    createAppEnv,
+    destroyAppEnv,
+    logMessage,
+    startBackgroundServices,
+    stopBackgroundServices,
+ )
 import Hauth.Server.Admin (
     adminCreateUserHandler,
     adminDeleteUserHandler,
@@ -111,14 +119,15 @@ type AuthContext =
 
 runServer :: Config -> IO ()
 runServer config =
-    bracket (createAppEnv config) destroyAppEnv \env@AppEnv{appConfig, appLogger} -> do
-        let Config{configServer = ServerConfig{serverHost, serverPort}} = appConfig
-        logMessage appLogger LogInfo ("hauth listening on http://" <> serverHost <> ":" <> T.pack (show serverPort))
-        Warp.runSettings
-            ( Warp.setHost (fromString (T.unpack serverHost)) $
-                Warp.setPort serverPort Warp.defaultSettings
-            )
-            (app env)
+    bracket (createAppEnv config) destroyAppEnv \env@AppEnv{appConfig, appLogger} ->
+        bracket (startBackgroundServices env) stopBackgroundServices \_ -> do
+            let Config{configServer = ServerConfig{serverHost, serverPort}} = appConfig
+            logMessage appLogger LogInfo ("hauth listening on http://" <> serverHost <> ":" <> T.pack (show serverPort))
+            Warp.runSettings
+                ( Warp.setHost (fromString (T.unpack serverHost)) $
+                    Warp.setPort serverPort Warp.defaultSettings
+                )
+                (app env)
 
 app :: AppEnv -> Application
 app env =
