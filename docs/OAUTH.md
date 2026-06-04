@@ -47,6 +47,48 @@ reading the numeric `id` as the stable provider user id and the primary
 verified email.
 
 
+## Status and limitations
+
+hauth's OAuth surface is deliberately narrow today. Knowing the edges up
+front is cheaper than discovering them at integration time.
+
+**Implemented:**
+
+- Authorization-code flow start (`GET /authorize`), with a 10-minute
+  single-use state token stored server-side in `auth.flow_state`.
+- Code-for-token exchange against each provider's hardcoded token endpoint.
+- Userinfo fetch and identity persistence into `auth.identities`.
+- Session issuance returning a `SessionResponse` indistinguishable from a
+  password login.
+- Built-in support for two providers: `google` and `github`.
+
+**Not implemented (deferred to v0.3 or later):**
+
+- **OIDC discovery-document fetch.** hauth does not load
+  `.well-known/openid-configuration` at startup or per-request. The
+  authorization, token, and userinfo endpoints used for Google and GitHub
+  are compiled into `src/Hauth/OAuth/Google.hs` and
+  `src/Hauth/OAuth/Github.hs`.
+- **Per-provider scope configuration.** The authorization URL hauth emits
+  always carries `scope=openid email profile`, regardless of provider.
+  Google honors all three; GitHub ignores them in favor of the scopes
+  associated with the OAuth App. There is no config knob to change this in
+  v0.2.
+- **Arbitrary OIDC providers via config.** Adding a third provider
+  requires the source-level steps described in "Adding new providers" at
+  the bottom of this page. v0.3 plans a config-only provider type.
+
+**About the `discovery_url` field.** Despite its name, hauth does **not**
+treat this URL as an OIDC discovery document to be fetched. It is the
+provider's authorization endpoint base — the URL the browser is sent to
+when an end user clicks "Sign in with Google/GitHub". hauth appends OAuth
+query parameters (`state`, `client_id`, `redirect_uri`, `response_type`,
+`scope`) to whatever you put here. The field name predates the v0.1
+implementation and will be revisited alongside real OIDC discovery
+support; until then, the table in the next section spells out exactly
+what to paste.
+
+
 ## Configuring providers in `config.json`
 
 Add each provider to the `oauth.providers` array. Each entry has four fields:
@@ -79,7 +121,7 @@ Field reference:
 | `name` | yes | Provider identifier. Must be `"google"` or `"github"` for the built-in providers. Case-insensitive in lookup. |
 | `client_id` | yes | OAuth client/app id from the provider's developer console. |
 | `client_secret` | yes | OAuth client secret from the provider's developer console. |
-| `discovery_url` | yes | The provider's authorization endpoint. hauth uses this as the base URL when building the authorization redirect. For Google use `https://accounts.google.com/o/oauth2/v2/auth`; for GitHub use `https://github.com/login/oauth/authorize`. |
+| `discovery_url` | yes | The provider's authorization endpoint. hauth uses this as the base URL when building the authorization redirect. For Google use `https://accounts.google.com/o/oauth2/v2/auth`; for GitHub use `https://github.com/login/oauth/authorize`. Despite the name, hauth does not fetch this URL as an OIDC discovery document — see "Status and limitations" above. |
 
 After editing `config.json`, restart `hauth serve`. There is no hot-reload in v0.1.
 

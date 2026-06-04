@@ -103,29 +103,49 @@ spec = do
             isFlowStateExpired nowForExpiry createdLongAgo 600 `shouldBe` True
 
     describe "buildStubAuthorizeUrl" $ do
-        let stubCfg =
-                OAuthProviderConfig
-                    { oauthProviderName = "google"
-                    , oauthProviderClientId = "my-client-id"
-                    , oauthProviderClientSecret = "my-secret"
-                    , oauthProviderDiscoveryUrl = "https://accounts.google.com/.well-known/openid-configuration"
-                    }
-            stubUrl = buildStubAuthorizeUrl stubCfg "test-state-token" "https://app.example.com/callback" "https://app.example.com/login"
+        let providers =
+                [
+                    ( "google"
+                    , OAuthProviderConfig
+                        { oauthProviderName = "google"
+                        , oauthProviderClientId = "google-client-id"
+                        , oauthProviderClientSecret = "google-secret"
+                        , oauthProviderDiscoveryUrl = "https://accounts.google.com/o/oauth2/v2/auth"
+                        }
+                    )
+                ,
+                    ( "github"
+                    , OAuthProviderConfig
+                        { oauthProviderName = "github"
+                        , oauthProviderClientId = "Ov23liGitHubClientId"
+                        , oauthProviderClientSecret = "github-secret"
+                        , oauthProviderDiscoveryUrl = "https://github.com/login/oauth/authorize"
+                        }
+                    )
+                ]
+            stateToken = "test-state-token"
+            callbackUrl = "https://app.example.com/auth/v1/callback"
+            redirectTo = "https://app.example.com/post-login"
 
-        it "buildStubAuthorizeUrl state=" $
-            stubUrl `shouldSatisfy` T.isInfixOf "state="
-
-        it "buildStubAuthorizeUrl client_id=" $
-            stubUrl `shouldSatisfy` T.isInfixOf "client_id="
-
-        it "buildStubAuthorizeUrl redirect_uri=" $
-            stubUrl `shouldSatisfy` T.isInfixOf "redirect_uri="
-
-        it "buildStubAuthorizeUrl state value" $
-            stubUrl `shouldSatisfy` T.isInfixOf "test-state-token"
-
-        it "buildStubAuthorizeUrl client_id value" $
-            stubUrl `shouldSatisfy` T.isInfixOf "my-client-id"
+        mapM_
+            ( \(label, cfg) ->
+                describe (label <> " authorization URL") $ do
+                    let url = buildStubAuthorizeUrl cfg stateToken callbackUrl redirectTo
+                        authBase = oauthProviderDiscoveryUrl cfg
+                    it "starts with the configured authorization endpoint" $
+                        url `shouldSatisfy` T.isPrefixOf (authBase <> "?")
+                    it "carries the state token verbatim" $
+                        url `shouldSatisfy` T.isInfixOf ("state=" <> stateToken)
+                    it "carries the configured client_id verbatim" $
+                        url `shouldSatisfy` T.isInfixOf ("client_id=" <> oauthProviderClientId cfg)
+                    it "carries the callback as redirect_uri" $
+                        url `shouldSatisfy` T.isInfixOf ("redirect_uri=" <> callbackUrl)
+                    it "requests the authorization-code response type" $
+                        url `shouldSatisfy` T.isInfixOf "response_type=code"
+                    it "requests the fixed openid email profile scope" $
+                        url `shouldSatisfy` T.isInfixOf "scope=openid%20email%20profile"
+            )
+            providers
 
     describe "OAuthAuthorizeResponse JSON" $ do
         let oauthResp =

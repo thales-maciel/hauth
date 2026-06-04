@@ -41,7 +41,7 @@ Drop-in Supabase compatibility is the *wedge* — the reason someone bothers to 
 - **Hosted SaaS.** The product is the binary. Commercial offerings, if any, come later and built on top.
 - **Database-agnostic.** Postgres only. RLS-aware JWT issuance is the entire point.
 - **ORM layer.** Direct SQL via postgresql-simple. We want control over query shape and we want the `auth` schema to be inspectable as plain SQL.
-- **Reinventing OAuth.** Standard OIDC via discovery. No exotic flows.
+- **Reinventing OAuth.** Supported providers are Google and GitHub via the OAuth 2.0 authorization-code flow with compiled-in token and userinfo endpoints; arbitrary OIDC providers via runtime discovery are a v0.3 conversation. See [docs/OAUTH.md](docs/OAUTH.md) for what is and isn't covered today. No exotic flows.
 - **Multi-tenancy in v1.** Single project per deployment. Multi-project is a v2 conversation.
 - **Reshaping the Supabase JWT.** We may add fields, never move or rename existing claims.
 

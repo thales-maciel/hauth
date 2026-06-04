@@ -6,7 +6,9 @@ grants, recover, verify, resend, `/user`, OAuth via Google/GitHub, TOTP MFA,
 admin user management, webhook delivery, sync hooks, email templates) is
 implemented and exercised end-to-end. The supported wire shapes and the
 endpoints intentionally deferred past v0.1 are catalogued in
-[docs/v0.1-compatibility.md](docs/v0.1-compatibility.md).
+[docs/v0.1-compatibility.md](docs/v0.1-compatibility.md); the OAuth surface
+is narrower than the name suggests — see [docs/OAUTH.md](docs/OAUTH.md) for
+which providers, scopes, and discovery features are wired today.
 
 ## Running hauth
 
