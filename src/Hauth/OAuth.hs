@@ -110,14 +110,25 @@ isFlowStateExpired :: UTCTime -> UTCTime -> Int -> Bool
 isFlowStateExpired now createdAt maxAgeSecs =
     diffUTCTime now createdAt > fromIntegral maxAgeSecs
 
-{- | Build a stub authorization URL for v0.1.
+{- | Build the authorization redirect URL for a configured provider.
 
-Constructs a redirect URL by appending OAuth query parameters to the
-provider discovery URL.  The actual discovery-document fetch and
-provider-specific URL construction are deferred to issues #19/#20.
+Concatenates fixed OAuth 2.0 query parameters onto the provider's
+authorization endpoint as configured in @oauth.providers[].discovery_url@.
+The emitted parameters are:
 
-TODO (#19/#20): Replace this stub with real OIDC discovery document fetch
-and provider-specific authorization endpoint construction.
+* @state@ — the server-issued single-use flow-state token.
+* @client_id@ — taken from the provider config.
+* @redirect_uri@ — the @\<site.url\>/auth/v1/callback@ that hauth registers
+  with providers.
+* @response_type=code@ — authorization-code flow.
+* @scope=openid email profile@ — fixed for every provider in v0.2; Google
+  honors all three, GitHub ignores them.
+
+Despite the @discovery_url@ field name, hauth does not fetch an OIDC
+discovery document — per-provider token and userinfo endpoints are
+compiled in (see "Hauth.OAuth.Google" and "Hauth.OAuth.Github").
+Per-provider scope configuration and runtime discovery are deferred to
+v0.3; see @docs\/OAUTH.md@ ("Status and limitations").
 -}
 buildStubAuthorizeUrl ::
     OAuthProviderConfig ->
