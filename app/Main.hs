@@ -1,5 +1,6 @@
 module Main (main) where
 
+import Control.Exception (bracket)
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.Text.IO as TIO
 import Hauth.CLI (
@@ -77,9 +78,12 @@ runVerifyCommand envConfigPath options =
             failWith message
         Right configPath -> do
             config <- loadConfigOrExit configPath
-            env <- createAppEnv config
-            report <- runChecks env (defaultChecks config)
-            destroyAppEnv env
+            -- bracket: destroyAppEnv runs even if runChecks throws. Printing
+            -- the report and the exit-code decision happen after teardown so
+            -- the success path stays bit-identical to the prior sequence.
+            report <-
+                bracket (createAppEnv config) destroyAppEnv \env ->
+                    runChecks env (defaultChecks config)
             printReport (verifyFormat options) report
             if reportFailed report > 0
                 then exitWith (ExitFailure 1)

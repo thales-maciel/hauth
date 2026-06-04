@@ -1,5 +1,8 @@
+{-# LANGUAGE BlockArguments #-}
+
 module Spec.ConfigSpec (spec) where
 
+import Control.Exception (bracket)
 import Data.Aeson (encode)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
@@ -45,9 +48,8 @@ spec = do
                     databaseUrl (configDatabase config)
                         `shouldBe` "postgresql://hauth:hauth@localhost:5432/hauth"
                     serverPort (configServer config) `shouldBe` 8080
-                    env <- createAppEnvWithLogger testLogger config
-                    appConfig env `shouldBe` config
-                    destroyAppEnv env
+                    bracket (createAppEnvWithLogger testLogger config) destroyAppEnv \env ->
+                        appConfig env `shouldBe` config
 
     describe "decodeConfigBytes (invalid)" $ do
         it "reports all missing top-level config sections" $

@@ -1,6 +1,6 @@
 module E2E.VerifyDatabaseSpec (spec) where
 
-import Control.Exception (bracket_)
+import Control.Exception (bracket, bracket_)
 import qualified Data.Text as T
 import Database.PostgreSQL.Simple (Only (..), execute, execute_, query_)
 import E2E.Helpers (TestEnv (..))
@@ -29,9 +29,11 @@ spec = do
                                 }
                         }
             -- Pool creation succeeds; the actual connection attempt fails on first use
-            badAppEnv <- createAppEnvWithLogger (Env.Logger \_ _ -> pure ()) badCfg
-            outcome <- checkRun connectCheck badAppEnv
-            destroyAppEnv badAppEnv
+            outcome <-
+                bracket
+                    (createAppEnvWithLogger (Env.Logger \_ _ -> pure ()) badCfg)
+                    destroyAppEnv
+                    (checkRun connectCheck)
             case outcome of
                 CheckFail _ -> pure ()
                 _ -> fail ("expected CheckFail, got: " <> show outcome)
