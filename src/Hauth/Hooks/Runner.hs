@@ -26,18 +26,18 @@ import Data.UUID (UUID)
 import qualified Data.UUID as UUID
 import Hauth.Hooks.Types (HookConfig (..), hookPointName)
 import Network.HTTP.Client (
+    Manager,
     RequestBody (..),
     httpLbs,
     method,
-    newManager,
     parseRequest,
     requestBody,
     requestHeaders,
     responseBody,
     responseStatus,
+    responseTimeout,
+    responseTimeoutMicro,
  )
-import qualified Network.HTTP.Client as HTTP
-import Network.HTTP.Client.TLS (tlsManagerSettings)
 import Network.HTTP.Types (statusIsSuccessful)
 
 -- ---------------------------------------------------------------------------
@@ -58,14 +58,22 @@ data HookDecision
 -- Public runner
 -- ---------------------------------------------------------------------------
 
--- | POST @payload@ inside the standard envelope to the hook URL and return a 'HookDecision'.
-runHook :: HookConfig -> Value -> IO HookDecision
-runHook cfg payload = do
+{- | POST @payload@ inside the standard envelope to the hook URL and return a
+'HookDecision'.
+
+The caller supplies the shared HTTP 'Manager' (typically
+@appHookHttpManager@ from 'Hauth.Env.AppEnv'). Allocating a fresh
+'Manager' per request defeats connection pooling and is the bug fixed in
+issue #160. The per-hook timeout is applied to the 'Request' via
+'responseTimeout' so a shared manager remains correct.
+-}
+runHook :: Manager -> HookConfig -> Value -> IO HookDecision
+runHook mgr cfg payload = do
     now <- getPOSIXTime
     let envelope = buildEnvelope cfg payload now
         strictBody = BSL.toStrict envelope
         signedHdrs = signHookRequest (hookConfigSecret cfg) (hookConfigId cfg) now strictBody
-    result <- try (executeRequest cfg strictBody signedHdrs) :: IO (Either SomeException (Maybe HookDecision))
+    result <- try (executeRequest mgr cfg strictBody signedHdrs) :: IO (Either SomeException (Maybe HookDecision))
     case result of
         Left _ -> respFailOpen cfg "hook network error"
         Right Nothing -> respFailOpen cfg "hook timed out"
@@ -87,14 +95,9 @@ buildEnvelope cfg payload ts =
 posixToText :: POSIXTime -> Text
 posixToText ts = T.pack (show (round ts :: Integer)) <> "Z"
 
-executeRequest :: HookConfig -> BS.ByteString -> SignedHeaders -> IO (Maybe HookDecision)
-executeRequest cfg body hdrs = do
+executeRequest :: Manager -> HookConfig -> BS.ByteString -> SignedHeaders -> IO (Maybe HookDecision)
+executeRequest mgr cfg body hdrs = do
     let timeoutMicros = hookConfigTimeoutMs cfg * 1000
-    mgr <-
-        newManager
-            tlsManagerSettings
-                { HTTP.managerResponseTimeout = HTTP.responseTimeoutMicro timeoutMicros
-                }
     baseReq <- parseRequest (T.unpack (hookConfigUrl cfg))
     let req =
             baseReq
@@ -106,6 +109,9 @@ executeRequest cfg body hdrs = do
                     , ("webhook-timestamp", sigWebhookTimestamp hdrs)
                     , ("webhook-signature", sigWebhookSignature hdrs)
                     ]
+                , -- Per-hook timeout lives on the request so the shared 'Manager'
+                  -- can be reused across hooks with different deadlines.
+                  responseTimeout = responseTimeoutMicro timeoutMicros
                 }
     resp <- httpLbs req mgr
     let status = responseStatus resp
