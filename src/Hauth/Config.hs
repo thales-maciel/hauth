@@ -35,7 +35,16 @@ data DatabaseConfig = DatabaseConfig
     { databaseUrl :: Text
     , databasePoolSize :: Int
     }
-    deriving stock (Eq, Show)
+    deriving stock (Eq)
+
+-- | Manual 'Show' instance that redacts 'databaseUrl' (carries credentials).
+instance Show DatabaseConfig where
+    show DatabaseConfig{databasePoolSize} =
+        "DatabaseConfig {databaseUrl = "
+            <> redactedLiteral
+            <> ", databasePoolSize = "
+            <> show databasePoolSize
+            <> "}"
 
 data JwtConfig = JwtConfig
     { jwtSecret :: Text
@@ -44,7 +53,22 @@ data JwtConfig = JwtConfig
     , jwtAccessTokenTtlSeconds :: Int
     , jwtRefreshTokenTtlSeconds :: Int
     }
-    deriving stock (Eq, Show)
+    deriving stock (Eq)
+
+-- | Manual 'Show' instance that redacts 'jwtSecret'.
+instance Show JwtConfig where
+    show JwtConfig{jwtIssuer, jwtAudience, jwtAccessTokenTtlSeconds, jwtRefreshTokenTtlSeconds} =
+        "JwtConfig {jwtSecret = "
+            <> redactedLiteral
+            <> ", jwtIssuer = "
+            <> show jwtIssuer
+            <> ", jwtAudience = "
+            <> show jwtAudience
+            <> ", jwtAccessTokenTtlSeconds = "
+            <> show jwtAccessTokenTtlSeconds
+            <> ", jwtRefreshTokenTtlSeconds = "
+            <> show jwtRefreshTokenTtlSeconds
+            <> "}"
 
 data SiteConfig = SiteConfig
     { siteUrl :: Text
@@ -59,7 +83,22 @@ data EmailConfig = EmailConfig
     , emailUsername :: Maybe Text
     , emailPassword :: Maybe Text
     }
-    deriving stock (Eq, Show)
+    deriving stock (Eq)
+
+-- | Manual 'Show' instance that redacts 'emailPassword'.
+instance Show EmailConfig where
+    show EmailConfig{emailFrom, emailSmtpHost, emailSmtpPort, emailUsername, emailPassword} =
+        "EmailConfig {emailFrom = "
+            <> show emailFrom
+            <> ", emailSmtpHost = "
+            <> show emailSmtpHost
+            <> ", emailSmtpPort = "
+            <> show emailSmtpPort
+            <> ", emailUsername = "
+            <> show emailUsername
+            <> ", emailPassword = "
+            <> redactedMaybe emailPassword
+            <> "}"
 
 newtype OAuthConfig = OAuthConfig
     { oauthProviders :: [OAuthProviderConfig]
@@ -72,7 +111,30 @@ data OAuthProviderConfig = OAuthProviderConfig
     , oauthProviderClientSecret :: Text
     , oauthProviderDiscoveryUrl :: Text
     }
-    deriving stock (Eq, Show)
+    deriving stock (Eq)
+
+-- | Manual 'Show' instance that redacts 'oauthProviderClientSecret'.
+instance Show OAuthProviderConfig where
+    show OAuthProviderConfig{oauthProviderName, oauthProviderClientId, oauthProviderDiscoveryUrl} =
+        "OAuthProviderConfig {oauthProviderName = "
+            <> show oauthProviderName
+            <> ", oauthProviderClientId = "
+            <> show oauthProviderClientId
+            <> ", oauthProviderClientSecret = "
+            <> redactedLiteral
+            <> ", oauthProviderDiscoveryUrl = "
+            <> show oauthProviderDiscoveryUrl
+            <> "}"
+
+-- | Placeholder rendered in 'Show' output where a secret field would otherwise appear.
+redactedLiteral :: String
+redactedLiteral = "\"<redacted>\""
+
+-- | Render an optional secret field: preserve 'Nothing' for debugging, redact 'Just'.
+redactedMaybe :: Maybe a -> String
+redactedMaybe = \case
+    Nothing -> "Nothing"
+    Just _ -> "Just " <> redactedLiteral
 
 data ServerConfig = ServerConfig
     { serverHost :: Text
