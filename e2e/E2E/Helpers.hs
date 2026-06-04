@@ -49,7 +49,7 @@ import Hauth.Env (
     Logger (..),
     createAppEnvWithLogger,
     destroyAppEnv,
-    startBackgroundServices,
+    startRequiredBackgroundServices,
     stopBackgroundServices,
     withDatabaseConnection,
  )
@@ -81,9 +81,18 @@ data TestEnv = TestEnv
 -- to the action, tears services + AppEnv down. The body is responsible for
 -- truncating between tests.
 --
+-- We use 'startRequiredBackgroundServices' (the same entry point as
+-- production @hauth serve@) so the e2e harness mirrors operator semantics:
+-- if the required webhook worker cannot start, the suite fails loudly
+-- instead of producing mysterious test failures hundreds of lines later.
+-- Optional services that fail to start still degrade gracefully — the
+-- hot-reload spec exists to exercise the listener, so a missing template
+-- listener will be caught there.
+--
 -- Two nested brackets guarantee cleanup if the action throws:
 --   * outer bracket pairs createAppEnvWithLogger with destroyAppEnv
---   * inner bracket pairs startBackgroundServices with stopBackgroundServices
+--   * inner bracket pairs startRequiredBackgroundServices with
+--     stopBackgroundServices
 -- migrate-up runs between the brackets (after AppEnv exists, before services
 -- start) to preserve the schema-before-worker ordering.
 withTestEnv :: (TestEnv -> IO a) -> IO a
@@ -94,7 +103,7 @@ withTestEnv action = do
     let cfg = testingConfig dbUrl
     bracket (createAppEnvWithLogger silentLogger cfg) destroyAppEnv \appEnv -> do
         _ <- runMigrate cfg MigrateUp
-        bracket (startBackgroundServices appEnv) stopBackgroundServices \_ -> do
+        bracket (startRequiredBackgroundServices appEnv) stopBackgroundServices \_ -> do
             let env = TestEnv appEnv cfg
             truncateAll env
             action env

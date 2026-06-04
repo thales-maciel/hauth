@@ -12,6 +12,11 @@ background-service startup explicitly:
   template-cache LISTEN/NOTIFY listener; both expect a migrated schema.
   Callers (server bootstrap, e2e harness) run this after migrations.
 
+The required-vs-optional policy for production @hauth serve@ is named in
+'requiredForServe' and enforced by 'requireBackgroundServices' /
+'startRequiredBackgroundServices'. See @docs\/PRODUCTION.md@ for the
+operator-facing contract.
+
 'destroyAppEnv' only releases pool resources. Background services have their
 own 'stopBackgroundServices' lifecycle.
 -}
@@ -28,9 +33,11 @@ module Hauth.Env (
     createAppEnv,
     createAppEnvWithLogger,
     destroyAppEnv,
+    isRequiredForServe,
     readBackgroundServiceStatus,
     recordBackgroundServiceStatus,
     requireBackgroundServices,
+    requiredForServe,
     startBackgroundServices,
     startBackgroundServicesWith,
     startRequiredBackgroundServices,
@@ -141,10 +148,14 @@ createAppEnvWithLogger logger config = do
 listener. Both expect a migrated schema and a reachable DB — call this AFTER
 @hauth migrate up@.
 
-Per-service failures are tolerated: if a service throws on startup the
-corresponding 'BackgroundServices' field is 'Nothing' and the rest of the
-process keeps running. This matters for e2e harnesses that race service
-startup against truncation/migration windows.
+Per-service failures are tolerated at this layer: if a service throws on
+startup the corresponding 'BackgroundServices' field is 'Nothing' and the
+rest of the process keeps running. The required/optional policy lives in
+'requireBackgroundServices' and 'requiredForServe', so callers that want
+fail-fast semantics for required services compose this with
+'startRequiredBackgroundServices'. Tolerance at the spawn layer matters for
+e2e harnesses that race service startup against truncation/migration
+windows.
 -}
 startBackgroundServices :: AppEnv -> IO BackgroundServices
 startBackgroundServices env@AppEnv{appConfig, appConnectionPool, appTemplateCache} =
@@ -170,6 +181,11 @@ startBackgroundServicesWith env startWorkerAction startListenerAction = do
             , bgServiceStatuses = appBackgroundServiceStatuses env
             }
 
+{- | Start background services with the production @serve@ policy: any service
+listed in 'requiredForServe' MUST start cleanly or the bracket aborts. Optional
+services that fail are logged at WARN and reported in deep health as
+@degraded@, but do not abort startup.
+-}
 startRequiredBackgroundServices :: AppEnv -> IO BackgroundServices
 startRequiredBackgroundServices env =
     bracketOnError
@@ -177,14 +193,102 @@ startRequiredBackgroundServices env =
         stopBackgroundServices
         (requireBackgroundServices env)
 
+{- | The set of background services that 'hauth serve' considers required for
+production. A failure for any service in this list must abort startup.
+
+Services NOT in this list are optional and degrade gracefully — see the
+@\"Background services\"@ section of @docs/PRODUCTION.md@ for the per-service
+contract.
+
+* 'WebhookWorker' — required. The outbox/delivery loop is a correctness
+  concern: serving without it silently drops webhook events.
+* 'TemplateListener' — optional. The template cache falls back to the
+  TH-embedded defaults baked into the binary; auth flows still work but
+  hot-reload of @auth.email_templates@ rows is unavailable.
+-}
+requiredForServe :: [BackgroundServiceName]
+requiredForServe =
+    [WebhookWorker]
+
+-- | True when the given service must start cleanly for 'hauth serve'.
+isRequiredForServe :: BackgroundServiceName -> Bool
+isRequiredForServe name =
+    name `elem` requiredForServe
+
+{- | Apply the production @serve@ policy to an already-started
+'BackgroundServices' bundle:
+
+* every service in 'requiredForServe' must be running — otherwise this throws
+  with the failed service's recorded status, matching the existing serve-error
+  shape (an 'IOError' carrying a stable @\"required background service
+  failed: <name>: <reason>\"@ message);
+* optional services that failed to start are logged at WARN so the operator
+  notices the degraded mode, and remain reflected in deep health.
+-}
 requireBackgroundServices :: AppEnv -> BackgroundServices -> IO BackgroundServices
-requireBackgroundServices env services =
-    case bgWebhookWorker services of
-        Just _ ->
-            pure services
-        Nothing -> do
-            status <- readBackgroundServiceStatus env WebhookWorker
-            throwIO (userError ("required background service failed: webhook_worker: " <> statusText status))
+requireBackgroundServices env services = do
+    -- Warn on every failed optional service so the operator sees degraded
+    -- mode immediately in journalctl, even when overall startup succeeds.
+    mapM_ (warnIfOptionalDegraded env services) optionalServices
+    -- Fail-fast on the first failed required service. The handle field is
+    -- ground truth ('Nothing' == did-not-start), regardless of whatever the
+    -- status IORef happens to read.
+    firstFailure <- findRequiredFailure env services requiredForServe
+    case firstFailure of
+        Nothing -> pure services
+        Just (name, status) ->
+            throwIO
+                ( userError
+                    ( "required background service failed: "
+                        <> T.unpack (backgroundServiceNameText name)
+                        <> ": "
+                        <> statusText status
+                    )
+                )
+  where
+    optionalServices = filter (not . isRequiredForServe) allServices
+
+findRequiredFailure ::
+    AppEnv ->
+    BackgroundServices ->
+    [BackgroundServiceName] ->
+    IO (Maybe (BackgroundServiceName, BackgroundServiceStatus))
+findRequiredFailure _ _ [] = pure Nothing
+findRequiredFailure env services (name : rest)
+    | serviceStarted services name =
+        findRequiredFailure env services rest
+    | otherwise = do
+        status <- readBackgroundServiceStatus env name
+        pure (Just (name, status))
+
+warnIfOptionalDegraded :: AppEnv -> BackgroundServices -> BackgroundServiceName -> IO ()
+warnIfOptionalDegraded env@AppEnv{appLogger} services name
+    | serviceStarted services name = pure ()
+    | otherwise = do
+        status <- readBackgroundServiceStatus env name
+        logMessage
+            appLogger
+            LogWarn
+            ( backgroundServiceNameText name
+                <> " optional background service did not start; running in degraded mode: "
+                <> T.pack (statusText status)
+            )
+
+serviceStarted :: BackgroundServices -> BackgroundServiceName -> Bool
+serviceStarted BackgroundServices{bgWebhookWorker, bgTemplateCacheListener} = \case
+    WebhookWorker ->
+        case bgWebhookWorker of
+            Just _ -> True
+            Nothing -> False
+    TemplateListener ->
+        case bgTemplateCacheListener of
+            Just _ -> True
+            Nothing -> False
+
+-- | All known background services, in stable display order.
+allServices :: [BackgroundServiceName]
+allServices =
+    [WebhookWorker, TemplateListener]
 
 {- | Stop background services. Idempotent; safe to call once per
 'startBackgroundServices'.

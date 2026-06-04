@@ -394,23 +394,54 @@ curl -sS https://auth.example.com/healthz
 # 200 {"status":"ok"}
 ```
 
-**`GET /healthz/deep`** — readiness probe (v0.2+). Runs three internal
-checks: process (always passes), config (validates that key config fields are
-non-empty), and Postgres (issues `SELECT 1` with a 2-second timeout). Returns
-`200` with `{"status":"ok","checks":[...]}` if all checks pass; returns `503`
-with `{"status":"unhealthy","checks":[...]}` if any check fails.
+**`GET /healthz/deep`** — readiness probe (v0.2+). Runs internal checks for
+process (always passes), config (validates that key config fields are
+non-empty), Postgres (issues `SELECT 1` with a 2-second timeout), and every
+background service (see [Background services](#background-services) below).
+The top-level `status` field has three values:
+
+| `status`     | HTTP | Meaning                                                                    |
+|--------------|------|----------------------------------------------------------------------------|
+| `ok`         | 200  | All checks pass.                                                           |
+| `degraded`   | 200  | An optional component failed. Service is still serving normal auth flows.  |
+| `unhealthy`  | 503  | A required component failed. Operator must intervene.                      |
 
 ```sh
 curl -sS https://auth.example.com/healthz/deep
 # 200 {"status":"ok","checks":[
-#   {"name":"process","outcome":"ok"},
-#   {"name":"config","outcome":"ok"},
-#   {"name":"postgres","outcome":"ok","latency_ms":1}
+#   {"name":"process","status":"ok"},
+#   {"name":"config","status":"ok"},
+#   {"name":"postgres","status":"ok","latency_ms":1},
+#   {"name":"webhook_worker","status":"ok"},
+#   {"name":"template_listener","status":"ok"}
 # ]}
 ```
 
-Use `/healthz/deep` for external uptime monitors (UptimeRobot, Datadog, etc.)
-and alert on `503` responses or on the `postgres` check failing.
+Use `/healthz/deep` for external uptime monitors (UptimeRobot, Datadog, etc.).
+Recommended alerting policy:
+
+- Page on `503` / `"status":"unhealthy"` — required component is down.
+- Warn (do not page) on `"status":"degraded"` — optional component is down,
+  investigate during business hours.
+- Page on the `postgres` per-check status flipping to `"failed"`.
+
+### Background services
+
+`hauth serve` spawns two long-lived background services. They are classified
+explicitly so that failure modes are predictable:
+
+| Service              | Policy   | What it does                                                            | Failure mode                                                                                              |
+|----------------------|----------|-------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------|
+| `webhook_worker`     | required | Drains the `auth.webhook_deliveries` outbox and POSTs to subscribers.   | Startup aborts with `required background service failed: webhook_worker: …`. Deep health → `unhealthy`/503. |
+| `template_listener`  | optional | LISTENs for `auth.email_templates` row changes and refreshes the cache. | Logged at `WARN`, startup continues. Auth flows still work using the TH-embedded default templates. Deep health → `degraded`/200. Hot-reload of templates is unavailable until the listener is restored. |
+
+In the deep-health JSON:
+
+- A failed required service appears as `{"name":"webhook_worker","status":"failed","reason":"…"}` and flips the top-level `status` to `"unhealthy"`.
+- A failed optional service appears as `{"name":"template_listener","status":"degraded","reason":"…"}` and contributes `"status":"degraded"` to the top-level only when no required service is failing.
+
+The required vs. optional list lives in `Hauth.Env.requiredForServe`; the
+operator contract above is the source of truth for what operators rely on.
 
 ### Log format
 

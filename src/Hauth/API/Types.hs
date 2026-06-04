@@ -128,9 +128,17 @@ instance ToJSON HealthResponse where
     toJSON HealthResponse{healthStatus} =
         object ["status" .= healthStatus]
 
+{- | Outcome of one deep-health component check.
+
+The @\"degraded\"@ status is reserved for optional components that failed
+but should not flip the overall response to @\"unhealthy\"@ / 503. See
+'Hauth.Server.Health.aggregateStatus' and the @\"Background services\"@
+section of @docs\/PRODUCTION.md@ for the policy.
+-}
 data CheckOutcome
     = CheckOk
     | CheckFailed Text
+    | CheckDegraded Text
     deriving stock (Eq, Show)
 
 instance ToJSON CheckOutcome where
@@ -139,6 +147,11 @@ instance ToJSON CheckOutcome where
     toJSON (CheckFailed reason) =
         object
             [ "status" .= ("failed" :: Text)
+            , "reason" .= reason
+            ]
+    toJSON (CheckDegraded reason) =
+        object
+            [ "status" .= ("degraded" :: Text)
             , "reason" .= reason
             ]
 
@@ -159,6 +172,10 @@ instance ToJSON DeepHealthCheck where
                 CheckOk -> ["status" .= ("ok" :: Text)]
                 CheckFailed reason ->
                     [ "status" .= ("failed" :: Text)
+                    , "reason" .= reason
+                    ]
+                CheckDegraded reason ->
+                    [ "status" .= ("degraded" :: Text)
                     , "reason" .= reason
                     ]
          in object (base <> statusFields)
