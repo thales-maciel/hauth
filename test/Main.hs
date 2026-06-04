@@ -15,6 +15,7 @@ import qualified Spec.Auth.ServiceRoleSpec
 import qualified Spec.Auth.UserUpdateSpec
 import qualified Spec.Auth.VerifySpec
 import qualified Spec.CLISpec
+import qualified Spec.ConfigRedactionSpec
 import qualified Spec.ConfigSpec
 import qualified Spec.Crypto.PasswordSpec
 import qualified Spec.EmailSpec
@@ -58,6 +59,7 @@ specs = do
     describe "auth/user update" Spec.Auth.UserUpdateSpec.spec
     describe "auth/verify" Spec.Auth.VerifySpec.spec
     describe "CLI" Spec.CLISpec.spec
+    describe "config redaction" Spec.ConfigRedactionSpec.spec
     describe "config" Spec.ConfigSpec.spec
     describe "crypto/password" Spec.Crypto.PasswordSpec.spec
     describe "email rendering" Spec.EmailSpec.spec
