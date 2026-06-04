@@ -13,6 +13,7 @@ module Hauth.Session (
     createRefreshToken,
     lookupRefreshToken,
     lookupRefreshTokenRaw,
+    lookupRefreshTokenRawForUpdate,
     revokeRefreshToken,
     revokeSessionRefreshTokens,
     touchSessionRefreshedAt,
@@ -289,6 +290,28 @@ lookupRefreshTokenRaw conn token = do
             \  created_at, updated_at \
             \FROM auth.refresh_tokens \
             \WHERE token = ?"
+            (Only token)
+    pure $ case rows of
+        [row] -> Just row
+        _ -> Nothing
+
+{- | Same as 'lookupRefreshTokenRaw' but locks the row with @FOR UPDATE@.
+
+MUST be called inside a transaction; otherwise the lock is released
+immediately and the call degenerates to an unlocked read.  Used by the
+rotation flow to serialize concurrent refresh requests sharing one token.
+-}
+lookupRefreshTokenRawForUpdate :: Connection -> Text -> IO (Maybe RefreshToken)
+lookupRefreshTokenRawForUpdate conn token = do
+    rows <-
+        query
+            conn
+            "SELECT \
+            \  id, token, session_id, user_id::uuid, parent, revoked, \
+            \  created_at, updated_at \
+            \FROM auth.refresh_tokens \
+            \WHERE token = ? \
+            \FOR UPDATE"
             (Only token)
     pure $ case rows of
         [row] -> Just row

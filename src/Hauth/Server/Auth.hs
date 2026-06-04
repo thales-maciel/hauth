@@ -57,7 +57,7 @@ import Hauth.Session (
     createSession,
     generateOpaqueToken,
     getSession,
-    lookupRefreshTokenRaw,
+    lookupRefreshTokenRawForUpdate,
     revokeRefreshToken,
     revokeSession,
     revokeSessionRefreshTokens,
@@ -99,6 +99,15 @@ tokenHandler _ grantType req =
         GrantUnsupported _ ->
             throwError err400{errBody = oauth2ErrorOnly "unsupported_grant_type"}
 
+-- | Outcome of the atomic refresh-token rotation transaction.
+data RotateOutcome
+    = ROInvalidGrant
+    | ROReuseDetected
+    | ROUserNotFound
+    | ROSessionNotFound
+    | -- | New refresh token, minimal user JSON, session row, user UUID.
+      RORotated RefreshToken Aeson.Value Session UUID
+
 handleRefreshTokenGrant :: TokenRequest -> AppHandler TokenResponse
 handleRefreshTokenGrant TokenRequest{tokenRequestRefreshToken} = do
     tokenText <- case tokenRequestRefreshToken of
@@ -112,90 +121,94 @@ handleRefreshTokenGrant TokenRequest{tokenRequestRefreshToken} = do
     let AppEnv{appConfig} = env
         Config{configJwt} = appConfig
         JwtConfig{jwtAccessTokenTtlSeconds} = configJwt
-    mRawToken <- liftIO (withDatabaseConnection env (`lookupRefreshTokenRaw` tokenText))
-    case classifyRefreshTokenLookup mRawToken of
-        Left InvalidGrant ->
-            throwError
-                err401
-                    { errBody = oauth2ErrorBody "invalid_grant" "Invalid Refresh Token"
-                    }
-        Left RefreshTokenReuseDetected -> do
-            let rt = fromMaybeRawToken mRawToken
-                sid = refreshTokenSessionId rt
-                uid = refreshTokenUserId rt
-            liftIO $ withDatabaseConnection env \conn -> do
+    now <- liftIO getCurrentTime
+    outcome <- liftIO $ withDatabaseConnection env \conn -> withTransaction conn do
+        mRawToken <- lookupRefreshTokenRawForUpdate conn tokenText
+        case classifyRefreshTokenLookup mRawToken of
+            Left InvalidGrant -> pure ROInvalidGrant
+            Left RefreshTokenReuseDetected -> do
+                let rt = case mRawToken of
+                        Just r -> r
+                        Nothing -> error "handleRefreshTokenGrant: reuse path saw Nothing"
+                    sid = refreshTokenSessionId rt
+                    uid = refreshTokenUserId rt
                 _ <- revokeSessionRefreshTokens conn sid
                 revokeSession conn sid
                 Outbox.enqueue
                     conn
                     (SessionRevoked SessionPayload{spSessionId = unSessionId sid, spUserId = uid})
+                pure ROReuseDetected
+            Right (ValidRefreshToken rt) -> do
+                let sid = refreshTokenSessionId rt
+                    uid = refreshTokenUserId rt
+                mUserVal <- fetchMinimalUser conn uid
+                mSess <- getSession conn sid
+                case (mUserVal, mSess) of
+                    (Nothing, _) -> pure ROUserNotFound
+                    (_, Nothing) -> pure ROSessionNotFound
+                    (Just userVal, Just sess) -> do
+                        revokeRefreshToken conn (refreshTokenId rt)
+                        newRt <- createRefreshToken conn sid (Just tokenText)
+                        touchSessionRefreshedAt conn sid
+                        pure (RORotated newRt userVal sess uid)
+    case outcome of
+        ROInvalidGrant ->
+            throwError
+                err401
+                    { errBody = oauth2ErrorBody "invalid_grant" "Invalid Refresh Token"
+                    }
+        ROReuseDetected ->
             throwError
                 err401
                     { errBody = oauth2ErrorBody "invalid_grant" "Invalid Refresh Token: reuse detected"
                     }
-        Right (ValidRefreshToken rt) -> do
-            now <- liftIO getCurrentTime
-            let sid = refreshTokenSessionId rt
-                uid = refreshTokenUserId rt
-                ttl = fromIntegral jwtAccessTokenTtlSeconds
-                expiry = addUTCTime ttl now
-                iatPosix = utcTimeToPOSIXSeconds now
-            mUserVal <- liftIO (withDatabaseConnection env (`fetchMinimalUser` uid))
-            userVal <- case mUserVal of
-                Nothing ->
-                    throwError
-                        err401
-                            { errBody = oauth2ErrorBody "invalid_grant" "user not found"
-                            }
-                Just v -> pure v
-            mSession <- liftIO (withDatabaseConnection env (`getSession` sid))
-            sess <- case mSession of
-                Nothing ->
-                    throwError
-                        err401
-                            { errBody = oauth2ErrorBody "invalid_grant" "session not found"
-                            }
-                Just s -> pure s
-            let (userEmail', userRole') = extractEmailRole userVal
-                sas = deriveSessionAuthState Nothing sess
-                claims =
-                    AccessTokenClaims
-                        { claimSub = UUID.toText uid
-                        , claimRole = userRole'
-                        , claimEmail = userEmail'
-                        , claimPhone = Nothing
-                        , claimAppMetadata = Aeson.object []
-                        , claimUserMetadata = Aeson.object []
-                        , claimAal = sasAal sas
-                        , claimAmr = buildAmrEntries (sasMethods sas) iatPosix
-                        , claimSessionId = UUID.toText (unSessionId sid)
-                        , claimIssuedAt = now
-                        , claimExpiresAt = expiry
-                        }
-            newToken <- liftIO $ withDatabaseConnection env \conn -> do
-                revokeRefreshToken conn (refreshTokenId rt)
-                newRt <- createRefreshToken conn sid (Just tokenText)
-                touchSessionRefreshedAt conn sid
-                pure newRt
-            signResult <- liftIO (issueAccessToken env claims)
-            accessToken <- case signResult of
-                Left err ->
-                    throwError
-                        err500
-                            { errBody = oauth2ErrorBody "token_issuance_blocked" (T.pack (show err))
-                            }
-                Right t -> pure t
-            pure
-                TokenResponse
-                    { tokenResponseAccessToken = accessToken
-                    , tokenResponseTokenType = "bearer"
-                    , tokenResponseExpiresIn = jwtAccessTokenTtlSeconds
-                    , tokenResponseRefreshToken = refreshTokenToken newToken
-                    , tokenResponseUser = userVal
+        ROUserNotFound ->
+            throwError
+                err401
+                    { errBody = oauth2ErrorBody "invalid_grant" "user not found"
                     }
-  where
-    fromMaybeRawToken (Just rt) = rt
-    fromMaybeRawToken Nothing = error "fromMaybeRawToken: impossible"
+        ROSessionNotFound ->
+            throwError
+                err401
+                    { errBody = oauth2ErrorBody "invalid_grant" "session not found"
+                    }
+        RORotated newToken userVal sess uid -> do
+                let sid = sessionId sess
+                    ttl = fromIntegral jwtAccessTokenTtlSeconds
+                    expiry = addUTCTime ttl now
+                    iatPosix = utcTimeToPOSIXSeconds now
+                    (userEmail', userRole') = extractEmailRole userVal
+                    sas = deriveSessionAuthState Nothing sess
+                    claims =
+                        AccessTokenClaims
+                            { claimSub = UUID.toText uid
+                            , claimRole = userRole'
+                            , claimEmail = userEmail'
+                            , claimPhone = Nothing
+                            , claimAppMetadata = Aeson.object []
+                            , claimUserMetadata = Aeson.object []
+                            , claimAal = sasAal sas
+                            , claimAmr = buildAmrEntries (sasMethods sas) iatPosix
+                            , claimSessionId = UUID.toText (unSessionId sid)
+                            , claimIssuedAt = now
+                            , claimExpiresAt = expiry
+                            }
+                signResult <- liftIO (issueAccessToken env claims)
+                accessToken <- case signResult of
+                    Left err ->
+                        throwError
+                            err500
+                                { errBody = oauth2ErrorBody "token_issuance_blocked" (T.pack (show err))
+                                }
+                    Right t -> pure t
+                pure
+                    TokenResponse
+                        { tokenResponseAccessToken = accessToken
+                        , tokenResponseTokenType = "bearer"
+                        , tokenResponseExpiresIn = jwtAccessTokenTtlSeconds
+                        , tokenResponseRefreshToken = refreshTokenToken newToken
+                        , tokenResponseUser = userVal
+                        }
 
 handlePasswordGrant :: TokenRequest -> AppHandler TokenResponse
 handlePasswordGrant req = do
