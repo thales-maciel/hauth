@@ -394,7 +394,7 @@ curl -sS https://auth.example.com/healthz
 # 200 {"status":"ok"}
 ```
 
-**`GET /healthz/deep`** — readiness probe (v0.1.1+). Runs three internal
+**`GET /healthz/deep`** — readiness probe (v0.2+). Runs three internal
 checks: process (always passes), config (validates that key config fields are
 non-empty), and Postgres (issues `SELECT 1` with a 2-second timeout). Returns
 `200` with `{"status":"ok","checks":[...]}` if all checks pass; returns `503`

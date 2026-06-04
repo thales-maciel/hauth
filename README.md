@@ -1,11 +1,13 @@
 # Hauth
 
 A Postgres-native, Supabase-Auth-compatible authentication service written in
-Haskell. Active pre-1.0 — the v0.1 surface (signup, password and refresh-token
-grants, recover, verify, resend, `/user`, OAuth via Google/GitHub, TOTP MFA,
-admin user management, webhook delivery, sync hooks, email templates) is
-implemented and exercised end-to-end. The supported wire shapes and the
-endpoints intentionally deferred past v0.1 are catalogued in
+Haskell. Active pre-1.0 — the current v0.2 surface (signup, password and
+refresh-token grants, recover, verify, resend, `/user`, OAuth via
+Google/GitHub, TOTP MFA, admin user management, webhook delivery, sync hooks,
+email templates, `verify` subcommand, `/healthz/deep`) is implemented and
+exercised end-to-end. The Supabase-compatible wire shapes Hauth commits to —
+introduced in v0.1 and still upheld in v0.2 — and the endpoints intentionally
+deferred are catalogued in
 [docs/v0.1-compatibility.md](docs/v0.1-compatibility.md); the OAuth surface
 is narrower than the name suggests — see [docs/OAUTH.md](docs/OAUTH.md) for
 which providers, scopes, and discovery features are wired today.
@@ -82,7 +84,7 @@ cabal run exe:hauth -- migrate status --config config.example.json
 cabal run exe:hauth -- migrate up --config config.example.json
 ```
 
-Migrations are **forward-only in v0.1**: there is no `down` subcommand and no
+Migrations are **forward-only in v0.2**: there is no `down` subcommand and no
 embedded rollback. Recover by restoring a database backup or using
 point-in-time recovery. Down migrations and a richer rollback story will land
 in a later milestone.

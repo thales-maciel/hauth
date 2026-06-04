@@ -123,7 +123,8 @@ Field reference:
 | `client_secret` | yes | OAuth client secret from the provider's developer console. |
 | `discovery_url` | yes | The provider's authorization endpoint. hauth uses this as the base URL when building the authorization redirect. For Google use `https://accounts.google.com/o/oauth2/v2/auth`; for GitHub use `https://github.com/login/oauth/authorize`. Despite the name, hauth does not fetch this URL as an OIDC discovery document — see "Status and limitations" above. |
 
-After editing `config.json`, restart `hauth serve`. There is no hot-reload in v0.1.
+After editing `config.json`, restart `hauth serve`. There is no hot-reload of
+OAuth provider configuration in v0.2.
 
 
 ## Google

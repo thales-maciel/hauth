@@ -172,10 +172,10 @@ service is running end-to-end against your Postgres.
   rotation, backups, and a hardening checklist. Read this before accepting
   real traffic.
 - [`docs/v0.1-compatibility.md`](v0.1-compatibility.md) — the Supabase-compat
-  contract: which endpoints exist, which fields are emitted, and which v0.1
-  intentionally omits.
+  contract introduced in v0.1 and still upheld in v0.2: which endpoints exist,
+  which fields are emitted, and which surfaces are intentionally omitted.
 - [`PROJECT.md`](../PROJECT.md) — product direction, milestone scope, and
-  what's deferred to v0.2 and beyond.
+  what's deferred to v0.3 and beyond.
 - [Open issues](https://github.com/thales-maciel/hauth/issues) — per-feature
   docs and roadmap items.
 
