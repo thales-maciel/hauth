@@ -7,6 +7,7 @@ module Hauth.Webhooks.Worker (
     startWorker,
     stopWorker,
     dispatchPending,
+    runOnce,
 ) where
 
 import Control.Concurrent (MVar, newEmptyMVar, putMVar, threadDelay, tryTakeMVar)
@@ -23,7 +24,7 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.UUID (UUID)
-import Database.PostgreSQL.Simple (Connection, Only (..), execute, query, withTransaction)
+import Database.PostgreSQL.Simple (Connection, Only (..), execute, query, query_)
 import Hauth.Webhooks.Signing (SignedHeaders (..), signRequest)
 import Network.HTTP.Client (
     Manager,
@@ -129,32 +130,64 @@ data DeliveryRow = DeliveryRow
     , drAttempts :: Int
     }
 
+{- | Atomically claim one due pending delivery, flipping it to @processing@.
+
+The inner @SELECT ... FOR UPDATE SKIP LOCKED@ acquires the row lock; the
+outer @UPDATE ... RETURNING@ both commits the status transition and hands
+back the columns the worker needs.  Concurrent workers either lose the
+lock race (their subquery picks nothing and the UPDATE affects zero rows)
+or wake up after the winning commit to find the row already
+@processing@.  Either way they observe @Nothing@.
+-}
 fetchAndLockDelivery :: Connection -> IO (Maybe DeliveryRow)
 fetchAndLockDelivery conn = do
     rows <-
-        query
+        query_
             conn
-            "SELECT id, subscription_id, payload, attempts \
-            \FROM auth.webhook_deliveries \
-            \WHERE status = 'pending' AND next_attempt_at <= now() \
-            \ORDER BY next_attempt_at \
-            \LIMIT 1 FOR UPDATE SKIP LOCKED"
-            ()
+            "UPDATE auth.webhook_deliveries \
+            \SET status = 'processing', updated_at = now() \
+            \WHERE id = ( \
+            \    SELECT id FROM auth.webhook_deliveries \
+            \    WHERE status = 'pending' AND next_attempt_at <= now() \
+            \    ORDER BY next_attempt_at \
+            \    LIMIT 1 \
+            \    FOR UPDATE SKIP LOCKED \
+            \) \
+            \RETURNING id, subscription_id, payload, attempts"
     case rows of
         [] -> pure Nothing
         ((rid, sid, payload, attempts) : _) ->
             pure $ Just (DeliveryRow rid sid payload attempts)
 
+{- | Send the claimed delivery and finalize its row.
+
+The row was flipped to @processing@ by 'fetchAndLockDelivery', so no
+extra transaction is needed here — holding a row lock across the HTTP
+call would only block other workers.  If the subscription has gone
+missing under us, reset the row back to @pending@ (without bumping
+attempts) so future loops can re-evaluate it.
+-}
 processDelivery :: Connection -> Manager -> DeliveryRow -> IO ()
 processDelivery conn mgr row@DeliveryRow{..} = do
     subResult <- try @SomeException (loadSubscription conn drSubscriptionId)
     case subResult of
-        Left _ -> pure ()
-        Right Nothing -> pure ()
-        Right (Just (url, secret)) ->
-            withTransaction conn $ do
-                outcome <- deliverPayload mgr url secret drId drPayload
-                recordOutcome conn row outcome
+        Left _ -> releaseProcessing conn drId
+        Right Nothing -> releaseProcessing conn drId
+        Right (Just (url, secret)) -> do
+            outcome <- deliverPayload mgr url secret drId drPayload
+            recordOutcome conn row outcome
+
+-- | Move a row out of @processing@ back to @pending@ without bumping attempts.
+releaseProcessing :: Connection -> UUID -> IO ()
+releaseProcessing conn delId = do
+    _ <-
+        execute
+            conn
+            "UPDATE auth.webhook_deliveries \
+            \SET status = 'pending', updated_at = now() \
+            \WHERE id = ? AND status = 'processing'"
+            (Only delId)
+    pure ()
 
 data DeliveryOutcome
     = DeliverySuccess Int BS.ByteString
@@ -211,7 +244,7 @@ recordOutcome conn DeliveryRow{..} (DeliverySuccess code body) = do
             "UPDATE auth.webhook_deliveries \
             \SET status = 'sent', response_status = ?, response_body = ?, \
             \    last_error = NULL, updated_at = now() \
-            \WHERE id = ?"
+            \WHERE id = ? AND status = 'processing'"
             (code, BSC.unpack body, drId)
     pure ()
 recordOutcome conn DeliveryRow{..} (DeliveryFailure mCode mBody errMsg) = do
@@ -226,7 +259,7 @@ recordOutcome conn DeliveryRow{..} (DeliveryFailure mCode mBody errMsg) = do
                     \SET status = 'exhausted', attempts = ?, \
                     \    response_status = ?, response_body = ?, \
                     \    last_error = ?, updated_at = now() \
-                    \WHERE id = ?"
+                    \WHERE id = ? AND status = 'processing'"
                     (newAttempts, mCode, fmap (BSC.unpack . BS.take 2048) mBody, errMsg, drId)
             pure ()
         else do
@@ -238,6 +271,6 @@ recordOutcome conn DeliveryRow{..} (DeliveryFailure mCode mBody errMsg) = do
                     \    next_attempt_at = now() + (? * interval '1 second'), \
                     \    response_status = ?, response_body = ?, \
                     \    last_error = ?, updated_at = now() \
-                    \WHERE id = ?"
+                    \WHERE id = ? AND status = 'processing'"
                     (newAttempts, backoff, mCode, fmap (BSC.unpack . BS.take 2048) mBody, errMsg, drId)
             pure ()

@@ -4,10 +4,11 @@
 module E2E.WebhookWorkerSpec (spec) where
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (withAsync)
+import Control.Concurrent.Async (concurrently, withAsync)
 import Control.Exception (bracket, bracket_)
 import qualified Data.ByteString as BS
-import Data.IORef (atomicWriteIORef, newIORef, readIORef)
+import Data.IORef (atomicModifyIORef', atomicWriteIORef, newIORef, readIORef)
+import Data.List (sort)
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.UUID (UUID)
@@ -17,7 +18,8 @@ import Database.PostgreSQL.Simple.Types (PGArray (..))
 import E2E.Helpers (TestEnv (..))
 import Hauth.Env (withDatabaseConnection)
 import Hauth.Webhooks.Signing (verifySignature)
-import Hauth.Webhooks.Worker (startWorker, stopWorker)
+import Hauth.Webhooks.Worker (runOnce, startWorker, stopWorker)
+import Network.HTTP.Client (defaultManagerSettings, newManager)
 import Network.HTTP.Types (status200, status500)
 import Network.Wai (Application, Request, getRequestBodyChunk, requestHeaders, responseLBS)
 import Network.Wai.Handler.Warp (run)
@@ -67,6 +69,24 @@ spec = do
                                 st `shouldBe` "pending"
                                 att <- deliveryAttempts conn delId
                                 att `shouldSatisfy` (>= 1)
+
+        it "two concurrent runOnce calls send exactly one HTTP request" $ \env ->
+            withDatabaseConnection (testAppEnv env) \conn ->
+                withSubscription conn (testUrl 18_744) "test-secret-race" \subId ->
+                    withDelivery conn subId \delId -> do
+                        counter <- newIORef (0 :: Int)
+                        let app _req respond = do
+                                _ <- atomicModifyIORef' counter \n -> (n + 1, ())
+                                respond (responseLBS status200 [] "ok")
+                        withTestServer 18_744 app $ do
+                            mgr <- newManager defaultManagerSettings
+                            let one = runOnce (withDatabaseConnection (testAppEnv env)) mgr
+                            (b1, b2) <- concurrently one one
+                            sort [b1, b2] `shouldBe` [False, True]
+                            hits <- readIORef counter
+                            hits `shouldBe` 1
+                            st <- deliveryStatus conn delId
+                            st `shouldBe` "sent"
 
         it "exhausts after 6 attempts → status becomes 'exhausted'" $ \env ->
             withDatabaseConnection (testAppEnv env) \conn ->
