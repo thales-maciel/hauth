@@ -23,7 +23,6 @@ import Hauth.Env (withDatabaseConnection)
 import Hauth.Hooks.Types (HookPoint (..), hookPointName)
 import Hauth.User (User (..), getUserByEmail)
 import Network.HTTP.Types (status200, statusCode)
-import qualified Network.Wai.Test as WaiTest
 import Network.Socket (
     Family (..),
     SockAddr (..),
@@ -40,6 +39,7 @@ import Network.Socket (
  )
 import Network.Wai (Application, responseLBS)
 import qualified Network.Wai.Handler.Warp as Warp
+import qualified Network.Wai.Test as WaiTest
 import Test.Hspec (SpecWith, describe, it, shouldBe)
 
 spec :: SpecWith TestEnv

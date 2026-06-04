@@ -173,42 +173,42 @@ handleRefreshTokenGrant TokenRequest{tokenRequestRefreshToken} = do
                     { errBody = oauth2ErrorBody "invalid_grant" "session not found"
                     }
         RORotated newToken userVal sess uid -> do
-                let sid = sessionId sess
-                    ttl = fromIntegral jwtAccessTokenTtlSeconds
-                    expiry = addUTCTime ttl now
-                    iatPosix = utcTimeToPOSIXSeconds now
-                    (userEmail', userRole') = extractEmailRole userVal
-                    sas = deriveSessionAuthState Nothing sess
-                    claims =
-                        AccessTokenClaims
-                            { claimSub = UUID.toText uid
-                            , claimRole = userRole'
-                            , claimEmail = userEmail'
-                            , claimPhone = Nothing
-                            , claimAppMetadata = Aeson.object []
-                            , claimUserMetadata = Aeson.object []
-                            , claimAal = sasAal sas
-                            , claimAmr = buildAmrEntries (sasMethods sas) iatPosix
-                            , claimSessionId = UUID.toText (unSessionId sid)
-                            , claimIssuedAt = now
-                            , claimExpiresAt = expiry
-                            }
-                signResult <- liftIO (issueAccessToken env claims)
-                accessToken <- case signResult of
-                    Left err ->
-                        throwError
-                            err500
-                                { errBody = oauth2ErrorBody "token_issuance_blocked" (T.pack (show err))
-                                }
-                    Right t -> pure t
-                pure
-                    TokenResponse
-                        { tokenResponseAccessToken = accessToken
-                        , tokenResponseTokenType = "bearer"
-                        , tokenResponseExpiresIn = jwtAccessTokenTtlSeconds
-                        , tokenResponseRefreshToken = refreshTokenToken newToken
-                        , tokenResponseUser = userVal
+            let sid = sessionId sess
+                ttl = fromIntegral jwtAccessTokenTtlSeconds
+                expiry = addUTCTime ttl now
+                iatPosix = utcTimeToPOSIXSeconds now
+                (userEmail', userRole') = extractEmailRole userVal
+                sas = deriveSessionAuthState Nothing sess
+                claims =
+                    AccessTokenClaims
+                        { claimSub = UUID.toText uid
+                        , claimRole = userRole'
+                        , claimEmail = userEmail'
+                        , claimPhone = Nothing
+                        , claimAppMetadata = Aeson.object []
+                        , claimUserMetadata = Aeson.object []
+                        , claimAal = sasAal sas
+                        , claimAmr = buildAmrEntries (sasMethods sas) iatPosix
+                        , claimSessionId = UUID.toText (unSessionId sid)
+                        , claimIssuedAt = now
+                        , claimExpiresAt = expiry
                         }
+            signResult <- liftIO (issueAccessToken env claims)
+            accessToken <- case signResult of
+                Left err ->
+                    throwError
+                        err500
+                            { errBody = oauth2ErrorBody "token_issuance_blocked" (T.pack (show err))
+                            }
+                Right t -> pure t
+            pure
+                TokenResponse
+                    { tokenResponseAccessToken = accessToken
+                    , tokenResponseTokenType = "bearer"
+                    , tokenResponseExpiresIn = jwtAccessTokenTtlSeconds
+                    , tokenResponseRefreshToken = refreshTokenToken newToken
+                    , tokenResponseUser = userVal
+                    }
 
 handlePasswordGrant :: TokenRequest -> AppHandler TokenResponse
 handlePasswordGrant req = do
