@@ -3,10 +3,12 @@
 module E2E.AuthSpec (spec) where
 
 import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent.Async (concurrently)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (bracket_)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
+import Data.List (sort)
 import qualified Data.Text as T
 import Database.PostgreSQL.Simple (Only (..), execute, execute_)
 import E2E.Helpers (
@@ -20,7 +22,7 @@ import E2E.Helpers (
 import Hauth.Env (withDatabaseConnection)
 import Hauth.Hooks.Types (HookPoint (..), hookPointName)
 import Hauth.User (User (..), getUserByEmail)
-import Network.HTTP.Types (status200)
+import Network.HTTP.Types (status200, statusCode)
 import Network.Socket (
     Family (..),
     SockAddr (..),
@@ -37,6 +39,7 @@ import Network.Socket (
  )
 import Network.Wai (Application, responseLBS)
 import qualified Network.Wai.Handler.Warp as Warp
+import qualified Network.Wai.Test as WaiTest
 import Test.Hspec (SpecWith, describe, it, shouldBe)
 
 spec :: SpecWith TestEnv
@@ -113,6 +116,58 @@ spec = do
             -- 6. Logout (revokes the session)
             logoutResp <- runApp env $ jsonPost "/logout" (Aeson.object []) (Just newAccess)
             expectStatus 204 logoutResp
+
+    describe "concurrent refresh-token rotation" $
+        it "lets exactly one of two concurrent requests succeed" \env -> do
+            -- 1. Signup
+            _ <-
+                runApp env $
+                    jsonPost
+                        "/signup"
+                        (Aeson.object ["email" Aeson..= ("dave@example.com" :: T.Text), "password" Aeson..= ("correct horse" :: T.Text)])
+                        Nothing
+            mUser <-
+                withDatabaseConnection (testAppEnv env) (`getUserByEmail` "dave@example.com")
+            user <- case mUser of
+                Nothing -> error "expected user after signup"
+                Just u -> pure u
+            confirmationToken <- case userConfirmationToken user of
+                Nothing -> error "expected confirmation_token after signup"
+                Just t -> pure t
+
+            -- 2. Verify → grab the refresh token from the response
+            verifyResp <-
+                runApp env $
+                    jsonPost
+                        "/verify"
+                        ( Aeson.object
+                            [ "type" Aeson..= ("signup" :: T.Text)
+                            , "token" Aeson..= confirmationToken
+                            ]
+                        )
+                        Nothing
+            expectStatus 200 verifyResp
+            (verifyObj :: Aeson.Object) <- decodeBody verifyResp
+            refreshToken <- extractStringKey "refresh_token" verifyObj
+
+            -- 3. Fire two identical refresh requests concurrently.  Atomic
+            -- rotation must serialize them; exactly one observes the token
+            -- as live, the other observes it as already revoked.
+            let refreshAction =
+                    runApp env $
+                        jsonPost
+                            "/token?grant_type=refresh_token"
+                            (Aeson.object ["refresh_token" Aeson..= refreshToken])
+                            Nothing
+            (resp1, resp2) <- concurrently refreshAction refreshAction
+            let s1 = statusCode (WaiTest.simpleStatus resp1)
+                s2 = statusCode (WaiTest.simpleStatus resp2)
+            sort [s1, s2] `shouldBe` [200, 401]
+
+            -- 4. The loser's body must carry the OAuth2 invalid_grant code.
+            let loser = if s1 == 401 then resp1 else resp2
+            (errObj :: Aeson.Object) <- decodeBody loser
+            KeyMap.lookup "error" errObj `shouldBe` Just (Aeson.String "invalid_grant")
 
     describe "login with unconfirmed email" $
         it "returns email_not_confirmed" \env -> do
