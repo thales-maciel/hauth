@@ -2,6 +2,7 @@
 
 module Spec.Auth.CustomAccessTokenSpec (spec) where
 
+import Control.Exception (bracket)
 import Data.Aeson (Value (..))
 import qualified Data.Aeson.KeyMap as KeyMap
 import Data.Time.Clock (getCurrentTime)
@@ -24,11 +25,8 @@ withTestEnv :: (AppEnv -> IO a) -> IO a
 withTestEnv action =
     case decodeConfigBytes "test" validConfigBytes of
         Left err -> error ("withTestEnv: config parse failed: " <> show err)
-        Right cfg -> do
-            env <- createAppEnvWithLogger testLogger cfg
-            result <- action env
-            destroyAppEnv env
-            pure result
+        Right cfg ->
+            bracket (createAppEnvWithLogger testLogger cfg) destroyAppEnv action
 
 -- ---------------------------------------------------------------------------
 -- Tests

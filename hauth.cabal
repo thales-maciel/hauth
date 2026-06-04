@@ -181,6 +181,7 @@ test-suite hauth-test
     Spec.EmailSpec
     Spec.Hooks.RunnerSpec
     Spec.Hooks.TypesSpec
+    Spec.LifecycleSpec
     Spec.Mfa.TotpSpec
     Spec.Mfa.VerifySpec
     Spec.MigrateSpec

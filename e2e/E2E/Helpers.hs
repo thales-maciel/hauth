@@ -15,6 +15,7 @@ module E2E.Helpers (
     mintSessionJwt,
 ) where
 
+import Control.Exception (bracket)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BSL
@@ -79,21 +80,24 @@ data TestEnv = TestEnv
 -- the worker + template-cache listener don't race the schema), hands control
 -- to the action, tears services + AppEnv down. The body is responsible for
 -- truncating between tests.
+--
+-- Two nested brackets guarantee cleanup if the action throws:
+--   * outer bracket pairs createAppEnvWithLogger with destroyAppEnv
+--   * inner bracket pairs startBackgroundServices with stopBackgroundServices
+-- migrate-up runs between the brackets (after AppEnv exists, before services
+-- start) to preserve the schema-before-worker ordering.
 withTestEnv :: (TestEnv -> IO a) -> IO a
 withTestEnv action = do
     dbUrl <-
         T.pack . fromMaybe "postgresql://hauth:hauth@localhost:5432/hauth_e2e"
             <$> lookupEnv "HAUTH_E2E_DATABASE_URL"
     let cfg = testingConfig dbUrl
-    appEnv <- createAppEnvWithLogger silentLogger cfg
-    _ <- runMigrate cfg MigrateUp
-    services <- startBackgroundServices appEnv
-    let env = TestEnv appEnv cfg
-    truncateAll env
-    result <- action env
-    stopBackgroundServices services
-    destroyAppEnv appEnv
-    pure result
+    bracket (createAppEnvWithLogger silentLogger cfg) destroyAppEnv \appEnv -> do
+        _ <- runMigrate cfg MigrateUp
+        bracket (startBackgroundServices appEnv) stopBackgroundServices \_ -> do
+            let env = TestEnv appEnv cfg
+            truncateAll env
+            action env
 
 silentLogger :: Logger
 silentLogger = Logger \_lvl _msg -> pure ()

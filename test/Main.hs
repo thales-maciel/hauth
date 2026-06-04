@@ -21,6 +21,7 @@ import qualified Spec.Crypto.PasswordSpec
 import qualified Spec.EmailSpec
 import qualified Spec.Hooks.RunnerSpec
 import qualified Spec.Hooks.TypesSpec
+import qualified Spec.LifecycleSpec
 import qualified Spec.Mfa.TotpSpec
 import qualified Spec.Mfa.VerifySpec
 import qualified Spec.MigrateSpec
@@ -65,6 +66,7 @@ specs = do
     describe "email rendering" Spec.EmailSpec.spec
     describe "hooks/runner" Spec.Hooks.RunnerSpec.spec
     describe "hooks/types" Spec.Hooks.TypesSpec.spec
+    describe "lifecycle bracket" Spec.LifecycleSpec.spec
     describe "MFA/TOTP" Spec.Mfa.TotpSpec.spec
     describe "MFA verify" Spec.Mfa.VerifySpec.spec
     describe "migrations" Spec.MigrateSpec.spec
