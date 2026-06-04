@@ -231,7 +231,7 @@ verifyFactorHandler principal (FactorId factorIdText) VerifyFactorRequest{verify
     case mMfaHookCfg of
         Nothing -> pure ()
         Just mfaHookCfg -> do
-            mfaDecision <- liftIO (runHook mfaHookCfg mfaHookPayload)
+            mfaDecision <- liftIO (runHook (appHookHttpManager env) mfaHookCfg mfaHookPayload)
             case mfaDecision of
                 HookAllow -> pure ()
                 HookAllowWith _ -> pure ()

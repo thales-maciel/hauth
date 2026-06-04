@@ -176,14 +176,14 @@ immutable. A @HookReject@ surfaces as @Left (JwtSignError "token_issuance_blocke
 -}
 issueAccessToken :: AppEnv -> AccessTokenClaims -> IO (Either JwtError Text)
 issueAccessToken env claims = do
-    let AppEnv{appConfig} = env
+    let AppEnv{appConfig, appHookHttpManager} = env
         Config{configJwt} = appConfig
     mCfg <- tryLoadHookConfig env
     case mCfg of
         Nothing -> signAccessToken configJwt claims
         Just hookCfg -> do
             let payload = buildHookPayload claims
-            decision <- runHook hookCfg payload
+            decision <- runHook appHookHttpManager hookCfg payload
             case decision of
                 HookAllow ->
                     signAccessToken configJwt claims

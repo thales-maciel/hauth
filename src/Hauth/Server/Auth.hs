@@ -243,7 +243,7 @@ handlePasswordGrant req = do
     case mLoginHookCfg of
         Nothing -> pure ()
         Just loginHookCfg -> do
-            loginDecision <- liftIO (runHook loginHookCfg loginHookPayload)
+            loginDecision <- liftIO (runHook (appHookHttpManager env) loginHookCfg loginHookPayload)
             case loginDecision of
                 HookAllow -> pure ()
                 HookAllowWith _ -> pure ()
@@ -390,7 +390,7 @@ signupHandler _ SignupRequest{signupEmail, signupPassword, signupData} = do
                             , "user_metadata" Aeson..= proposedMetadata
                             , "ip" Aeson..= (Nothing :: Maybe T.Text)
                             ]
-                decision <- liftIO (runHook hookCfg hookPayload)
+                decision <- liftIO (runHook (appHookHttpManager env) hookCfg hookPayload)
                 case decision of
                     HookAllow -> pure proposedMetadata
                     HookAllowWith (Aeson.Object overlay) ->

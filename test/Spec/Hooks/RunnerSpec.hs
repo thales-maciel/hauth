@@ -17,6 +17,7 @@ import Hauth.Hooks.Runner (
     verifyHookSignature,
  )
 import Hauth.Hooks.Types (HookConfig (..), HookPoint (..))
+import Network.HTTP.Client (defaultManagerSettings, newManager)
 import Network.HTTP.Types (status200, status500)
 import Network.Socket (
     Family (..),
@@ -38,7 +39,7 @@ import Network.Wai (
     responseLBS,
  )
 import qualified Network.Wai.Handler.Warp as Warp
-import Test.Hspec (Spec, describe, expectationFailure, it, shouldBe)
+import Test.Hspec (Spec, describe, expectationFailure, it, runIO, shouldBe)
 
 -- ---------------------------------------------------------------------------
 -- Helpers
@@ -132,31 +133,34 @@ allowWithDecision overlay =
 
 spec :: Spec
 spec = do
+    -- One shared HTTP manager for the whole spec — mirrors the production
+    -- pattern where the manager lives on 'AppEnv' and is reused across hooks.
+    mgr <- runIO (newManager defaultManagerSettings)
     describe "decisions" $ do
         it "allow decision" $
             withTestServer (respondWith allowDecision) $ \port -> do
                 let cfg = testConfig (hookUrl port) 5000 False
-                d <- runHook cfg testPayload
+                d <- runHook mgr cfg testPayload
                 d `shouldBe` HookAllow
 
         it "reject decision" $
             withTestServer (respondWith (rejectDecision "not allowed")) $ \port -> do
                 let cfg = testConfig (hookUrl port) 5000 False
-                d <- runHook cfg testPayload
+                d <- runHook mgr cfg testPayload
                 d `shouldBe` HookReject "not allowed"
 
         it "allow_with decision" $ do
             let overlay = Aeson.object [("extra_claim", Aeson.String "foo")]
             withTestServer (respondWith (allowWithDecision overlay)) $ \port -> do
                 let cfg = testConfig (hookUrl port) 5000 False
-                d <- runHook cfg testPayload
+                d <- runHook mgr cfg testPayload
                 d `shouldBe` HookAllowWith overlay
 
     describe "timeouts and failures" $ do
         it "timeout fail-closed rejects" $
             withTestServer slowServer $ \port -> do
                 let cfg = testConfig (hookUrl port) 50 False -- 50 ms timeout
-                d <- runHook cfg testPayload
+                d <- runHook mgr cfg testPayload
                 case d of
                     HookReject _ -> pure ()
                     other -> expectationFailure ("expected HookReject, got " <> show other)
@@ -164,13 +168,13 @@ spec = do
         it "timeout fail-open allows" $
             withTestServer slowServer $ \port -> do
                 let cfg = testConfig (hookUrl port) 50 True -- 50 ms timeout, fail open
-                d <- runHook cfg testPayload
+                d <- runHook mgr cfg testPayload
                 d `shouldBe` HookAllow
 
         it "500 fail-closed rejects" $
             withTestServer respondWithStatus500 $ \port -> do
                 let cfg = testConfig (hookUrl port) 5000 False
-                d <- runHook cfg testPayload
+                d <- runHook mgr cfg testPayload
                 case d of
                     HookReject _ -> pure ()
                     other -> expectationFailure ("expected HookReject, got " <> show other)
@@ -179,7 +183,7 @@ spec = do
             withTestServer respondWithMalformed $ \port -> do
                 -- failOpen=true should NOT help for malformed body
                 let cfg = testConfig (hookUrl port) 5000 True
-                d <- runHook cfg testPayload
+                d <- runHook mgr cfg testPayload
                 d `shouldBe` HookReject "invalid hook response"
 
     describe "signatures" $ do
@@ -191,7 +195,7 @@ spec = do
                     respond (responseLBS status200 [("Content-Type", "application/json")] (Aeson.encode allowDecision))
             withTestServer capturingApp $ \port -> do
                 let cfg = testConfig (hookUrl port) 5000 False
-                _ <- runHook cfg testPayload
+                _ <- runHook mgr cfg testPayload
                 hdrs <- takeMVar capturedHeaders
                 let lookupHdr name = lookup name hdrs
                 case (lookupHdr "webhook-id", lookupHdr "webhook-timestamp", lookupHdr "webhook-signature") of
