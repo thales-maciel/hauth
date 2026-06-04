@@ -10,6 +10,7 @@ import qualified Spec.Auth.JwtSpec
 import qualified Spec.Auth.LoginSpec
 import qualified Spec.Auth.LogoutSpec
 import qualified Spec.Auth.RecoverySpec
+import qualified Spec.Auth.RoleSpec
 import qualified Spec.Auth.ServiceRoleSpec
 import qualified Spec.Auth.UserUpdateSpec
 import qualified Spec.Auth.VerifySpec
@@ -52,6 +53,7 @@ specs = do
     describe "auth/login" Spec.Auth.LoginSpec.spec
     describe "auth/logout" Spec.Auth.LogoutSpec.spec
     describe "auth/recovery" Spec.Auth.RecoverySpec.spec
+    describe "auth/role policy" Spec.Auth.RoleSpec.spec
     describe "auth/service-role" Spec.Auth.ServiceRoleSpec.spec
     describe "auth/user update" Spec.Auth.UserUpdateSpec.spec
     describe "auth/verify" Spec.Auth.VerifySpec.spec

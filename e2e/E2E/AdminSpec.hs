@@ -5,9 +5,11 @@ module E2E.AdminSpec (spec) where
 import Control.Exception (bracket_)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
+import Data.Foldable (for_)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Data.UUID (UUID)
+import qualified Data.UUID as UUID
 import qualified Data.UUID.V4 as UUID4
 import Database.PostgreSQL.Simple (Connection, Only (..), execute, query)
 import Database.PostgreSQL.Simple.Types (PGArray (..))
@@ -22,6 +24,8 @@ import E2E.Helpers (
     mintServiceRoleJwt,
     runApp,
  )
+import Hauth.Auth.Jwt (AccessTokenClaims (..), validateAccessToken)
+import Hauth.Config (Config (..))
 import Hauth.Env (withDatabaseConnection)
 import Test.Hspec (SpecWith, describe, it, shouldBe)
 
@@ -127,6 +131,125 @@ spec = do
                             jsonDelete ("/admin/users/" <> TE.encodeUtf8 userId) (Just svcJwt)
                     nDeleted <- countDeliveriesByType conn "user.deleted"
                     nDeleted `shouldBe` (1 :: Int)
+
+    describe "admin role-update validation" $ do
+        it "rejects role=service_role with 422 role_not_allowed" \env -> do
+            svcJwt <- mintServiceRoleJwt env
+            createResp <-
+                runApp env $
+                    jsonPost
+                        "/admin/users"
+                        ( Aeson.object
+                            [ "email" Aeson..= ("reserved-target@example.com" :: T.Text)
+                            , "password" Aeson..= ("admin generated" :: T.Text)
+                            , "email_confirm" Aeson..= True
+                            ]
+                        )
+                        (Just svcJwt)
+            expectStatus 200 createResp
+            (createObj :: Aeson.Object) <- decodeBody createResp
+            userId <- extractString "id" createObj
+
+            updResp <-
+                runApp env $
+                    jsonPut
+                        ("/admin/users/" <> TE.encodeUtf8 userId)
+                        (Aeson.object ["role" Aeson..= ("service_role" :: T.Text)])
+                        (Just svcJwt)
+            expectStatus 422 updResp
+            (updObj :: Aeson.Object) <- decodeBody updResp
+            KeyMap.lookup "error" updObj `shouldBe` Just (Aeson.String "role_not_allowed")
+
+        it "rejects role=anon and role=supabase_admin with 422" \env -> do
+            svcJwt <- mintServiceRoleJwt env
+            createResp <-
+                runApp env $
+                    jsonPost
+                        "/admin/users"
+                        ( Aeson.object
+                            [ "email" Aeson..= ("reserved-multi@example.com" :: T.Text)
+                            , "password" Aeson..= ("admin generated" :: T.Text)
+                            , "email_confirm" Aeson..= True
+                            ]
+                        )
+                        (Just svcJwt)
+            expectStatus 200 createResp
+            (createObj :: Aeson.Object) <- decodeBody createResp
+            userId <- extractString "id" createObj
+
+            for_ ["anon" :: T.Text, "supabase_admin"] \reserved -> do
+                resp <-
+                    runApp env $
+                        jsonPut
+                            ("/admin/users/" <> TE.encodeUtf8 userId)
+                            (Aeson.object ["role" Aeson..= reserved])
+                            (Just svcJwt)
+                expectStatus 422 resp
+
+    describe "user-session JWT cannot inherit service_role" $
+        it "refresh after DB-level role=service_role still rejects admin routes" \env -> do
+            svcJwt <- mintServiceRoleJwt env
+            -- 1. Admin-create + confirm a user, then password-grant a refresh token.
+            createResp <-
+                runApp env $
+                    jsonPost
+                        "/admin/users"
+                        ( Aeson.object
+                            [ "email" Aeson..= ("escalation@example.com" :: T.Text)
+                            , "password" Aeson..= ("correct horse" :: T.Text)
+                            , "email_confirm" Aeson..= True
+                            ]
+                        )
+                        (Just svcJwt)
+            expectStatus 200 createResp
+            (createObj :: Aeson.Object) <- decodeBody createResp
+            userId <- extractString "id" createObj
+            uid <- case UUID.fromText userId of
+                Just u -> pure u
+                Nothing -> error ("could not parse uuid: " <> show userId)
+
+            loginResp <-
+                runApp env $
+                    jsonPost
+                        "/token?grant_type=password"
+                        ( Aeson.object
+                            [ "email" Aeson..= ("escalation@example.com" :: T.Text)
+                            , "password" Aeson..= ("correct horse" :: T.Text)
+                            ]
+                        )
+                        Nothing
+            expectStatus 200 loginResp
+            (loginObj :: Aeson.Object) <- decodeBody loginResp
+            refreshToken <- extractString "refresh_token" loginObj
+
+            -- 2. Bypass the admin validator: set role directly via SQL.
+            withDatabaseConnection (testAppEnv env) \conn -> do
+                rowsAffected <-
+                    execute
+                        conn
+                        "UPDATE auth.users SET role = ? WHERE id = ?"
+                        ("service_role" :: T.Text, uid)
+                rowsAffected `shouldBe` 1
+
+            -- 3. Refresh the session; the new JWT must NOT carry service_role.
+            refreshResp <-
+                runApp env $
+                    jsonPost
+                        "/token?grant_type=refresh_token"
+                        (Aeson.object ["refresh_token" Aeson..= refreshToken])
+                        Nothing
+            expectStatus 200 refreshResp
+            (refreshObj :: Aeson.Object) <- decodeBody refreshResp
+            newAccess <- extractString "access_token" refreshObj
+
+            claimsResult <- validateAccessToken (configJwt (testConfig env)) newAccess
+            case claimsResult of
+                Left err -> error ("expected valid JWT after refresh, got " <> show err)
+                Right claims -> claimRole claims `shouldBe` "authenticated"
+
+            -- 4. The refreshed token must be rejected by service-role admin routes.
+            adminResp <- runApp env $ jsonGet "/admin/users" (Just newAccess)
+            expectStatus 401 adminResp
 
     describe "POST /admin/invite" $
         it "returns 200 and creates the user" \env -> do

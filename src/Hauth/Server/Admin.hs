@@ -114,6 +114,11 @@ adminCreateUserHandler _ req = do
                     }
         Left AdminUserNotFound ->
             throwError err404
+        Left (AdminRoleReserved _) ->
+            -- Unreachable today: AdminCreateUserRequest has no role field.
+            -- Guarded explicitly so future role-on-create stays consistent
+            -- with the update-side wire shape.
+            throwError err400
         Right () -> pure ()
     env <- ask
     let emailText = unEmail (adminCreateUserEmail req)
@@ -222,6 +227,16 @@ adminUpdateUserHandler _ (UserId uidText) req = do
                             Aeson.object
                                 [ "error" Aeson..= ("weak_password" :: T.Text)
                                 , "msg" Aeson..= ("Password must be at least " <> T.pack (show minLen) <> " characters")
+                                ]
+                    }
+        Left (AdminRoleReserved r) ->
+            throwError
+                err422
+                    { errBody =
+                        Aeson.encode $
+                            Aeson.object
+                                [ "error" Aeson..= ("role_not_allowed" :: T.Text)
+                                , "msg" Aeson..= ("Role '" <> r <> "' is reserved and cannot be assigned to a user")
                                 ]
                     }
         Left AdminUserNotFound ->

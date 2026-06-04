@@ -59,6 +59,7 @@ library
     Hauth.Auth.Login
     Hauth.Auth.Logout
     Hauth.Auth.Recovery
+    Hauth.Auth.Role
     Hauth.Auth.UserUpdate
     Hauth.Auth.Verify
     Hauth.CLI
@@ -169,6 +170,7 @@ test-suite hauth-test
     Spec.Auth.LoginSpec
     Spec.Auth.LogoutSpec
     Spec.Auth.RecoverySpec
+    Spec.Auth.RoleSpec
     Spec.Auth.ServiceRoleSpec
     Spec.Auth.UserUpdateSpec
     Spec.Auth.VerifySpec
