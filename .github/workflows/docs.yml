@@ -43,6 +43,44 @@ jobs:
             exit 1
           fi
 
+      - name: Reject contradictory current-version claims
+        # Issue #164: README.md, docs/PRODUCTION.md, and the compatibility
+        # contract must agree on which milestone is "current". The contract
+        # file is named v0.1-compatibility.md for backlink stability, but
+        # the surface it describes is also part of the current release.
+        # This guard catches the specific regressions we already had:
+        #   * README claiming the "v0.X surface" for a milestone that
+        #     PRODUCTION.md treats as past or future.
+        #   * PRODUCTION.md describing "current behavior" against a
+        #     milestone other than the one README labels current.
+        run: |
+          set -eu
+          missing=0
+          # README must explicitly name the current surface as v0.2.
+          if ! grep -qE 'current v0\.2 surface' README.md; then
+            echo "::error file=README.md::expected the phrase 'current v0.2 surface' (issue #164)." >&2
+            missing=1
+          fi
+          # README must not still claim "the v0.1 surface" as the active milestone.
+          if grep -nE 'the v0\.1 surface' README.md; then
+            echo "::error file=README.md::stale claim 'the v0.1 surface' detected; current is v0.2 (issue #164)." >&2
+            missing=1
+          fi
+          # PRODUCTION.md must keep its v0.2 framing for the current release.
+          if ! grep -qE 'Not Covered in v0\.2' docs/PRODUCTION.md; then
+            echo "::error file=docs/PRODUCTION.md::expected the section 'What Is Not Covered in v0.2' (issue #164)." >&2
+            missing=1
+          fi
+          # The compat contract file must carry the scope banner clarifying
+          # it documents the v0.1-introduced contract still upheld in v0.2.
+          if ! grep -qE 'still upholds in the current v0\.2 release' docs/v0.1-compatibility.md; then
+            echo "::error file=docs/v0.1-compatibility.md::missing scope banner tying the v0.1 contract to the current v0.2 release (issue #164)." >&2
+            missing=1
+          fi
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
       - name: Link check
         uses: lycheeverse/lychee-action@v2
         with:
