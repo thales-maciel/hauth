@@ -53,6 +53,16 @@ library
     Hauth.API
     Hauth.API.Auth
     Hauth.API.Types
+    Hauth.API.Types.Admin
+    Hauth.API.Types.Auth
+    Hauth.API.Types.Common
+    Hauth.API.Types.EmailTemplates
+    Hauth.API.Types.Health
+    Hauth.API.Types.Hooks
+    Hauth.API.Types.Mfa
+    Hauth.API.Types.OAuth
+    Hauth.API.Types.Settings
+    Hauth.API.Types.Webhooks
     Hauth.Auth.AalAmr
     Hauth.Auth.Admin
     Hauth.Auth.Jwt
@@ -82,6 +92,14 @@ library
     Hauth.Server
     Hauth.Server.Admin
     Hauth.Server.Auth
+    Hauth.Server.Auth.Recover
+    Hauth.Server.Auth.Resend
+    Hauth.Server.Auth.Session
+    Hauth.Server.Auth.Settings
+    Hauth.Server.Auth.Signup
+    Hauth.Server.Auth.Token
+    Hauth.Server.Auth.Verify
+    Hauth.Server.Auth.VerifyError
     Hauth.Server.EmailTemplates
     Hauth.Server.Errors
     Hauth.Server.Health
@@ -160,6 +178,14 @@ test-suite hauth-test
   main-is: Main.hs
   hs-source-dirs: test
   other-modules:
+    Spec.API.Golden.AdminSpec
+    Spec.API.Golden.AuthSpec
+    Spec.API.Golden.HealthSpec
+    Spec.API.Golden.Helpers
+    Spec.API.Golden.HooksSpec
+    Spec.API.Golden.MfaSpec
+    Spec.API.Golden.SettingsSpec
+    Spec.API.Golden.WebhooksSpec
     Spec.API.GoldenSpec
     Spec.APISpec
     Spec.Auth.AalAmrSpec

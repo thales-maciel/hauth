@@ -46,8 +46,8 @@ clean-local:
 guards: check-derived-json check-served-stubs
 
 check-derived-json:
-	@if grep -nE 'deriving[[:space:]]+anyclass[[:space:]]*\(.*(FromJSON|ToJSON)' src/Hauth/API/Types.hs >&2; then \
-		echo "ERROR: deriving anyclass FromJSON/ToJSON detected in src/Hauth/API/Types.hs." >&2; \
+	@if grep -rnE 'deriving[[:space:]]+anyclass[[:space:]]*\(.*(FromJSON|ToJSON)' src/Hauth/API/Types.hs src/Hauth/API/Types >&2; then \
+		echo "ERROR: deriving anyclass FromJSON/ToJSON detected under src/Hauth/API/Types." >&2; \
 		echo "       Wire shapes are hand-written and golden-tested; add explicit instances instead." >&2; \
 		exit 1; \
 	fi
