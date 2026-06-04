@@ -10,6 +10,7 @@ import Data.Time.Clock (UTCTime, getCurrentTime)
 import qualified Data.UUID as UUID
 import Hauth.API.Types (
     AdminCreateUserRequest (..),
+    AdminUpdateUserRequest (..),
     DeletedUserResponse (..),
     Email (..),
     InviteUserRequest (..),
@@ -26,6 +27,7 @@ import Hauth.Auth.Admin (
     defaultPagination,
     parsePagination,
     validateAdminCreate,
+    validateAdminUpdate,
     validateInvite,
  )
 import Hauth.Identity (Identity (..), IdentityId (..))
@@ -141,6 +143,47 @@ spec = do
                     , adminCreateUserAppMetadata = Nothing
                     }
                 `shouldBe` Right ()
+
+    describe "validateAdminUpdate" $ do
+        let emptyUpdate =
+                AdminUpdateUserRequest
+                    { adminUpdateUserEmail = Nothing
+                    , adminUpdateUserPassword = Nothing
+                    , adminUpdateUserEmailConfirm = Nothing
+                    , adminUpdateUserBannedUntil = Nothing
+                    , adminUpdateUserRole = Nothing
+                    , adminUpdateUserUserMetadata = Nothing
+                    , adminUpdateUserAppMetadata = Nothing
+                    }
+            updateWithRole r = emptyUpdate{adminUpdateUserRole = Just r}
+        it "no-op update -> Right ()" $
+            validateAdminUpdate emptyUpdate `shouldBe` Right ()
+        it "role=authenticated -> Right ()" $
+            validateAdminUpdate (updateWithRole "authenticated") `shouldBe` Right ()
+        it "role=custom_app_role -> Right ()" $
+            validateAdminUpdate (updateWithRole "custom_app_role") `shouldBe` Right ()
+        it "role=service_role -> AdminRoleReserved" $
+            validateAdminUpdate (updateWithRole "service_role")
+                `shouldBe` Left (AdminRoleReserved "service_role")
+        it "role=anon -> AdminRoleReserved" $
+            validateAdminUpdate (updateWithRole "anon")
+                `shouldBe` Left (AdminRoleReserved "anon")
+        it "role=supabase_admin -> AdminRoleReserved" $
+            validateAdminUpdate (updateWithRole "supabase_admin")
+                `shouldBe` Left (AdminRoleReserved "supabase_admin")
+        it "role=supabase_auth_admin -> AdminRoleReserved" $
+            validateAdminUpdate (updateWithRole "supabase_auth_admin")
+                `shouldBe` Left (AdminRoleReserved "supabase_auth_admin")
+        it "invalid email beats reserved role" $
+            case validateAdminUpdate
+                emptyUpdate
+                    { adminUpdateUserEmail = Just (Email "notanemail")
+                    , adminUpdateUserRole = Just "service_role"
+                    } of
+                Left (AdminEmailInvalid _) -> pure ()
+                other ->
+                    expectationFailure
+                        ("expected AdminEmailInvalid to take precedence, got " <> show other)
 
     describe "validateInvite" $ do
         it "empty email -> AdminEmailRequired" $

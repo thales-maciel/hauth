@@ -38,6 +38,7 @@ import Hauth.Auth.AalAmr (SessionAuthState (..), buildAmrEntries, deriveSessionA
 import Hauth.Auth.Jwt (AccessTokenClaims (..), AmrEntry (..), issueAccessToken)
 import Hauth.Auth.Login (LoginError (..), authorizeLogin, buildLoginClaims, extractCredentials)
 import Hauth.Auth.Recovery (RecoveryError (..), recoverySentMessage, validateRecoverRequest, validateRecoveryVerify)
+import Hauth.Auth.Role (sanitizeSessionRole)
 import Hauth.Auth.Verify (OtpType (..), VerifyError (..), classifyVerifyRequest, parseOtpType)
 import Hauth.Config (Config (..), EmailConfig (..), JwtConfig (..), SiteConfig (..))
 import Hauth.Crypto.Password (defaultArgon2Settings, hashPassword)
@@ -182,7 +183,7 @@ handleRefreshTokenGrant TokenRequest{tokenRequestRefreshToken} = do
                 claims =
                     AccessTokenClaims
                         { claimSub = UUID.toText uid
-                        , claimRole = userRole'
+                        , claimRole = sanitizeSessionRole userRole'
                         , claimEmail = userEmail'
                         , claimPhone = Nothing
                         , claimAppMetadata = Aeson.object []
@@ -300,7 +301,7 @@ handlePasswordGrant req = do
             Aeson.object
                 [ "id" Aeson..= UUID.toText userUUID
                 , "aud" Aeson..= User.userAud user
-                , "role" Aeson..= User.userRole user
+                , "role" Aeson..= sanitizeSessionRole (User.userRole user)
                 , "email" Aeson..= User.userEmail user
                 ]
     pure
@@ -331,7 +332,7 @@ fetchMinimalUser conn uid = do
                 Aeson.object
                     [ "id" Aeson..= idText
                     , "aud" Aeson..= aud
-                    , "role" Aeson..= role
+                    , "role" Aeson..= sanitizeSessionRole role
                     , "email" Aeson..= email
                     ]
         _ -> Nothing
@@ -620,7 +621,7 @@ issueSessionForUser user methodName = do
     let claims =
             AccessTokenClaims
                 { claimSub = UUID.toText uid
-                , claimRole = User.userRole user
+                , claimRole = sanitizeSessionRole (User.userRole user)
                 , claimEmail = User.userEmail user
                 , claimPhone = Nothing
                 , claimAppMetadata = User.userRawAppMetaData user

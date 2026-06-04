@@ -22,7 +22,7 @@ import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Data.Time.Clock (addUTCTime, getCurrentTime)
-import Database.PostgreSQL.Simple (execute_)
+import Database.PostgreSQL.Simple (Connection, execute, execute_)
 import Hauth.Auth.Jwt (
     AccessTokenClaims (..),
     JwtError,
@@ -37,6 +37,11 @@ import Hauth.Config (
     OAuthConfig (..),
     ServerConfig (..),
     SiteConfig (..),
+ )
+import Hauth.Email.TemplateCache (
+    Template (..),
+    lookupTemplate,
+    newTemplateCache,
  )
 import Hauth.Env (
     AppEnv (..),
@@ -97,6 +102,10 @@ silentLogger = Logger \_lvl _msg -> pure ()
 -- isolation when wired via hspec's before_. When adding a new auth.* table,
 -- add it here too — otherwise tests pile up rows across runs and assertions
 -- like "expected 0 deliveries" start counting hundreds.
+--
+-- auth.email_templates is also wiped, then re-seeded from the TH-embedded
+-- defaults so specs that mutate template rows (CRUD, hot-reload) don't
+-- leave migration-0011 content overwritten for the schema-seed spec.
 truncateAll :: TestEnv -> IO ()
 truncateAll TestEnv{testAppEnv} =
     withDatabaseConnection testAppEnv \conn -> do
@@ -112,8 +121,30 @@ truncateAll TestEnv{testAppEnv} =
                 \  auth.webhook_deliveries, \
                 \  auth.webhook_subscriptions, \
                 \  auth.identities, \
-                \  auth.users \
+                \  auth.users, \
+                \  auth.email_templates \
                 \RESTART IDENTITY CASCADE"
+        reseedEmailTemplates conn
+
+{- | Restore @auth.email_templates@ to the four TH-embedded defaults, matching
+what migration 0011 originally seeds. A fresh 'TemplateCache' has no DB
+rows loaded, so 'lookupTemplate' falls through to the embedded bundle —
+exactly the content the migration writes.
+-}
+reseedEmailTemplates :: Connection -> IO ()
+reseedEmailTemplates conn = do
+    cache <- newTemplateCache
+    mapM_ (insertOne cache) ["confirmation", "email_change", "invite", "recovery"]
+  where
+    insertOne cache name = do
+        Template{templateSubject, templateBodyText, templateBodyHtml} <-
+            lookupTemplate cache name
+        _ <-
+            execute
+                conn
+                "INSERT INTO auth.email_templates (name, subject, body_text, body_html) \
+                \VALUES (?, ?, ?, ?)"
+                (name, templateSubject, templateBodyText, templateBodyHtml)
         pure ()
 
 -- Drive a Wai Session against the in-process Application built from this env.

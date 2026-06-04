@@ -12,6 +12,7 @@ module Hauth.Auth.Admin (
 import Data.Text (Text)
 import qualified Data.Text as T
 import Hauth.API.Types (AdminCreateUserRequest (..), AdminUpdateUserRequest (..), InviteUserRequest (..), Password (..), unEmail)
+import Hauth.Auth.Role (isReservedRole)
 import Hauth.Crypto.Password (PasswordPolicyError (..), checkPasswordPolicy, defaultPasswordPolicy)
 
 -- | Errors from admin request validation.
@@ -21,6 +22,9 @@ data AdminError
     | -- | @(minLen, actual)@
       AdminPasswordPolicy Int Int
     | AdminUserNotFound
+    | -- | Admin attempted to assign a reserved control-plane role; the
+      -- offending role string is included verbatim.
+      AdminRoleReserved Text
     deriving stock (Eq, Show)
 
 -- ---------------------------------------------------------------------------
@@ -122,11 +126,14 @@ validateAdminCreate AdminCreateUserRequest{adminCreateUserEmail, adminCreateUser
 Only validates fields that are present; all-Nothing is valid (no-op update).
 -}
 validateAdminUpdate :: AdminUpdateUserRequest -> Either AdminError ()
-validateAdminUpdate AdminUpdateUserRequest{adminUpdateUserEmail, adminUpdateUserPassword} = do
+validateAdminUpdate AdminUpdateUserRequest{adminUpdateUserEmail, adminUpdateUserPassword, adminUpdateUserRole} = do
     case adminUpdateUserEmail of
         Nothing -> pure ()
         Just em -> validateEmail (unEmail em)
     validateOptionalPassword adminUpdateUserPassword
+    case adminUpdateUserRole of
+        Just r | isReservedRole r -> Left (AdminRoleReserved r)
+        _ -> pure ()
 
 -- | Validate an 'InviteUserRequest'.
 validateInvite :: InviteUserRequest -> Either AdminError ()
