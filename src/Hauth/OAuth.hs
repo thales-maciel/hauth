@@ -14,7 +14,7 @@ module Hauth.OAuth (
     validateRedirectTo,
 ) where
 
-import Control.Exception (Exception, throwIO)
+import Control.Exception (Exception, throwIO, try)
 import Data.Aeson (Value)
 import Data.List (find)
 import Data.Maybe (fromMaybe)
@@ -25,7 +25,7 @@ import Data.Time (UTCTime)
 import Data.Time.Clock (diffUTCTime)
 import Data.UUID (UUID)
 import qualified Data.UUID.V4 as UUID4
-import Database.PostgreSQL.Simple (Connection, Only (..), execute, execute_, query, withTransaction)
+import Database.PostgreSQL.Simple (Connection, Only (..), SqlError (..), execute, execute_, query, withTransaction)
 import Database.PostgreSQL.Simple.FromRow (FromRow (..), field)
 import Hauth.Config (OAuthConfig (..), OAuthProviderConfig (..), SiteConfig (..))
 import Hauth.Session (generateOpaqueToken)
@@ -325,34 +325,47 @@ findOrCreateIdentity conn IdentityClaims{identityProvider, identityProviderId, i
                                     , User.newUserUserMetadata = identityData
                                     , User.newUserAud = "authenticated"
                                     }
-                        createdUser <- User.createUser conn newUser
-                        let candidateUid = User.userId createdUser
-                        iid <- UUID4.nextRandom
-                        rows <-
-                            execute
-                                conn
-                                "INSERT INTO auth.identities \
-                                \  (id, user_id, provider_id, provider, identity_data) \
-                                \VALUES \
-                                \  (?, ?, ?, ?, ?) \
-                                \ON CONFLICT (provider, provider_id) DO NOTHING"
-                                ( T.pack (show iid)
-                                , User.unUserId candidateUid
-                                , identityProviderId
-                                , identityProvider
-                                , identityData
-                                )
-                        if rows == 1
-                            then do
-                                -- We won the race: commit the savepoint and return the new user.
-                                execute_ conn "RELEASE SAVEPOINT before_create_user"
-                                pure (candidateUid, True)
-                            else do
-                                -- We lost the race: roll back the orphan auth.users row and
-                                -- re-read the winning identity.
-                                execute_ conn "ROLLBACK TO SAVEPOINT before_create_user"
-                                resolvedUid <- fetchIdentityUserId conn identityProvider identityProviderId
-                                pure (resolvedUid, False)
+                        eCreated <- try (User.createUser conn newUser)
+                        case eCreated of
+                            Left (e :: SqlError)
+                                | sqlState e == "23505" -> do
+                                    -- Concurrent caller already inserted a user with
+                                    -- this email (collides on users_email_partial_key,
+                                    -- which fires even for empty-string emails on the
+                                    -- no-email OAuth path). Roll back and resolve to
+                                    -- the winning identity.
+                                    execute_ conn "ROLLBACK TO SAVEPOINT before_create_user"
+                                    resolvedUid <- fetchIdentityUserId conn identityProvider identityProviderId
+                                    pure (resolvedUid, False)
+                                | otherwise -> throwIO e
+                            Right createdUser -> do
+                                let candidateUid = User.userId createdUser
+                                iid <- UUID4.nextRandom
+                                rows <-
+                                    execute
+                                        conn
+                                        "INSERT INTO auth.identities \
+                                        \  (id, user_id, provider_id, provider, identity_data) \
+                                        \VALUES \
+                                        \  (?, ?, ?, ?, ?) \
+                                        \ON CONFLICT (provider, provider_id) DO NOTHING"
+                                        ( T.pack (show iid)
+                                        , User.unUserId candidateUid
+                                        , identityProviderId
+                                        , identityProvider
+                                        , identityData
+                                        )
+                                if rows == 1
+                                    then do
+                                        -- We won the race: commit the savepoint and return the new user.
+                                        execute_ conn "RELEASE SAVEPOINT before_create_user"
+                                        pure (candidateUid, True)
+                                    else do
+                                        -- We lost the race: roll back the orphan auth.users row and
+                                        -- re-read the winning identity.
+                                        execute_ conn "ROLLBACK TO SAVEPOINT before_create_user"
+                                        resolvedUid <- fetchIdentityUserId conn identityProvider identityProviderId
+                                        pure (resolvedUid, False)
 
 -- | Read the user_id for an existing (provider, provider_id) identity row.
 fetchIdentityUserId :: Connection -> Text -> Text -> IO User.UserId
