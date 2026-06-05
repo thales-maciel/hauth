@@ -6,6 +6,7 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.Text as T
 import Data.UUID (UUID)
+import Database.PostgreSQL.Simple (Only (..), execute)
 import E2E.Helpers (
     TestEnv (..),
     decodeBody,
@@ -100,17 +101,21 @@ spec = do
 bootstrapTwoSessions :: TestEnv -> T.Text -> IO (UUID, T.Text, T.Text, T.Text, T.Text)
 bootstrapTwoSessions env email = do
     _ <- bootstrapVerifiedUserAccess env email
-    -- Log in twice to create two distinct sessions.
-    sess1 <- login env email
-    sess2 <- login env email
-    (access1, refresh1) <- extractSession sess1
-    (access2, refresh2) <- extractSession sess2
-    -- Resolve the user UUID from DB.
+    -- Resolve the user UUID from DB, then drop the session /verify created
+    -- so the two logins below are the only sessions in play.
     mUser <- withDatabaseConnection (testAppEnv env) (`getUserByEmail` email)
     user <- case mUser of
         Nothing -> error "bootstrapTwoSessions: user not found"
         Just u -> pure u
     let uid = unUserId (userId user)
+    _ <-
+        withDatabaseConnection (testAppEnv env) \conn ->
+            execute conn "DELETE FROM auth.sessions WHERE user_id = ?" (Only uid)
+    -- Log in twice to create two distinct sessions.
+    sess1 <- login env email
+    sess2 <- login env email
+    (access1, refresh1) <- extractSession sess1
+    (access2, refresh2) <- extractSession sess2
     pure (uid, access1, refresh1, access2, refresh2)
 
 login :: TestEnv -> T.Text -> IO Aeson.Object
