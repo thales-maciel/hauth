@@ -18,7 +18,7 @@ import Hauth.API.Auth (AnonymousPrincipal)
 import Hauth.API.Types
 import Hauth.Auth.Verify (OtpType (..), VerifyError (..), parseOtpType)
 import Hauth.Config (Config (..), EmailConfig (..), SiteConfig (..))
-import Hauth.Email (EmailSender (..), TemplateData (..), TemplateKind (..), renderEmailCached, sendEmail, stubSender)
+import Hauth.Email (EmailSender (..), TemplateData (..), TemplateKind (..), renderEmailCached, sendEmail)
 import Hauth.Env (AppEnv (..), LogLevel (..), logMessage, withDatabaseConnection)
 import Hauth.Server.Auth.Session (AppHandler)
 import Hauth.Server.Auth.VerifyError (verifyErrorBody)
@@ -80,7 +80,7 @@ handleSignupResend emailText = do
                     Left _ ->
                         liftIO (logMessage appLogger LogWarn "resend: failed to render confirmation email")
                     Right msg -> do
-                        sendResult <- liftIO (sendEmail stubSender msg)
+                        sendResult <- liftIO (sendEmail (appEmailSender env) msg)
                         case sendResult of
                             Left err ->
                                 liftIO $

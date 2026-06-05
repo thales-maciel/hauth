@@ -50,7 +50,7 @@ import Hauth.Auth.Admin (
  )
 import Hauth.Config (Config (..), EmailConfig (..), SiteConfig (..))
 import Hauth.Crypto.Password (defaultArgon2Settings, hashPassword)
-import Hauth.Email (TemplateData (..), TemplateKind (..), renderEmailCached, sendEmail, stubSender)
+import Hauth.Email (TemplateData (..), TemplateKind (..), renderEmailCached, sendEmail)
 import Hauth.Env (AppEnv (..), LogLevel (..), logMessage, withDatabaseConnection)
 import qualified Hauth.Identity as Identity
 import Hauth.User (generateConfirmationToken)
@@ -374,7 +374,7 @@ adminInviteUserHandler _ req = do
                 logMessage appLogger LogWarn $
                     "adminInviteUserHandler: renderEmail failed: " <> T.pack (show err)
         Right msg -> do
-            result <- liftIO (sendEmail stubSender msg)
+            result <- liftIO (sendEmail (appEmailSender env) msg)
             case result of
                 Left err ->
                     liftIO $

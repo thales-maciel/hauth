@@ -16,7 +16,7 @@ import Hauth.API.Auth (AnonymousPrincipal)
 import Hauth.API.Types
 import Hauth.Auth.Recovery (recoverySentMessage, validateRecoverRequest)
 import Hauth.Config (Config (..), EmailConfig (..), SiteConfig (..))
-import Hauth.Email (EmailSender (..), TemplateData (..), TemplateKind (..), renderEmailCached, sendEmail, stubSender)
+import Hauth.Email (EmailSender (..), TemplateData (..), TemplateKind (..), renderEmailCached, sendEmail)
 import Hauth.Env (AppEnv (..), LogLevel (..), logMessage, withDatabaseConnection)
 import Hauth.Server.Auth.Session (AppHandler)
 import Hauth.Session (
@@ -60,7 +60,7 @@ recoverHandler _ req = do
                                     logMessage appLogger LogWarn $
                                         "recoverHandler: renderEmail failed: " <> T.pack (show err)
                             Right msg -> do
-                                result <- liftIO (sendEmail stubSender msg)
+                                result <- liftIO (sendEmail (appEmailSender env) msg)
                                 case result of
                                     Left err ->
                                         liftIO $

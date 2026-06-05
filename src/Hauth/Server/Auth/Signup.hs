@@ -13,8 +13,10 @@ import qualified Data.Text as T
 import Database.PostgreSQL.Simple (withTransaction)
 import Hauth.API.Auth (AnonymousPrincipal)
 import Hauth.API.Types
+import Hauth.Config (Config (..), EmailConfig (..), SiteConfig (..))
 import Hauth.Crypto.Password (defaultArgon2Settings, hashPassword)
-import Hauth.Env (AppEnv (..), withDatabaseConnection)
+import Hauth.Email (EmailSender (..), TemplateData (..), TemplateKind (..), renderEmailCached, sendEmail)
+import Hauth.Env (AppEnv (..), LogLevel (..), logMessage, withDatabaseConnection)
 import Hauth.Hooks.Runner (HookDecision (..), runHook)
 import Hauth.Hooks.Types (HookPoint (..), loadHookConfig)
 import Hauth.Server.Auth.Session (AppHandler)
@@ -123,5 +125,42 @@ signupHandler _ SignupRequest{signupEmail, signupPassword, signupData} = do
                     }
         Left _ ->
             throwError err400{errBody = supabaseErrorBody "signup_failed" "Signup failed"}
-        Right created ->
+        Right created -> do
+            liftIO (sendConfirmationEmail env created)
             pure (buildSignupResponse created)
+
+{- | Send the signup confirmation email after user creation.
+Failures are logged at WARN; signup still succeeds so the user can use /resend.
+-}
+sendConfirmationEmail :: AppEnv -> User.User -> IO ()
+sendConfirmationEmail env user = do
+    let AppEnv{appConfig, appLogger} = env
+        Config{configEmail, configSite = SiteConfig{siteUrl}} = appConfig
+        EmailConfig{emailFrom} = configEmail
+        mToken = User.userConfirmationToken user
+    case (User.userEmail user, mToken) of
+        (Just recipientEmail, Just token) -> do
+            let actionUrl = siteUrl <> "/auth/confirm?token=" <> token
+                tdata =
+                    TemplateData
+                        { templateRecipientEmail = recipientEmail
+                        , templateActionUrl = actionUrl
+                        , templateSiteUrl = siteUrl
+                        , templateTokenHash = token
+                        }
+            rendered <- renderEmailCached (appTemplateCache env) Confirmation emailFrom tdata
+            case rendered of
+                Left err ->
+                    logMessage appLogger LogWarn $
+                        "signupHandler: failed to render confirmation email: " <> T.pack (show err)
+                Right msg -> do
+                    result <- sendEmail (appEmailSender env) msg
+                    case result of
+                        Left err ->
+                            logMessage appLogger LogWarn $
+                                "signupHandler: confirmation email delivery failed for "
+                                    <> recipientEmail
+                                    <> ": "
+                                    <> T.pack (show err)
+                        Right () -> pure ()
+        _ -> pure ()

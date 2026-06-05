@@ -67,9 +67,9 @@ check-served-stubs:
 		exit 1; \
 	fi
 
-# Bump STUB_SENDER_CALLS only when intentionally adding another served
-# handler path that logs "smtp not wired" instead of delivering mail.
-STUB_SENDER_CALLS := 3
+# Served handlers now use the env-injected sender; this guard should stay 0.
+# Bump only when intentionally adding a served path that uses stubSender.
+STUB_SENDER_CALLS := 0
 check-stub-senders:
 	@count=$$(grep -R 'sendEmail stubSender' src/Hauth/Server | wc -l | tr -d ' '); \
 	if [ "$$count" != "$(STUB_SENDER_CALLS)" ]; then \
