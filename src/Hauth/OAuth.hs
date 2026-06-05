@@ -14,6 +14,7 @@ module Hauth.OAuth (
     validateRedirectTo,
 ) where
 
+import Control.Exception (Exception, throwIO, try)
 import Data.Aeson (Value)
 import Data.List (find)
 import Data.Maybe (fromMaybe)
@@ -24,12 +25,13 @@ import Data.Time (UTCTime)
 import Data.Time.Clock (diffUTCTime)
 import Data.UUID (UUID)
 import qualified Data.UUID.V4 as UUID4
-import Database.PostgreSQL.Simple (Connection, Only (..), execute, query)
+import Database.PostgreSQL.Simple (Connection, Only (..), SqlError (..), execute, execute_, query, withTransaction)
 import Database.PostgreSQL.Simple.FromRow (FromRow (..), field)
 import Hauth.Config (OAuthConfig (..), OAuthProviderConfig (..), SiteConfig (..))
 import Hauth.Session (generateOpaqueToken)
 import qualified Hauth.User as User
 import Network.HTTP.Types.URI (renderSimpleQuery)
+import System.IO (hPutStrLn, stderr)
 
 -- ---------------------------------------------------------------------------
 -- Core types
@@ -60,7 +62,12 @@ data OAuthError
     | OAuthStateExpired
     | OAuthStateInvalid
     | OAuthMissingParam Text
+    | -- | Identity row unexpectedly absent after an insert attempt.
+      -- The 'Text' carries the provider and provider_id for diagnostics.
+      OAuthIdentityMissing Text
     deriving stock (Eq, Show)
+
+instance Exception OAuthError
 
 data IdentityClaims = IdentityClaims
     { identityProvider :: Text
@@ -251,68 +258,135 @@ Look up @auth.identities@ by @(provider, provider_id)@.
   return that user's id with @isNewUser = False@.
 - If not found and no user with that email exists: create a new user, insert
   the identity, and return the new user's id with @isNewUser = True@.
+
+All three steps run inside a single transaction. On a concurrent first-login
+race the identity INSERT may hit the (provider, provider_id) unique constraint;
+the conflict is caught and the existing row is re-read so both callers resolve
+to the same user.
+
+The new-user path guards the 'User.createUser' call with a SAVEPOINT so that
+the race loser's @auth.users@ row is rolled back when the identity INSERT is
+skipped (0 rows affected), preventing orphan user accumulation.
 -}
 findOrCreateIdentity :: Connection -> IdentityClaims -> IO (User.UserId, Bool)
-findOrCreateIdentity conn IdentityClaims{identityProvider, identityProviderId, identityEmail, identityData} = do
-    existingRows <-
+findOrCreateIdentity conn IdentityClaims{identityProvider, identityProviderId, identityEmail, identityData} =
+    withTransaction conn go
+  where
+    go = do
+        existingRows <-
+            query
+                conn
+                "SELECT user_id FROM auth.identities \
+                \WHERE provider = ? AND provider_id = ?"
+                (identityProvider, identityProviderId)
+        case (existingRows :: [Only UUID]) of
+            (Only uid : _) ->
+                pure (User.UserId uid, False)
+            [] -> do
+                -- No existing identity; try to link by email.
+                mUser <- case identityEmail of
+                    Nothing -> pure Nothing
+                    Just email -> User.getUserByEmail conn email
+                case mUser of
+                    Just user -> do
+                        -- Link the identity to the email-matched user.
+                        insertIdentityOrFetch conn (User.unUserId (User.userId user)) identityProvider identityProviderId identityEmail identityData
+                        -- Re-read: a concurrent caller may have already linked this identity to a
+                        -- different user (the persisted identity row is authoritative).
+                        resolvedUid <- fetchIdentityUserId conn identityProvider identityProviderId
+                        -- Warn when the persisted identity diverges from the email-matched user.
+                        -- The session will bind to `resolvedUid` (the winner); this is correct
+                        -- behaviour — the identity row is the source of truth — but it means the
+                        -- email-match was superseded by a concurrent link.
+                        if resolvedUid /= User.userId user
+                            then do
+                                hPutStrLn stderr $
+                                    "findOrCreateIdentity: email-matched user "
+                                        <> show (User.unUserId (User.userId user))
+                                        <> " superseded by concurrent identity link for "
+                                        <> "(provider="
+                                        <> T.unpack identityProvider
+                                        <> ", provider_id="
+                                        <> T.unpack identityProviderId
+                                        <> "); binding session to winning user "
+                                        <> show (User.unUserId resolvedUid)
+                                pure (resolvedUid, False)
+                            else pure (resolvedUid, False)
+                    Nothing -> do
+                        -- No existing user; set a SAVEPOINT before creating one so the
+                        -- loser's auth.users row can be rolled back when the identity
+                        -- INSERT is skipped due to a concurrent winner.
+                        execute_ conn "SAVEPOINT before_create_user"
+                        let newUser =
+                                User.NewUser
+                                    { User.newUserEmail = fromMaybe "" identityEmail
+                                    , User.newUserEncryptedPassword = ""
+                                    , User.newUserConfirmationToken = Nothing
+                                    , User.newUserUserMetadata = identityData
+                                    , User.newUserAud = "authenticated"
+                                    }
+                        eCreated <- try (User.createUser conn newUser)
+                        case eCreated of
+                            Left (e :: SqlError)
+                                | sqlState e == "23505" -> do
+                                    -- Concurrent caller already inserted a user with
+                                    -- this email (collides on users_email_partial_key,
+                                    -- which fires even for empty-string emails on the
+                                    -- no-email OAuth path). Roll back and resolve to
+                                    -- the winning identity.
+                                    execute_ conn "ROLLBACK TO SAVEPOINT before_create_user"
+                                    resolvedUid <- fetchIdentityUserId conn identityProvider identityProviderId
+                                    pure (resolvedUid, False)
+                                | otherwise -> throwIO e
+                            Right createdUser -> do
+                                let candidateUid = User.userId createdUser
+                                iid <- UUID4.nextRandom
+                                rows <-
+                                    execute
+                                        conn
+                                        "INSERT INTO auth.identities \
+                                        \  (id, user_id, provider_id, provider, identity_data) \
+                                        \VALUES \
+                                        \  (?, ?, ?, ?, ?) \
+                                        \ON CONFLICT (provider, provider_id) DO NOTHING"
+                                        ( T.pack (show iid)
+                                        , User.unUserId candidateUid
+                                        , identityProviderId
+                                        , identityProvider
+                                        , identityData
+                                        )
+                                if rows == 1
+                                    then do
+                                        -- We won the race: commit the savepoint and return the new user.
+                                        execute_ conn "RELEASE SAVEPOINT before_create_user"
+                                        pure (candidateUid, True)
+                                    else do
+                                        -- We lost the race: roll back the orphan auth.users row and
+                                        -- re-read the winning identity.
+                                        execute_ conn "ROLLBACK TO SAVEPOINT before_create_user"
+                                        resolvedUid <- fetchIdentityUserId conn identityProvider identityProviderId
+                                        pure (resolvedUid, False)
+
+-- | Read the user_id for an existing (provider, provider_id) identity row.
+fetchIdentityUserId :: Connection -> Text -> Text -> IO User.UserId
+fetchIdentityUserId conn provider providerId = do
+    rows <-
         query
             conn
-            "SELECT user_id FROM auth.identities \
-            \WHERE provider = ? AND provider_id = ?"
-            (identityProvider, identityProviderId)
-    case (existingRows :: [Only UUID]) of
-        (Only uid : _) ->
-            pure (User.UserId uid, False)
-        [] -> do
-            -- No existing identity; try to link by email.
-            mUser <- case identityEmail of
-                Nothing -> pure Nothing
-                Just email -> User.getUserByEmail conn email
-            case mUser of
-                Just user -> do
-                    -- Link the identity to the existing user.
-                    insertIdentity conn (User.unUserId (User.userId user)) identityProvider identityProviderId identityEmail identityData
-                    pure (User.userId user, False)
-                Nothing -> do
-                    -- Create a brand-new user.
-                    uid <- UUID4.nextRandom
-                    let newUser =
-                            User.NewUser
-                                { User.newUserEmail = fromMaybe "" identityEmail
-                                , User.newUserEncryptedPassword = ""
-                                , User.newUserConfirmationToken = Nothing
-                                , User.newUserUserMetadata = identityData
-                                , User.newUserAud = "authenticated"
-                                }
-                    _ <- User.createUser conn newUser
-                    -- Re-fetch to get the real id (createUser generates its own UUID).
-                    mCreated <- case identityEmail of
-                        Nothing -> do
-                            -- No email; look up by the UUID we passed — but createUser
-                            -- ignores the uid we generate above; we need to fetch by
-                            -- the row that was just created. Use a workaround: look up
-                            -- the latest created user (best effort for now).
-                            rows <-
-                                query
-                                    conn
-                                    "SELECT id FROM auth.users ORDER BY created_at DESC LIMIT 1"
-                                    ()
-                            pure $ case (rows :: [Only UUID]) of
-                                (Only i : _) -> Just (User.UserId i)
-                                [] -> Just (User.UserId uid)
-                        Just email -> do
-                            u <- User.getUserByEmail conn email
-                            pure (fmap User.userId u)
-                    let resolvedUid = fromMaybe (User.UserId uid) mCreated
-                    insertIdentity conn (User.unUserId resolvedUid) identityProvider identityProviderId identityEmail identityData
-                    pure (resolvedUid, True)
+            "SELECT user_id FROM auth.identities WHERE provider = ? AND provider_id = ?"
+            (provider, providerId)
+    case (rows :: [Only UUID]) of
+        (Only uid : _) -> pure (User.UserId uid)
+        [] ->
+            throwIO $
+                OAuthIdentityMissing
+                    ("identity row not found after insert: provider=" <> provider <> " provider_id=" <> providerId)
 
-{- | Insert a row into @auth.identities@.
-Note: @email@ is a generated column derived from @identity_data ->> 'email'@;
-we do not insert it directly.
+{- | Insert an identity row; on (provider, provider_id) PK conflict do nothing
+(the row already exists from a concurrent first-login).
 -}
-insertIdentity :: Connection -> UUID -> Text -> Text -> Maybe Text -> Value -> IO ()
-insertIdentity conn uid provider providerId _email identityData = do
+insertIdentityOrFetch :: Connection -> UUID -> Text -> Text -> Maybe Text -> Value -> IO ()
+insertIdentityOrFetch conn uid provider providerId _email idData = do
     iid <- UUID4.nextRandom
     _ <-
         execute
@@ -320,6 +394,7 @@ insertIdentity conn uid provider providerId _email identityData = do
             "INSERT INTO auth.identities \
             \  (id, user_id, provider_id, provider, identity_data) \
             \VALUES \
-            \  (?, ?, ?, ?, ?)"
-            (T.pack (show iid), uid, providerId, provider, identityData)
+            \  (?, ?, ?, ?, ?) \
+            \ON CONFLICT (provider, provider_id) DO NOTHING"
+            (T.pack (show iid), uid, providerId, provider, idData)
     pure ()

@@ -64,6 +64,7 @@ import Hauth.Email.TemplateCache (
     startTemplateCacheListener,
     stopTemplateCacheListener,
  )
+import Hauth.OAuth.ProviderExchange (ProviderExchange, productionProviderExchange)
 import Hauth.Webhooks.Worker (WorkerHandle, startWorker, stopWorker)
 import Network.HTTP.Client (Manager, newManager)
 import Network.HTTP.Client.TLS (tlsManagerSettings)
@@ -82,6 +83,9 @@ data AppEnv = AppEnv
     , appEmailSender :: EmailSender
     -- ^ Configured email sender. Points at real SMTP in production; tests
     -- inject a capturing fake to assert delivery without a live server.
+    , appProviderExchange :: ProviderExchange
+    -- ^ Injectable OAuth provider exchange record. Production uses
+    -- 'productionProviderExchange'; e2e tests inject a fake.
     }
 
 {- | Handles for background workers/listeners spawned by
@@ -149,6 +153,7 @@ createAppEnvWithLogger logger config = do
             , appBackgroundServiceStatuses = statuses
             , appHookHttpManager = hookHttpManager
             , appEmailSender = emailSender
+            , appProviderExchange = productionProviderExchange config
             }
 
 {- | Spawn the webhook delivery worker and the template-cache LISTEN/NOTIFY
