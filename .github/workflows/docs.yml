@@ -93,3 +93,131 @@ jobs:
             './docs/**/*.md'
             './README.md'
           fail: true
+
+  cli-smoke-test:
+    name: CLI smoke test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Haskell
+        id: setup
+        uses: haskell-actions/setup@v2
+        with:
+          ghc-version: "9.4.8"
+          cabal-version: "3.12.1.0"
+
+      - name: Cache cabal store
+        # Only the dep store is cached; dist-newstyle is intentionally excluded.
+        # See ci.yml for details on why the local build is excluded.
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.setup.outputs.cabal-store }}
+          key: ${{ runner.os }}-ghc9.4.8-store-${{ hashFiles('**/*.cabal', 'cabal.project', 'cabal.project.ci') }}
+          restore-keys: |
+            ${{ runner.os }}-ghc9.4.8-store-
+
+      - name: Update package index
+        run: cabal update
+
+      - name: Build dependencies
+        run: cabal build all --only-dependencies --project-file=cabal.project.ci
+
+      - name: Build hauth executable
+        # Fast build for smoke test: optimization level 0 (set in cabal.project.ci)
+        run: cabal build exe:hauth --project-file=cabal.project.ci
+
+      - name: "Smoke test: hauth --help"
+        run: |
+          cabal run exe:hauth -- --help
+
+      - name: "Smoke test: hauth serve --help"
+        run: |
+          cabal run exe:hauth -- serve --help
+
+      - name: "Smoke test: hauth migrate --help"
+        run: |
+          cabal run exe:hauth -- migrate --help
+
+      - name: "Smoke test: hauth verify --help"
+        run: |
+          cabal run exe:hauth -- verify --help
+
+      - name: Extract supported subcommands from binary
+        id: subcommands
+        run: |
+          # Run `hauth --help` and extract the subcommand names from the "Commands:" section.
+          # Formats to handle: "  serve       Start the Hauth HTTP server"
+          subcommands=$(cabal run exe:hauth -- --help | awk '/^Commands:/{flag=1; next} /^Run/{flag=0} flag && /^  [a-z]/ {print $1}' | sort)
+          echo "Extracted subcommands:"
+          echo "$subcommands"
+          echo "subcommands<<EOF" >> $GITHUB_OUTPUT
+          echo "$subcommands" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Guard docs mention only supported subcommands
+        run: |
+          set -eu
+          subcommands='${{ steps.subcommands.outputs.subcommands }}'
+
+          echo "Supported subcommands:"
+          echo "$subcommands"
+
+          # Only scan code contexts (fenced ``` blocks and inline `backticks`),
+          # not prose. Otherwise sentences like "hauth verifies the state token"
+          # would be parsed as referencing a "verifies" subcommand.
+          extract_code() {
+            awk '
+              BEGIN { in_block = 0 }
+              /^```/ { in_block = !in_block; next }
+              {
+                if (in_block) {
+                  print
+                } else {
+                  line = $0
+                  while (match(line, /`[^`]+`/)) {
+                    print substr(line, RSTART+1, RLENGTH-2)
+                    line = substr(line, RSTART+RLENGTH)
+                  }
+                }
+              }
+            ' "$1"
+          }
+
+          # Within code text, treat `hauth <word>` as a CLI invocation only
+          # when `hauth` is the first word of a command:
+          #   hauth ...               at line start (possibly indented)
+          #   $ hauth ... / # hauth   after a shell prompt
+          #   /usr/local/bin/hauth    as basename of an absolute path
+          #   && hauth / ; hauth      chained
+          # This excludes "hauth" appearing as a username (sudo/chown/cron),
+          # config value (systemd Description=hauth ...), or process name in
+          # log output ([info] hauth listening ...).
+          cli_re='(^[[:space:]]*|[$#][[:space:]]+|/|&&[[:space:]]+|;[[:space:]]+|\|[[:space:]]+)hauth[[:space:]]+([a-z_-]+)'
+
+          found_unknown=0
+          while IFS= read -r line; do
+            if [[ $line =~ $cli_re ]]; then
+              cmd="${BASH_REMATCH[2]}"
+              if [[ "$cmd" == "-"* ]] || [[ "$cmd" == "help" ]]; then
+                continue
+              fi
+              if ! echo "$subcommands" | grep -q "^$cmd\$"; then
+                echo "::error::Unsupported subcommand referenced in docs code: '$cmd' (from: $line)"
+                found_unknown=1
+              fi
+            fi
+          done < <(
+            for f in $(find docs -name '*.md' 2>/dev/null) README.md; do
+              [ -f "$f" ] || continue
+              extract_code "$f"
+            done
+          )
+
+          if [ "$found_unknown" -eq 1 ]; then
+            exit 1
+          fi
+
+          echo "All documented subcommands (in code blocks) are supported by the binary."
