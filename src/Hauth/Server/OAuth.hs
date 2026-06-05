@@ -35,16 +35,9 @@ import Hauth.OAuth (
     lookupProvider,
     validateRedirectTo,
  )
-import Hauth.OAuth.Github (
-    GithubExchangeError (..),
-    githubExchangeCode,
-    githubProviderName,
- )
-import Hauth.OAuth.Google (
-    GoogleExchangeError (..),
-    googleExchangeCode,
-    googleProviderName,
- )
+import Hauth.OAuth.Github (githubProviderName)
+import Hauth.OAuth.Google (googleProviderName)
+import Hauth.OAuth.ProviderExchange (ProviderExchange (..))
 import Hauth.Session (
     NewSession (..),
     SessionId (..),
@@ -182,9 +175,9 @@ callbackHandler _ mCode mState = do
             case flowStateProviderType flowState of
                 p
                     | p == googleProviderName ->
-                        handleGoogleCallback env code flowState
+                        handleProviderCallback env (exchangeGoogle (appProviderExchange env)) code flowState
                     | p == githubProviderName ->
-                        handleGithubCallback env code flowState
+                        handleProviderCallback env (exchangeGithub (appProviderExchange env)) code flowState
                 other ->
                     throwError (unsupportedProviderError other)
 
@@ -200,35 +193,32 @@ unsupportedProviderError providerName =
         }
 
 -- ---------------------------------------------------------------------------
--- Google callback
+-- Unified provider callback (dispatched via injected ProviderExchange)
 -- ---------------------------------------------------------------------------
 
-handleGoogleCallback ::
+handleProviderCallback ::
     AppEnv ->
+    -- | Injected exchange function for the matched provider.
+    (Text -> IO (Either OAuthError IdentityClaims)) ->
     Text ->
     FlowState ->
     AppHandler SessionResponse
-handleGoogleCallback env code flowState = do
+handleProviderCallback env exchange code _flowState = do
     let AppEnv{appConfig} = env
-        Config{configOAuth, configSite, configJwt} = appConfig
-        SiteConfig{siteUrl} = configSite
+        Config{configJwt} = appConfig
         JwtConfig{jwtAccessTokenTtlSeconds} = configJwt
-        callbackUrl = siteUrl <> "/auth/v1/callback"
-        providerName = flowStateProviderType flowState
-    providerCfg <- case lookupProvider configOAuth providerName of
-        Left _ ->
+    claimsResult <- liftIO (exchange code)
+    identityClaims <- case claimsResult of
+        Left (OAuthUnknownProvider p) ->
             throwError
                 err400
                     { errBody =
                         Aeson.encode $
                             Aeson.object
                                 [ "error" Aeson..= ("unsupported_provider" :: T.Text)
-                                , "msg" Aeson..= ("Provider not configured: " <> providerName)
+                                , "msg" Aeson..= ("Provider not configured: " <> p)
                                 ]
                     }
-        Right cfg -> pure cfg
-    claimsResult <- liftIO (googleExchangeCode providerCfg callbackUrl code)
-    identityClaims <- case claimsResult of
         Left err ->
             throwError
                 err401
@@ -236,67 +226,18 @@ handleGoogleCallback env code flowState = do
                         Aeson.encode $
                             Aeson.object
                                 [ "error" Aeson..= ("oauth_exchange_failed" :: T.Text)
-                                , "msg" Aeson..= googleErrorMessage err
+                                , "msg" Aeson..= oauthErrorMessage err
                                 ]
                     }
         Right ic -> pure ic
     issueOAuthSession env jwtAccessTokenTtlSeconds identityClaims
 
-googleErrorMessage :: GoogleExchangeError -> T.Text
-googleErrorMessage = \case
-    GoogleHttpError msg -> msg
-    GoogleTokenResponseInvalid msg -> msg
-    GoogleUserinfoInvalid msg -> msg
-    GoogleMissingSub -> "Google userinfo response missing sub claim"
-
--- ---------------------------------------------------------------------------
--- GitHub callback
--- ---------------------------------------------------------------------------
-
-handleGithubCallback ::
-    AppEnv ->
-    T.Text ->
-    FlowState ->
-    AppHandler SessionResponse
-handleGithubCallback env code _flowState = do
-    let AppEnv{appConfig} = env
-        Config{configOAuth, configSite = SiteConfig{siteUrl}, configJwt} = appConfig
-        JwtConfig{jwtAccessTokenTtlSeconds} = configJwt
-    providerCfg <- case lookupProvider configOAuth githubProviderName of
-        Left _ ->
-            throwError
-                err401
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "error" Aeson..= ("oauth_exchange_failed" :: T.Text)
-                                , "msg" Aeson..= ("GitHub provider not configured" :: T.Text)
-                                ]
-                    }
-        Right cfg -> pure cfg
-    let callbackUrl = siteUrl <> "/auth/v1/callback"
-    claimsResult <- liftIO (githubExchangeCode providerCfg callbackUrl code)
-    claims <- case claimsResult of
-        Left err ->
-            throwError
-                err401
-                    { errBody =
-                        Aeson.encode $
-                            Aeson.object
-                                [ "error" Aeson..= ("oauth_exchange_failed" :: T.Text)
-                                , "msg" Aeson..= githubErrorMessage err
-                                ]
-                    }
-        Right c -> pure c
-    issueOAuthSession env jwtAccessTokenTtlSeconds claims
-
-githubErrorMessage :: GithubExchangeError -> T.Text
-githubErrorMessage = \case
-    GithubHttpError msg -> msg
-    GithubTokenResponseInvalid msg -> msg
-    GithubUserInvalid msg -> msg
-    GithubEmailsInvalid msg -> msg
-    GithubMissingId -> "GitHub user has no id"
+oauthErrorMessage :: OAuthError -> T.Text
+oauthErrorMessage = \case
+    OAuthUnknownProvider p -> "unknown provider: " <> p
+    OAuthStateExpired -> "OAuth state has expired"
+    OAuthStateInvalid -> "OAuth state is invalid or already consumed"
+    OAuthMissingParam msg -> msg
 
 -- ---------------------------------------------------------------------------
 -- Shared session-issuance for OAuth providers

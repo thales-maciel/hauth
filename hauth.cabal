@@ -89,6 +89,7 @@ library
     Hauth.OAuth
     Hauth.OAuth.Github
     Hauth.OAuth.Google
+    Hauth.OAuth.ProviderExchange
     Hauth.Server
     Hauth.Server.Admin
     Hauth.Server.Auth
@@ -274,6 +275,7 @@ test-suite hauth-e2e
     E2E.LogoutScopeSpec
     E2E.MfaSpec
     E2E.MigrateSpec
+    E2E.OAuthFake
     E2E.OAuthSpec
     E2E.RecoverySpec
     E2E.UserSpec
