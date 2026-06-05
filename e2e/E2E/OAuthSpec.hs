@@ -2,6 +2,7 @@
 
 module E2E.OAuthSpec (spec) where
 
+import Control.Concurrent.Async (concurrently)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.ByteString as BS
@@ -23,7 +24,8 @@ import E2E.OAuthFake (
     withFakeProviders,
  )
 import Hauth.Env (withDatabaseConnection)
-import Hauth.OAuth (IdentityClaims (..))
+import Hauth.OAuth (IdentityClaims (..), findOrCreateIdentity)
+import Hauth.User (unUserId)
 import Test.Hspec (SpecWith, describe, it, shouldBe, shouldSatisfy)
 
 redirectTo :: BS.ByteString
@@ -115,3 +117,52 @@ spec = do
             expectStatus 401 callbackResp
             (errObj :: Aeson.Object) <- decodeBody callbackResp
             KeyMap.lookup "error" errObj `shouldBe` Just (Aeson.String "oauth_exchange_failed")
+
+    describe "findOrCreateIdentity: no-email path" $
+        it "links identity to the exact user returned by createUser, not latest-created" \env -> do
+            -- Use a no-email identity so the code takes the no-email branch.
+            let noEmailClaims =
+                    IdentityClaims
+                        { identityProvider = "github"
+                        , identityProviderId = "no-email-sub-999"
+                        , identityEmail = Nothing
+                        , identityData = Aeson.object ["id" Aeson..= (999 :: Int)]
+                        }
+            (uid, isNew) <-
+                withDatabaseConnection (testAppEnv env) (`findOrCreateIdentity` noEmailClaims)
+            -- Must be a new user.
+            isNew `shouldBe` True
+            -- The identity row must reference the same user.
+            rows <-
+                withDatabaseConnection (testAppEnv env) \conn ->
+                    query
+                        conn
+                        "SELECT user_id FROM auth.identities WHERE provider = ? AND provider_id = ?"
+                        ("github" :: Text, "no-email-sub-999" :: Text)
+            let identityUserIds = map (\(Only i) -> i) (rows :: [Only T.Text])
+            identityUserIds `shouldBe` [T.pack (show (unUserId uid))]
+
+    describe "findOrCreateIdentity: concurrent first-login race" $
+        it "resolves both callers to the same user even under concurrent insert" \env -> do
+            -- Two concurrent callers with identical (provider, provider_id).
+            let raceClaims =
+                    IdentityClaims
+                        { identityProvider = "google"
+                        , identityProviderId = "race-sub-777"
+                        , identityEmail = Nothing
+                        , identityData = Aeson.object ["sub" Aeson..= ("race-sub-777" :: Text)]
+                        }
+            (uid1, uid2) <-
+                concurrently
+                    (withDatabaseConnection (testAppEnv env) \conn -> fst <$> findOrCreateIdentity conn raceClaims)
+                    (withDatabaseConnection (testAppEnv env) \conn -> fst <$> findOrCreateIdentity conn raceClaims)
+            -- Both callers must resolve to the same user.
+            uid1 `shouldBe` uid2
+            -- Exactly one identity row must exist.
+            rows <-
+                withDatabaseConnection (testAppEnv env) \conn ->
+                    query
+                        conn
+                        "SELECT provider_id FROM auth.identities WHERE provider = ? AND provider_id = ?"
+                        ("google" :: Text, "race-sub-777" :: Text)
+            length (rows :: [Only Text]) `shouldBe` 1

@@ -24,7 +24,7 @@ import Data.Time (UTCTime)
 import Data.Time.Clock (diffUTCTime)
 import Data.UUID (UUID)
 import qualified Data.UUID.V4 as UUID4
-import Database.PostgreSQL.Simple (Connection, Only (..), execute, query)
+import Database.PostgreSQL.Simple (Connection, Only (..), execute, query, withTransaction)
 import Database.PostgreSQL.Simple.FromRow (FromRow (..), field)
 import Hauth.Config (OAuthConfig (..), OAuthProviderConfig (..), SiteConfig (..))
 import Hauth.Session (generateOpaqueToken)
@@ -251,68 +251,73 @@ Look up @auth.identities@ by @(provider, provider_id)@.
   return that user's id with @isNewUser = False@.
 - If not found and no user with that email exists: create a new user, insert
   the identity, and return the new user's id with @isNewUser = True@.
+
+All three steps run inside a single transaction. On a concurrent first-login
+race the identity INSERT may hit the (provider, provider_id) unique constraint;
+the conflict is caught and the existing row is re-read so both callers resolve
+to the same user.
 -}
 findOrCreateIdentity :: Connection -> IdentityClaims -> IO (User.UserId, Bool)
-findOrCreateIdentity conn IdentityClaims{identityProvider, identityProviderId, identityEmail, identityData} = do
-    existingRows <-
+findOrCreateIdentity conn IdentityClaims{identityProvider, identityProviderId, identityEmail, identityData} =
+    withTransaction conn go
+  where
+    go = do
+        existingRows <-
+            query
+                conn
+                "SELECT user_id FROM auth.identities \
+                \WHERE provider = ? AND provider_id = ?"
+                (identityProvider, identityProviderId)
+        case (existingRows :: [Only UUID]) of
+            (Only uid : _) ->
+                pure (User.UserId uid, False)
+            [] -> do
+                -- No existing identity; try to link by email.
+                mUser <- case identityEmail of
+                    Nothing -> pure Nothing
+                    Just email -> User.getUserByEmail conn email
+                case mUser of
+                    Just user -> do
+                        -- Link the identity to the existing user.
+                        insertIdentityOrFetch conn (User.unUserId (User.userId user)) identityProvider identityProviderId identityEmail identityData
+                        -- Re-read to get the committed user_id (concurrent winner may differ).
+                        resolvedUid <- fetchIdentityUserId conn identityProvider identityProviderId
+                        pure (resolvedUid, False)
+                    Nothing -> do
+                        -- Create a brand-new user, use the returned row directly.
+                        let newUser =
+                                User.NewUser
+                                    { User.newUserEmail = fromMaybe "" identityEmail
+                                    , User.newUserEncryptedPassword = ""
+                                    , User.newUserConfirmationToken = Nothing
+                                    , User.newUserUserMetadata = identityData
+                                    , User.newUserAud = "authenticated"
+                                    }
+                        createdUser <- User.createUser conn newUser
+                        let candidateUid = User.userId createdUser
+                        insertIdentityOrFetch conn (User.unUserId candidateUid) identityProvider identityProviderId identityEmail identityData
+                        -- Re-read: concurrent winner may have inserted identity linking a different user.
+                        resolvedUid <- fetchIdentityUserId conn identityProvider identityProviderId
+                        let isNew = resolvedUid == candidateUid
+                        pure (resolvedUid, isNew)
+
+-- | Read the user_id for an existing (provider, provider_id) identity row.
+fetchIdentityUserId :: Connection -> Text -> Text -> IO User.UserId
+fetchIdentityUserId conn provider providerId = do
+    rows <-
         query
             conn
-            "SELECT user_id FROM auth.identities \
-            \WHERE provider = ? AND provider_id = ?"
-            (identityProvider, identityProviderId)
-    case (existingRows :: [Only UUID]) of
-        (Only uid : _) ->
-            pure (User.UserId uid, False)
-        [] -> do
-            -- No existing identity; try to link by email.
-            mUser <- case identityEmail of
-                Nothing -> pure Nothing
-                Just email -> User.getUserByEmail conn email
-            case mUser of
-                Just user -> do
-                    -- Link the identity to the existing user.
-                    insertIdentity conn (User.unUserId (User.userId user)) identityProvider identityProviderId identityEmail identityData
-                    pure (User.userId user, False)
-                Nothing -> do
-                    -- Create a brand-new user.
-                    uid <- UUID4.nextRandom
-                    let newUser =
-                            User.NewUser
-                                { User.newUserEmail = fromMaybe "" identityEmail
-                                , User.newUserEncryptedPassword = ""
-                                , User.newUserConfirmationToken = Nothing
-                                , User.newUserUserMetadata = identityData
-                                , User.newUserAud = "authenticated"
-                                }
-                    _ <- User.createUser conn newUser
-                    -- Re-fetch to get the real id (createUser generates its own UUID).
-                    mCreated <- case identityEmail of
-                        Nothing -> do
-                            -- No email; look up by the UUID we passed — but createUser
-                            -- ignores the uid we generate above; we need to fetch by
-                            -- the row that was just created. Use a workaround: look up
-                            -- the latest created user (best effort for now).
-                            rows <-
-                                query
-                                    conn
-                                    "SELECT id FROM auth.users ORDER BY created_at DESC LIMIT 1"
-                                    ()
-                            pure $ case (rows :: [Only UUID]) of
-                                (Only i : _) -> Just (User.UserId i)
-                                [] -> Just (User.UserId uid)
-                        Just email -> do
-                            u <- User.getUserByEmail conn email
-                            pure (fmap User.userId u)
-                    let resolvedUid = fromMaybe (User.UserId uid) mCreated
-                    insertIdentity conn (User.unUserId resolvedUid) identityProvider identityProviderId identityEmail identityData
-                    pure (resolvedUid, True)
+            "SELECT user_id FROM auth.identities WHERE provider = ? AND provider_id = ?"
+            (provider, providerId)
+    case (rows :: [Only UUID]) of
+        (Only uid : _) -> pure (User.UserId uid)
+        [] -> fail "fetchIdentityUserId: identity row not found after insert"
 
-{- | Insert a row into @auth.identities@.
-Note: @email@ is a generated column derived from @identity_data ->> 'email'@;
-we do not insert it directly.
+{- | Insert an identity row; on (provider, provider_id) PK conflict do nothing
+(the row already exists from a concurrent first-login).
 -}
-insertIdentity :: Connection -> UUID -> Text -> Text -> Maybe Text -> Value -> IO ()
-insertIdentity conn uid provider providerId _email identityData = do
+insertIdentityOrFetch :: Connection -> UUID -> Text -> Text -> Maybe Text -> Value -> IO ()
+insertIdentityOrFetch conn uid provider providerId _email idData = do
     iid <- UUID4.nextRandom
     _ <-
         execute
@@ -320,6 +325,7 @@ insertIdentity conn uid provider providerId _email identityData = do
             "INSERT INTO auth.identities \
             \  (id, user_id, provider_id, provider, identity_data) \
             \VALUES \
-            \  (?, ?, ?, ?, ?)"
-            (T.pack (show iid), uid, providerId, provider, identityData)
+            \  (?, ?, ?, ?, ?) \
+            \ON CONFLICT (provider, provider_id) DO NOTHING"
+            (T.pack (show iid), uid, providerId, provider, idData)
     pure ()
