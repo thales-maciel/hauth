@@ -10,7 +10,6 @@ module Hauth.OAuth.ProviderExchange (
 ) where
 
 import Data.Text (Text)
-import qualified Data.Text as T
 import Hauth.Config (Config (..), SiteConfig (..))
 import Hauth.OAuth (IdentityClaims, OAuthError (..), lookupProvider)
 import Hauth.OAuth.Github (GithubExchangeError (..), githubExchangeCode, githubProviderName)
@@ -65,4 +64,4 @@ githubToOAuthError = \case
     GithubTokenResponseInvalid msg -> OAuthMissingParam msg
     GithubUserInvalid msg -> OAuthMissingParam msg
     GithubEmailsInvalid msg -> OAuthMissingParam msg
-    GithubMissingId -> OAuthMissingParam ("GitHub user has no id" :: T.Text)
+    GithubMissingId -> OAuthMissingParam "GitHub user has no id"
