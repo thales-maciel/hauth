@@ -131,26 +131,26 @@ jobs:
 
       - name: "Smoke test: hauth --help"
         run: |
-          cabal exec exe:hauth -- --help
+          cabal run exe:hauth -- --help
 
       - name: "Smoke test: hauth serve --help"
         run: |
-          cabal exec exe:hauth -- serve --help
+          cabal run exe:hauth -- serve --help
 
       - name: "Smoke test: hauth migrate --help"
         run: |
-          cabal exec exe:hauth -- migrate --help
+          cabal run exe:hauth -- migrate --help
 
       - name: "Smoke test: hauth verify --help"
         run: |
-          cabal exec exe:hauth -- verify --help
+          cabal run exe:hauth -- verify --help
 
       - name: Extract supported subcommands from binary
         id: subcommands
         run: |
           # Run `hauth --help` and extract the subcommand names from the "Commands:" section.
           # Formats to handle: "  serve       Start the Hauth HTTP server"
-          subcommands=$(cabal exec exe:hauth -- --help | awk '/^Commands:/{flag=1; next} /^Run/{flag=0} flag && /^  [a-z]/ {print $1}' | sort)
+          subcommands=$(cabal run exe:hauth -- --help | awk '/^Commands:/{flag=1; next} /^Run/{flag=0} flag && /^  [a-z]/ {print $1}' | sort)
           echo "Extracted subcommands:"
           echo "$subcommands"
           echo "subcommands<<EOF" >> $GITHUB_OUTPUT
