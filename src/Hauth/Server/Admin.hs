@@ -50,7 +50,7 @@ import Hauth.Auth.Admin (
  )
 import Hauth.Config (Config (..), EmailConfig (..), SiteConfig (..))
 import Hauth.Crypto.Password (defaultArgon2Settings, hashPassword)
-import Hauth.Email (TemplateData (..), TemplateKind (..), renderEmailCached, sendEmail, stubSender)
+import Hauth.Email (TemplateData (..), TemplateKind (..), renderEmailCached, sendEmail)
 import Hauth.Env (AppEnv (..), LogLevel (..), logMessage, withDatabaseConnection)
 import qualified Hauth.Identity as Identity
 import Hauth.User (generateConfirmationToken)
@@ -357,7 +357,11 @@ adminInviteUserHandler _ req = do
             withTransaction conn do
                 existing <- User.getUserByEmail conn emailText
                 case existing of
-                    Just u -> pure u
+                    Just u -> do
+                        -- Resend-invite semantics: regenerate and persist the token
+                        -- so the invite URL delivered below is actually valid.
+                        User.setConfirmationToken conn (User.userId u) token
+                        pure u
                     Nothing -> User.createUser conn newUser
     let actionUrl = siteUrl <> "/auth/v1/verify?token=" <> token <> "&type=invite"
         tdata =
@@ -374,7 +378,7 @@ adminInviteUserHandler _ req = do
                 logMessage appLogger LogWarn $
                     "adminInviteUserHandler: renderEmail failed: " <> T.pack (show err)
         Right msg -> do
-            result <- liftIO (sendEmail stubSender msg)
+            result <- liftIO (sendEmail (appEmailSender env) msg)
             case result of
                 Left err ->
                     liftIO $

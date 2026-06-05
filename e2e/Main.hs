@@ -3,6 +3,7 @@ module Main (main) where
 import qualified E2E.AdminSpec
 import qualified E2E.AuthSpec
 import qualified E2E.CompatibilityPlaceholdersSpec
+import qualified E2E.EmailDeliverySpec
 import qualified E2E.EmailTemplatesCrudSpec
 import qualified E2E.EmailTemplatesLoaderSpec
 import qualified E2E.EmailTemplatesSchemaSpec
@@ -36,6 +37,7 @@ main = hspec $ aroundAll withTestEnv $ beforeWith truncateBefore allSpecs
 allSpecs :: SpecWith TestEnv
 allSpecs = do
     describe "auth flow" E2E.AuthSpec.spec
+    describe "email delivery" E2E.EmailDeliverySpec.spec
     describe "logout scope semantics" E2E.LogoutScopeSpec.spec
     describe "/user" E2E.UserSpec.spec
     describe "password recovery" E2E.RecoverySpec.spec

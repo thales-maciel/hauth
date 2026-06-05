@@ -469,7 +469,78 @@ sudo journalctl -u hauth -o json-pretty | head -20
 
 ---
 
-## 7. Hardening Checklist
+## 7. SMTP Email Delivery
+
+hauth sends transactional email via a direct plain-TCP SMTP connection (no
+third-party library dependency). Every auth flow that needs email now delivers
+it:
+
+| Flow | Email sent |
+|---|---|
+| `POST /signup` | Confirmation email with a token link |
+| `POST /resend` | Fresh confirmation email (replaces previous token) |
+| `POST /recover` | Password-reset email (only for password users) |
+| `POST /admin/invite` | Invite email |
+
+### Config
+
+The `email` section of `config.json` controls delivery:
+
+```json
+"email": {
+  "from": "noreply@auth.example.com",
+  "smtp_host": "smtp.example.com",
+  "smtp_port": 587,
+  "username": "smtp-user",
+  "password": "smtp-password"
+}
+```
+
+`username` and `password` are optional. When both are set hauth performs SMTP
+AUTH LOGIN. When either is absent hauth sends unauthenticated (suitable for
+local SMTP relays or services that authenticate by IP).
+
+Delivery failures are logged at `WARN` level and do not fail the HTTP request:
+
+```
+[warn] signupHandler: confirmation email delivery failed for user@example.com: ...
+[warn] recoverHandler: email send failed: EmailSendError "..."
+[warn] resend: email delivery failed: EmailSendError "..."
+[warn] adminInviteUserHandler: email send failed: EmailSendError "..."
+```
+
+Users can retry via `/resend` (signup confirmation) or `/recover` (password
+reset). The `hauth verify` subcommand checks TCP reachability and the SMTP EHLO
+handshake:
+
+```sh
+hauth verify --config /etc/hauth/config.json
+# smtp.tcp: ok
+# smtp.handshake: ok
+```
+
+### Local testing without a real SMTP server
+
+Run [MailHog](https://github.com/mailhog/MailHog) (or any SMTP sink that
+accepts on port 1025) and point hauth at it:
+
+```json
+"email": {
+  "from": "noreply@localhost",
+  "smtp_host": "localhost",
+  "smtp_port": 1025
+}
+```
+
+MailHog captures all outgoing email and exposes a web UI at
+`http://localhost:8025`. No messages are delivered externally.
+
+Alternatively, inject a fake sender in tests — the e2e suite does this via
+`appEmailSender` on `AppEnv`, which avoids any SMTP dependency in CI.
+
+---
+
+## 8. Hardening Checklist
 
 Every item below is testable. Work through it before accepting production
 traffic.
@@ -521,7 +592,7 @@ traffic.
 
 ---
 
-## 8. What Is Not Covered in v0.2
+## 9. What Is Not Covered in v0.2
 
 These topics are out of scope for v0.2 and will be addressed in later milestones:
 

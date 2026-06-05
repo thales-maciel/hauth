@@ -76,6 +76,7 @@ library
     Hauth.Config
     Hauth.Crypto.Password
     Hauth.Email
+    Hauth.Email.Smtp
     Hauth.Email.TemplateCache
     Hauth.Email.Templates
     Hauth.Env
@@ -147,6 +148,8 @@ library
     , scientific >=0.3 && <0.4
     , servant >=0.19 && <0.21
     , servant-server >=0.19 && <0.21
+    , mime-mail >=0.5 && <0.6
+    , smtp-mail >=0.5 && <0.6
     , text >=2.0 && <2.2
     , time >=1.12 && <1.15
     , uuid >=1.3 && <1.4
@@ -205,6 +208,7 @@ test-suite hauth-test
     Spec.ConfigRedactionSpec
     Spec.ConfigSpec
     Spec.Crypto.PasswordSpec
+    Spec.Email.SmtpSpec
     Spec.EmailSpec
     Spec.Hooks.RunnerSpec
     Spec.Hooks.TypesSpec
@@ -263,6 +267,7 @@ test-suite hauth-e2e
     E2E.AdminSpec
     E2E.AuthSpec
     E2E.CompatibilityPlaceholdersSpec
+    E2E.EmailDeliverySpec
     E2E.EmailTemplatesCrudSpec
     E2E.EmailTemplatesLoaderSpec
     E2E.EmailTemplatesSchemaSpec

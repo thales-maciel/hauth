@@ -18,6 +18,7 @@ import qualified Spec.CLISpec
 import qualified Spec.ConfigRedactionSpec
 import qualified Spec.ConfigSpec
 import qualified Spec.Crypto.PasswordSpec
+import qualified Spec.Email.SmtpSpec
 import qualified Spec.EmailSpec
 import qualified Spec.Hooks.RunnerSpec
 import qualified Spec.Hooks.TypesSpec
@@ -63,6 +64,7 @@ specs = do
     describe "config redaction" Spec.ConfigRedactionSpec.spec
     describe "config" Spec.ConfigSpec.spec
     describe "crypto/password" Spec.Crypto.PasswordSpec.spec
+    describe "email/smtp sender" Spec.Email.SmtpSpec.spec
     describe "email rendering" Spec.EmailSpec.spec
     describe "hooks/runner" Spec.Hooks.RunnerSpec.spec
     describe "hooks/types" Spec.Hooks.TypesSpec.spec

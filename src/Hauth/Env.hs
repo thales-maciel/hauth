@@ -55,6 +55,8 @@ import qualified Data.Text.Encoding as TE
 import Data.Time (NominalDiffTime)
 import Database.PostgreSQL.Simple (Connection, close, connectPostgreSQL)
 import Hauth.Config (Config (..), DatabaseConfig (..))
+import Hauth.Email (EmailSender)
+import Hauth.Email.Smtp (makeSMTPSender)
 import Hauth.Email.TemplateCache (
     TemplateCache,
     TemplateCacheListener,
@@ -78,6 +80,9 @@ data AppEnv = AppEnv
     -- A 'Manager' is thread-safe and meant to be long-lived; allocating a
     -- new one per request defeats connection pooling. Per-hook timeout is
     -- applied on the 'Request' (see "Hauth.Hooks.Runner"), not here.
+    , appEmailSender :: EmailSender
+    -- ^ Configured email sender. Points at real SMTP in production; tests
+    -- inject a capturing fake to assert delivery without a live server.
     , appProviderExchange :: ProviderExchange
     -- ^ Injectable OAuth provider exchange record. Production uses
     -- 'productionProviderExchange'; e2e tests inject a fake.
@@ -138,6 +143,7 @@ createAppEnvWithLogger logger config = do
     cache <- newTemplateCache
     statuses <- newBackgroundServiceStatuses
     hookHttpManager <- newManager tlsManagerSettings
+    let emailSender = makeSMTPSender (configEmail config)
     pure
         AppEnv
             { appConfig = config
@@ -146,6 +152,7 @@ createAppEnvWithLogger logger config = do
             , appTemplateCache = cache
             , appBackgroundServiceStatuses = statuses
             , appHookHttpManager = hookHttpManager
+            , appEmailSender = emailSender
             , appProviderExchange = productionProviderExchange config
             }
 
