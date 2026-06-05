@@ -93,3 +93,100 @@ jobs:
             './docs/**/*.md'
             './README.md'
           fail: true
+
+  cli-smoke-test:
+    name: CLI smoke test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Haskell
+        id: setup
+        uses: haskell-actions/setup@v2
+        with:
+          ghc-version: "9.4.8"
+          cabal-version: "3.12.1.0"
+
+      - name: Cache cabal store
+        # Only the dep store is cached; dist-newstyle is intentionally excluded.
+        # See ci.yml for details on why the local build is excluded.
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.setup.outputs.cabal-store }}
+          key: ${{ runner.os }}-ghc9.4.8-store-${{ hashFiles('**/*.cabal', 'cabal.project', 'cabal.project.ci') }}
+          restore-keys: |
+            ${{ runner.os }}-ghc9.4.8-store-
+
+      - name: Update package index
+        run: cabal update
+
+      - name: Build dependencies
+        run: cabal build all --only-dependencies --project-file=cabal.project.ci
+
+      - name: Build hauth executable
+        # Fast build for smoke test: optimization level 0 (set in cabal.project.ci)
+        run: cabal build exe:hauth --project-file=cabal.project.ci
+
+      - name: Smoke test: hauth --help
+        run: |
+          cabal exec exe:hauth -- --help
+
+      - name: Smoke test: hauth serve --help
+        run: |
+          cabal exec exe:hauth -- serve --help
+
+      - name: Smoke test: hauth migrate --help
+        run: |
+          cabal exec exe:hauth -- migrate --help
+
+      - name: Smoke test: hauth verify --help
+        run: |
+          cabal exec exe:hauth -- verify --help
+
+      - name: Extract supported subcommands from binary
+        id: subcommands
+        run: |
+          # Run `hauth --help` and extract the subcommand names from the "Commands:" section.
+          # Formats to handle: "  serve       Start the Hauth HTTP server"
+          subcommands=$(cabal exec exe:hauth -- --help | awk '/^Commands:/{flag=1; next} /^Run/{flag=0} flag && /^  [a-z]/ {print $1}' | sort)
+          echo "Extracted subcommands:"
+          echo "$subcommands"
+          echo "subcommands<<EOF" >> $GITHUB_OUTPUT
+          echo "$subcommands" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Guard docs mention only supported subcommands
+        run: |
+          set -eu
+          subcommands='${{ steps.subcommands.outputs.subcommands }}'
+
+          # Build a regex pattern of supported subcommands
+          pattern=$(echo "$subcommands" | paste -sd '|' - | sed 's/^/(/; s/$/)/')
+
+          echo "Checking that docs only mention supported subcommands: $pattern"
+
+          # Search for 'hauth <subcommand>' patterns in docs and README
+          found_unknown=0
+          while IFS= read -r line; do
+            # Extract the subcommand following 'hauth '
+            if [[ $line =~ hauth[[:space:]]+([a-z_-]+) ]]; then
+              cmd="${BASH_REMATCH[1]}"
+              # Skip if it's help or hyphenated options
+              if [[ "$cmd" == "-"* ]] || [[ "$cmd" == "help" ]]; then
+                continue
+              fi
+              # Check if this subcommand is in the supported list
+              if ! echo "$subcommands" | grep -q "^$cmd\$"; then
+                echo "::error::Unsupported subcommand referenced in docs: '$cmd' (from: $line)"
+                found_unknown=1
+              fi
+            fi
+          done < <(grep -rh "hauth " docs/ README.md 2>/dev/null || true)
+
+          if [ "$found_unknown" -eq 1 ]; then
+            exit 1
+          fi
+
+          echo "All documented subcommands are supported by the binary."
