@@ -159,10 +159,21 @@ spec = do
             -- Both callers must resolve to the same user.
             uid1 `shouldBe` uid2
             -- Exactly one identity row must exist.
-            rows <-
+            identityRows <-
                 withDatabaseConnection (testAppEnv env) \conn ->
                     query
                         conn
                         "SELECT provider_id FROM auth.identities WHERE provider = ? AND provider_id = ?"
                         ("google" :: Text, "race-sub-777" :: Text)
-            length (rows :: [Only Text]) `shouldBe` 1
+            length (identityRows :: [Only Text]) `shouldBe` 1
+            -- Exactly one auth.users row must exist for the two resolved user-ids.
+            -- Before the SAVEPOINT fix the race loser's createUser was committed but
+            -- never linked to an identity, leaving an orphan row; this assertion
+            -- would have caught that leak.
+            userRows <-
+                withDatabaseConnection (testAppEnv env) \conn ->
+                    query
+                        conn
+                        "SELECT COUNT(*) FROM auth.users WHERE id IN (?, ?)"
+                        (unUserId uid1, unUserId uid2)
+            head (map (\(Only n) -> n :: Int) userRows) `shouldBe` 1

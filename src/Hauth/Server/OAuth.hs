@@ -238,6 +238,7 @@ oauthErrorMessage = \case
     OAuthStateExpired -> "OAuth state has expired"
     OAuthStateInvalid -> "OAuth state is invalid or already consumed"
     OAuthMissingParam msg -> msg
+    OAuthIdentityMissing msg -> "identity missing after insert: " <> msg
 
 -- ---------------------------------------------------------------------------
 -- Shared session-issuance for OAuth providers
