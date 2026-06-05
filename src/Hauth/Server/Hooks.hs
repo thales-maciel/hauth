@@ -30,7 +30,7 @@ import Hauth.API.Types (
  )
 import Hauth.Env (AppEnv (..), withDatabaseConnection)
 import Hauth.Hooks.Types (HookPoint, hookPointName, parseHookPoint)
-import Network.URI (URI (uriScheme), parseAbsoluteURI)
+import Hauth.Validation.URL (parseHttpUrl)
 import Servant.API (NoContent (..))
 import Servant.Server (Handler, ServerError (..), err400, err404, err409)
 
@@ -42,9 +42,9 @@ type AppHandler = ReaderT AppEnv Handler
 
 validateUrl :: T.Text -> Either ServerError ()
 validateUrl u =
-    case parseAbsoluteURI (T.unpack u) of
-        Just uri | uriScheme uri `elem` ["http:", "https:"] -> Right ()
-        _ ->
+    case parseHttpUrl u of
+        Right _ -> Right ()
+        Left _ ->
             Left
                 err400
                     { errBody =
