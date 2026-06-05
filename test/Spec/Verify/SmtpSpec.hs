@@ -135,5 +135,6 @@ mkEnv smtpHost smtpPort =
         , appTemplateCache = error "template cache not used in smtp checks"
         , appBackgroundServiceStatuses = error "background services not used in smtp checks"
         , appHookHttpManager = error "http manager not used in smtp checks"
+        , appOutboundDestinationCheck = error "outbound destination check not used in smtp checks"
         , appEmailSender = error "email sender not used in smtp checks"
         }

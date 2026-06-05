@@ -11,7 +11,7 @@ import Control.Exception (try)
 import Control.Monad (forM_)
 import Control.Monad.Except (throwError)
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.Reader (ReaderT, ask)
+import Control.Monad.Reader (ReaderT, ask, asks)
 import qualified Crypto.Random as CR
 import qualified Data.Aeson as Aeson
 import Data.ByteArray.Encoding (Base (..), convertToBase)
@@ -36,7 +36,6 @@ import Hauth.API.Types (
  )
 import Hauth.Env (AppEnv (..), withDatabaseConnection)
 import Hauth.Hooks.Types (HookPoint, hookPointName, parseHookPoint)
-import Hauth.Security.OutboundDestination (checkDestination, defaultResolver)
 import Servant.API (NoContent (..))
 import Servant.Server (Handler, ServerError (..), err400, err404, err409)
 
@@ -48,7 +47,8 @@ type AppHandler = ReaderT AppEnv Handler
 
 validateUrl :: T.Text -> AppHandler ()
 validateUrl u = do
-    result <- liftIO (checkDestination defaultResolver u)
+    destCheck <- asks appOutboundDestinationCheck
+    result <- liftIO (destCheck u)
     case result of
         Right () -> pure ()
         Left _ ->

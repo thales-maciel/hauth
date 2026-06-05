@@ -66,7 +66,11 @@ import Hauth.Email.TemplateCache (
     stopTemplateCacheListener,
  )
 import Hauth.OAuth.ProviderExchange (ProviderExchange, productionProviderExchange)
-import Hauth.Security.OutboundDestination (newOutboundManager)
+import Hauth.Security.OutboundDestination (
+    checkDestination,
+    defaultResolver,
+    newOutboundManager,
+ )
 import Hauth.Webhooks.Worker (WorkerHandle, startWorker, stopWorker)
 import Network.HTTP.Client (Manager)
 
@@ -81,6 +85,13 @@ data AppEnv = AppEnv
     -- A 'Manager' is thread-safe and meant to be long-lived; allocating a
     -- new one per request defeats connection pooling. Per-hook timeout is
     -- applied on the 'Request' (see "Hauth.Hooks.Runner"), not here.
+    , appOutboundDestinationCheck :: Text -> IO (Either String ())
+    -- ^ Validation-time SSRF check applied to admin hook/webhook URLs.
+    -- Production uses 'checkDestination' with 'defaultResolver'; e2e tests
+    -- substitute a permissive check so loopback receivers work. Symmetric
+    -- with 'appHookHttpManager': both layers are injectable so the test
+    -- harness can target loopback servers without weakening the production
+    -- default.
     , appEmailSender :: EmailSender
     -- ^ Configured email sender. Points at real SMTP in production; tests
     -- inject a capturing fake to assert delivery without a live server.
@@ -138,17 +149,25 @@ createAppEnv :: Config -> IO AppEnv
 createAppEnv =
     createAppEnvWithLogger stdoutLogger
 
-{- | Construct an 'AppEnv' with an injectable HTTP 'Manager'.
+{- | Construct an 'AppEnv' with injectable SSRF-policy hooks: a custom HTTP
+'Manager' for delivery-time enforcement, and a custom validation-time
+destination check.
 
 Use 'createAppEnv' / 'createAppEnvWithLogger' in production — they default to
-'Hauth.Security.OutboundDestination.newOutboundManager', which enforces the
-SSRF policy on every outbound hook/webhook request.
+the hardened 'Manager' and the real 'checkDestination' with 'defaultResolver'.
 
-Pass a plain @'newManager' 'defaultManagerSettings'@ from @http-client@ only
-in test harnesses where hook/webhook endpoints are loopback servers.
+Pass a plain @'newManager' 'defaultManagerSettings'@ and a permissive check
+(e.g. @const (pure (Right ()))@) only in test harnesses where hook/webhook
+endpoints are loopback servers and the SSRF policy is exercised by dedicated
+unit/e2e suites instead.
 -}
-createAppEnvWith :: Logger -> Config -> Manager -> IO AppEnv
-createAppEnvWith logger config hookMgr = do
+createAppEnvWith ::
+    Logger ->
+    Config ->
+    Manager ->
+    (Text -> IO (Either String ())) ->
+    IO AppEnv
+createAppEnvWith logger config hookMgr destCheck = do
     pool <- createConnectionPool config
     cache <- newTemplateCache
     statuses <- newBackgroundServiceStatuses
@@ -161,6 +180,7 @@ createAppEnvWith logger config hookMgr = do
             , appTemplateCache = cache
             , appBackgroundServiceStatuses = statuses
             , appHookHttpManager = hookMgr
+            , appOutboundDestinationCheck = destCheck
             , appEmailSender = emailSender
             , appProviderExchange = productionProviderExchange config
             }
@@ -168,7 +188,7 @@ createAppEnvWith logger config hookMgr = do
 createAppEnvWithLogger :: Logger -> Config -> IO AppEnv
 createAppEnvWithLogger logger config = do
     hookMgr <- newOutboundManager
-    createAppEnvWith logger config hookMgr
+    createAppEnvWith logger config hookMgr (checkDestination defaultResolver)
 
 {- | Spawn the webhook delivery worker and the template-cache LISTEN/NOTIFY
 listener. Both expect a migrated schema and a reachable DB — call this AFTER

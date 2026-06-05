@@ -5,6 +5,7 @@ module E2E.Helpers (
     withTestEnv,
     truncateAll,
     runApp,
+    runAppHardened,
     jsonPost,
     jsonGet,
     jsonPut,
@@ -54,7 +55,9 @@ import Hauth.Env (
     withDatabaseConnection,
  )
 import Hauth.Migrate (runMigrate)
+import Hauth.Security.OutboundDestination (checkDestination, defaultResolver)
 import Hauth.Server (app)
+import Hauth.Validation.URL (parseHttpUrl)
 import Network.HTTP.Client (defaultManagerSettings, newManager)
 import Network.HTTP.Types (Method, hAccept, hAuthorization, hContentType, statusCode)
 import Network.Wai (Request (requestHeaders, requestMethod))
@@ -102,11 +105,19 @@ withTestEnv action = do
         T.pack . fromMaybe "postgresql://hauth:hauth@localhost:5432/hauth_e2e"
             <$> lookupEnv "HAUTH_E2E_DATABASE_URL"
     let cfg = testingConfig dbUrl
-    -- Use a plain (non-hardened) Manager: e2e tests spin up loopback servers
-    -- for hook and webhook receivers; the hardened manager would block them.
-    -- The SSRF policy is covered separately by unit tests and e2e OutboundDestination tests.
+    -- Use a plain (non-hardened) Manager AND a parse-only validation-time
+    -- check: e2e tests spin up loopback servers for hook and webhook
+    -- receivers, which the hardened defaults would reject. The parse-only
+    -- check preserves URL syntax validation (so tests asserting 400 on
+    -- malformed URLs still pass) while bypassing IP-class rejection.
+    -- The full SSRF policy is exercised by Spec.Security.OutboundDestinationSpec
+    -- and E2E.OutboundDestinationSpec (which uses 'runAppHardened').
     plainMgr <- newManager defaultManagerSettings
-    bracket (createAppEnvWith silentLogger cfg plainMgr) destroyAppEnv \appEnv -> do
+    let parseOnlyDestCheck url =
+            pure $ case parseHttpUrl url of
+                Left msg -> Left msg
+                Right _ -> Right ()
+    bracket (createAppEnvWith silentLogger cfg plainMgr parseOnlyDestCheck) destroyAppEnv \appEnv -> do
         _ <- runMigrate cfg MigrateUp
         bracket (startRequiredBackgroundServices appEnv) stopBackgroundServices \_ -> do
             let env = TestEnv appEnv cfg
@@ -168,6 +179,19 @@ reseedEmailTemplates conn = do
 -- Drive a Wai Session against the in-process Application built from this env.
 runApp :: TestEnv -> Session a -> IO a
 runApp TestEnv{testAppEnv} sess = runSession sess (app testAppEnv)
+
+-- Like 'runApp' but with the production SSRF validation-time check enabled,
+-- regardless of how the shared 'TestEnv' was built. The shared env uses a
+-- permissive check so the bulk of the suite can target loopback servers; this
+-- variant is for tests that assert /admin/hooks and /admin/webhooks reject
+-- blocked destinations at the API layer.
+runAppHardened :: TestEnv -> Session a -> IO a
+runAppHardened TestEnv{testAppEnv} sess =
+    let hardenedEnv =
+            testAppEnv
+                { appOutboundDestinationCheck = checkDestination defaultResolver
+                }
+     in runSession sess (app hardenedEnv)
 
 -- Build a JSON POST request, optionally with a Bearer token.
 jsonPost ::

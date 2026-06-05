@@ -28,7 +28,7 @@ import E2E.Helpers (
     jsonPost,
     jsonPut,
     mintServiceRoleJwt,
-    runApp,
+    runAppHardened,
  )
 import Hauth.Env (withDatabaseConnection)
 import Test.Hspec (SpecWith, describe, it, shouldBe)
@@ -58,7 +58,7 @@ spec = do
         it "rejects http://127.0.0.1 (loopback)" \env -> do
             svcJwt <- mintServiceRoleJwt env
             resp <-
-                runApp env $
+                runAppHardened env $
                     jsonPost
                         "/admin/hooks"
                         ( Aeson.object
@@ -74,7 +74,7 @@ spec = do
         it "rejects http://169.254.169.254 (cloud metadata)" \env -> do
             svcJwt <- mintServiceRoleJwt env
             resp <-
-                runApp env $
+                runAppHardened env $
                     jsonPost
                         "/admin/hooks"
                         ( Aeson.object
@@ -90,7 +90,7 @@ spec = do
         it "rejects http://10.0.0.1 (RFC1918)" \env -> do
             svcJwt <- mintServiceRoleJwt env
             resp <-
-                runApp env $
+                runAppHardened env $
                     jsonPost
                         "/admin/hooks"
                         ( Aeson.object
@@ -106,7 +106,7 @@ spec = do
         it "rejects http://192.168.0.1 (RFC1918)" \env -> do
             svcJwt <- mintServiceRoleJwt env
             resp <-
-                runApp env $
+                runAppHardened env $
                     jsonPost
                         "/admin/hooks"
                         ( Aeson.object
@@ -123,7 +123,7 @@ spec = do
         it "rejects http://127.0.0.1 (loopback)" \env -> do
             svcJwt <- mintServiceRoleJwt env
             resp <-
-                runApp env $
+                runAppHardened env $
                     jsonPost
                         "/admin/webhooks"
                         ( Aeson.object
@@ -138,7 +138,7 @@ spec = do
         it "rejects http://169.254.169.254 (cloud metadata)" \env -> do
             svcJwt <- mintServiceRoleJwt env
             resp <-
-                runApp env $
+                runAppHardened env $
                     jsonPost
                         "/admin/webhooks"
                         ( Aeson.object
@@ -153,7 +153,7 @@ spec = do
         it "rejects http://10.0.0.1 (RFC1918)" \env -> do
             svcJwt <- mintServiceRoleJwt env
             resp <-
-                runApp env $
+                runAppHardened env $
                     jsonPost
                         "/admin/webhooks"
                         ( Aeson.object
@@ -168,7 +168,7 @@ spec = do
         it "rejects http://192.168.0.1 (RFC1918)" \env -> do
             svcJwt <- mintServiceRoleJwt env
             resp <-
-                runApp env $
+                runAppHardened env $
                     jsonPost
                         "/admin/webhooks"
                         ( Aeson.object
@@ -185,7 +185,7 @@ spec = do
             withHookCleanup env $ do
                 svcJwt <- mintServiceRoleJwt env
                 createResp <-
-                    runApp env $
+                    runAppHardened env $
                         jsonPost
                             "/admin/hooks"
                             ( Aeson.object
@@ -198,7 +198,7 @@ spec = do
                 (createObj :: Aeson.Object) <- decodeBody createResp
                 hookId <- extractString "id" createObj
                 resp <-
-                    runApp env $
+                    runAppHardened env $
                         jsonPut
                             ("/admin/hooks/" <> TE.encodeUtf8 hookId)
                             (Aeson.object ["url" Aeson..= ("http://127.0.0.1/hook" :: T.Text)])
@@ -212,7 +212,7 @@ spec = do
             withWebhookCleanup env $ do
                 svcJwt <- mintServiceRoleJwt env
                 createResp <-
-                    runApp env $
+                    runAppHardened env $
                         jsonPost
                             "/admin/webhooks"
                             ( Aeson.object
@@ -224,7 +224,7 @@ spec = do
                 (createObj :: Aeson.Object) <- decodeBody createResp
                 subId <- extractString "id" createObj
                 resp <-
-                    runApp env $
+                    runAppHardened env $
                         jsonPut
                             ("/admin/webhooks/" <> TE.encodeUtf8 subId)
                             (Aeson.object ["url" Aeson..= ("http://169.254.169.254/latest/meta-data/" :: T.Text)])

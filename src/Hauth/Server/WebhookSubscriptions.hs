@@ -9,7 +9,7 @@ module Hauth.Server.WebhookSubscriptions (
 
 import Control.Monad.Except (throwError)
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.Reader (ReaderT, ask)
+import Control.Monad.Reader (ReaderT, ask, asks)
 import qualified Crypto.Random as CR
 import qualified Data.Aeson as Aeson
 import Data.ByteArray.Encoding (Base (..), convertToBase)
@@ -36,8 +36,7 @@ import Hauth.API.Types (
     WebhookSubscriptionResponse (..),
     toWebhookCreateResponse,
  )
-import Hauth.Env (AppEnv, withDatabaseConnection)
-import Hauth.Security.OutboundDestination (checkDestination, defaultResolver)
+import Hauth.Env (AppEnv (..), withDatabaseConnection)
 import Servant.API (NoContent (..))
 import Servant.Server (Handler, ServerError (errBody), err400, err404, err409)
 
@@ -211,7 +210,8 @@ deleteWebhookSubscriptionHandler _ (WebhookSubscriptionId idText) = do
 -- with a publicly-routable destination.
 validateUrl :: T.Text -> AppHandler ()
 validateUrl url = do
-    result <- liftIO (checkDestination defaultResolver url)
+    destCheck <- asks appOutboundDestinationCheck
+    result <- liftIO (destCheck url)
     case result of
         Right () -> pure ()
         Left _ ->
