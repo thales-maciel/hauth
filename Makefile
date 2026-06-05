@@ -1,4 +1,4 @@
-.PHONY: build check-derived-json check-served-stubs ci clean-local coverage e2e format format-check guards lint rebase-check run test
+.PHONY: build check-derived-json check-served-stubs check-stub-senders ci clean-local coverage e2e format format-check guards lint rebase-check run test
 
 build:
 	cabal build all
@@ -43,7 +43,9 @@ clean-local:
 #     would silently change wire shape.
 #   * notImplemented stubs in served APIs; new ones must be explicitly
 #     acknowledged (bump SERVED_STUBS) so reviewers can't miss them.
-guards: check-derived-json check-served-stubs
+#   * stubSender use in served handlers; real SMTP is not wired yet, so new
+#     call sites must be reviewed instead of silently expanding the gap.
+guards: check-derived-json check-served-stubs check-stub-senders
 
 check-derived-json:
 	@if grep -rnE 'deriving[[:space:]]+anyclass[[:space:]]*\(.*(FromJSON|ToJSON)' src/Hauth/API/Types.hs src/Hauth/API/Types >&2; then \
@@ -62,6 +64,18 @@ check-served-stubs:
 		echo "ERROR: src/Hauth/Server.hs has $$count served notImplemented stubs; allowlist expects $(SERVED_STUBS)." >&2; \
 		echo "       Implement the handler or bump SERVED_STUBS in the Makefile in the same PR." >&2; \
 		grep -nE '^[[:space:]]+(:<\|>[[:space:]]+)?notImplemented[0-9]+([[:space:]]|$$)' src/Hauth/Server.hs >&2; \
+		exit 1; \
+	fi
+
+# Bump STUB_SENDER_CALLS only when intentionally adding another served
+# handler path that logs "smtp not wired" instead of delivering mail.
+STUB_SENDER_CALLS := 3
+check-stub-senders:
+	@count=$$(grep -R 'sendEmail stubSender' src/Hauth/Server | wc -l | tr -d ' '); \
+	if [ "$$count" != "$(STUB_SENDER_CALLS)" ]; then \
+		echo "ERROR: src/Hauth/Server has $$count stubSender send sites; allowlist expects $(STUB_SENDER_CALLS)." >&2; \
+		echo "       Wire real SMTP or bump STUB_SENDER_CALLS in the same PR with a documented reason." >&2; \
+		grep -Rn 'sendEmail stubSender' src/Hauth/Server >&2; \
 		exit 1; \
 	fi
 

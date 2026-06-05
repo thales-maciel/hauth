@@ -138,11 +138,11 @@ spec = do
                         url `shouldSatisfy` T.isInfixOf ("state=" <> stateToken)
                     it "carries the configured client_id verbatim" $
                         url `shouldSatisfy` T.isInfixOf ("client_id=" <> oauthProviderClientId cfg)
-                    it "carries the callback as redirect_uri" $
-                        url `shouldSatisfy` T.isInfixOf ("redirect_uri=" <> callbackUrl)
+                    it "percent-encodes the callback redirect_uri" $
+                        url `shouldSatisfy` T.isInfixOf "redirect_uri=https%3A%2F%2Fapp.example.com%2Fauth%2Fv1%2Fcallback"
                     it "requests the authorization-code response type" $
                         url `shouldSatisfy` T.isInfixOf "response_type=code"
-                    it "requests the fixed openid email profile scope" $
+                    it "percent-encodes the fixed openid email profile scope" $
                         url `shouldSatisfy` T.isInfixOf "scope=openid%20email%20profile"
             )
             providers
