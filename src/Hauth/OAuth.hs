@@ -217,37 +217,30 @@ If it is older than 'flowStateMaxAgeSecs' → delete it and return
 Otherwise → delete it and return 'Right' the 'FlowState'.
 -}
 consumeFlowState :: Connection -> Text -> IO (Either OAuthError FlowState)
-consumeFlowState conn stateToken = do
-    rows <-
-        query
-            conn
-            "SELECT \
-            \  id, auth_code, provider_type, authentication_method, created_at \
-            \FROM auth.flow_state \
-            \WHERE auth_code = ?"
-            (Only stateToken)
-    case rows of
-        [] -> pure (Left OAuthStateInvalid)
-        (row : _) -> do
-            let fs = row{flowStateExpiresAfterSeconds = flowStateMaxAgeSecs}
-            -- Always delete the row regardless of expiry to prevent reuse.
-            _ <-
-                execute
-                    conn
-                    "DELETE FROM auth.flow_state WHERE auth_code = ?"
-                    (Only stateToken)
-            -- Check expiry against DB clock for consistency.
-            nowRows <-
-                query
-                    conn
-                    "SELECT now()"
-                    ()
-            case (nowRows :: [Only UTCTime]) of
-                [Only now] ->
-                    if isFlowStateExpired now (flowStateCreatedAt fs) flowStateMaxAgeSecs
-                        then pure (Left OAuthStateExpired)
-                        else pure (Right fs)
-                _ -> pure (Right fs)
+consumeFlowState conn stateToken =
+    withTransaction conn do
+        rows <-
+            query
+                conn
+                "DELETE FROM auth.flow_state \
+                \WHERE auth_code = ? \
+                \RETURNING id, auth_code, provider_type, authentication_method, created_at"
+                (Only stateToken)
+        case rows of
+            [] -> pure (Left OAuthStateInvalid)
+            (row : _) -> do
+                let fs = row{flowStateExpiresAfterSeconds = flowStateMaxAgeSecs}
+                nowRows <-
+                    query
+                        conn
+                        "SELECT now()"
+                        ()
+                case (nowRows :: [Only UTCTime]) of
+                    [Only now] ->
+                        if isFlowStateExpired now (flowStateCreatedAt fs) flowStateMaxAgeSecs
+                            then pure (Left OAuthStateExpired)
+                            else pure (Right fs)
+                    _ -> pure (Right fs)
 
 {- | Find or create a user linked to the given OAuth identity.
 
@@ -316,7 +309,7 @@ findOrCreateIdentity conn IdentityClaims{identityProvider, identityProviderId, i
                         -- No existing user; set a SAVEPOINT before creating one so the
                         -- loser's auth.users row can be rolled back when the identity
                         -- INSERT is skipped due to a concurrent winner.
-                        execute_ conn "SAVEPOINT before_create_user"
+                        _ <- execute_ conn "SAVEPOINT before_create_user"
                         let newUser =
                                 User.NewUser
                                     { User.newUserEmail = fromMaybe "" identityEmail
@@ -334,7 +327,7 @@ findOrCreateIdentity conn IdentityClaims{identityProvider, identityProviderId, i
                                     -- which fires even for empty-string emails on the
                                     -- no-email OAuth path). Roll back and resolve to
                                     -- the winning identity.
-                                    execute_ conn "ROLLBACK TO SAVEPOINT before_create_user"
+                                    _ <- execute_ conn "ROLLBACK TO SAVEPOINT before_create_user"
                                     resolvedUid <- fetchIdentityUserId conn identityProvider identityProviderId
                                     pure (resolvedUid, False)
                                 | otherwise -> throwIO e
@@ -358,12 +351,12 @@ findOrCreateIdentity conn IdentityClaims{identityProvider, identityProviderId, i
                                 if rows == 1
                                     then do
                                         -- We won the race: commit the savepoint and return the new user.
-                                        execute_ conn "RELEASE SAVEPOINT before_create_user"
+                                        _ <- execute_ conn "RELEASE SAVEPOINT before_create_user"
                                         pure (candidateUid, True)
                                     else do
                                         -- We lost the race: roll back the orphan auth.users row and
                                         -- re-read the winning identity.
-                                        execute_ conn "ROLLBACK TO SAVEPOINT before_create_user"
+                                        _ <- execute_ conn "ROLLBACK TO SAVEPOINT before_create_user"
                                         resolvedUid <- fetchIdentityUserId conn identityProvider identityProviderId
                                         pure (resolvedUid, False)
 

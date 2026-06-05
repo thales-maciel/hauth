@@ -96,6 +96,23 @@ spec = do
                 (obj :: Aeson.Object) <- decodeBody resp
                 KeyMap.lookup "error" obj `shouldBe` Just (Aeson.String "invalid_url")
 
+        it "rejects non-HTTP hook urls" \env ->
+            withHookCleanup env $ do
+                svcJwt <- mintServiceRoleJwt env
+                resp <-
+                    runApp env $
+                        jsonPost
+                            "/admin/hooks"
+                            ( Aeson.object
+                                [ "hook_point" Aeson..= ("before-user-created" :: T.Text)
+                                , "url" Aeson..= ("ftp://example.com/hook" :: T.Text)
+                                ]
+                            )
+                            (Just svcJwt)
+                expectStatus 400 resp
+                (obj :: Aeson.Object) <- decodeBody resp
+                KeyMap.lookup "error" obj `shouldBe` Just (Aeson.String "invalid_url")
+
         it "rejects 400 with out-of-range timeout_ms" \env ->
             withHookCleanup env $ do
                 svcJwt <- mintServiceRoleJwt env
