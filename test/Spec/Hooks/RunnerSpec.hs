@@ -4,6 +4,8 @@ import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Data.Aeson (Value)
 import qualified Data.Aeson as Aeson
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Base64 as B64
 import qualified Data.ByteString.Char8 as BSC
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -218,3 +220,67 @@ spec = do
                         (sigWebhookSignature hdrs')
                         (BSC.pack body)
             ok `shouldBe` True
+
+        it "wrong secret fails verification" $ do
+            now <- getPOSIXTime
+            let body = "test body"
+                hdrs' = signHookRequest testSecret nil now body
+                ok =
+                    verifyHookSignature
+                        "wrong-secret"
+                        (sigWebhookId hdrs')
+                        (sigWebhookTimestamp hdrs')
+                        (sigWebhookSignature hdrs')
+                        body
+            ok `shouldBe` False
+
+        it "multi-candidate header with one valid passes" $ do
+            now <- getPOSIXTime
+            let body = "test body"
+                hdrs' = signHookRequest testSecret nil now body
+                validSig = sigWebhookSignature hdrs'
+                -- Space-separated candidates: one garbage, one valid.
+                multiSig = "v1,aGVsbG8= " <> validSig
+                ok =
+                    verifyHookSignature
+                        testSecret
+                        (sigWebhookId hdrs')
+                        (sigWebhookTimestamp hdrs')
+                        multiSig
+                        body
+            ok `shouldBe` True
+
+        it "malformed candidate returns False" $ do
+            now <- getPOSIXTime
+            let body = "test body"
+                hdrs' = signHookRequest testSecret nil now body
+                ok =
+                    verifyHookSignature
+                        testSecret
+                        (sigWebhookId hdrs')
+                        (sigWebhookTimestamp hdrs')
+                        "not-a-valid-sig-at-all"
+                        body
+            ok `shouldBe` False
+
+        it "same-length wrong-content candidate returns False (exercises constEq loop)" $ do
+            -- "not-a-valid-sig-at-all" is 22 bytes — shorter than the 47-byte
+            -- expected value, so constEq exits on the length mismatch fast-path
+            -- without entering the constant-time loop.  This test supplies a
+            -- candidate that is EXACTLY the same length as the expected value
+            -- ("v1," <> base64 of 32 bytes = 47 bytes) but with wrong content,
+            -- forcing constEq to walk every byte in constant time.
+            now <- getPOSIXTime
+            let body = "test body"
+                hdrs' = signHookRequest testSecret nil now body
+                -- 32 zero bytes base64-encodes to the 44-char string
+                -- "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+                wrongSig = "v1," <> B64.encode (BS.replicate 32 0)
+                ok =
+                    verifyHookSignature
+                        testSecret
+                        (sigWebhookId hdrs')
+                        (sigWebhookTimestamp hdrs')
+                        wrongSig
+                        body
+            ok `shouldBe` False

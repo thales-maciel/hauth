@@ -14,7 +14,7 @@ import Crypto.MAC.HMAC (HMAC, hmac, hmacGetDigest)
 import Data.Aeson (Value)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
-import Data.ByteArray (convert)
+import Data.ByteArray (constEq, convert)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Base64 as B64
 import qualified Data.ByteString.Char8 as BSC
@@ -198,7 +198,8 @@ verifyHookSignature secret wid wts wsig body =
     let signingInput = wid <> "." <> wts <> "." <> body
         expected = "v1," <> B64.encode (computeHmac secret signingInput)
         candidates = map BSC.strip (BSC.split ' ' wsig)
-     in elem expected candidates
+     in -- Use constant-time equality to prevent timing attacks on inbound signature checks.
+        any (constEq expected) candidates
 
 computeHmac :: BS.ByteString -> BS.ByteString -> BS.ByteString
 computeHmac key msg =
