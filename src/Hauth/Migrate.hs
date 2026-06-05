@@ -73,8 +73,9 @@ pendingMigrations applied =
 NULL rows (legacy, pre-hash-column) are treated as "unverified" and skipped
 rather than failing. This avoids false drift for databases that existed
 before 0013_migration_hash.sql and whose hashes were not yet backfilled.
-Applied filenames with no matching embedded migration are also skipped
-(unknown-legacy contract); they cannot be drift-checked without a reference.
+Applied filenames with no matching embedded migration are also silently
+skipped — even when their stored hash is non-null — because there is no
+reference body to compare against (unknown-legacy contract).
 -}
 checkDrift ::
     -- | Embedded migrations indexed by name.
@@ -165,13 +166,15 @@ applyMigrations conn = do
                     pure ExitSuccess
                 else do
                     result <- applyEach conn pending 0
-                    -- Backfill hashes for legacy rows (sha256 IS NULL) whose
-                    -- embedded body still matches the current binary. Rows with
-                    -- no matching embedded migration are left NULL ("legacy
-                    -- unverified") rather than failing — they predate the hash
-                    -- column and cannot be drift-checked retroactively.
-                    appliedAfter <- queryApplied conn
-                    backfillHashes conn embedded appliedAfter
+                    -- Only backfill hashes when apply succeeded. Backfilling on
+                    -- partial failure would stamp legitimate hashes onto rows
+                    -- that were applied inside a transaction that may have been
+                    -- rolled back, corrupting drift-detection on the next run.
+                    case result of
+                        ExitSuccess -> do
+                            appliedAfter <- queryApplied conn
+                            backfillHashes conn embedded appliedAfter
+                        _ -> pure ()
                     pure result
 
 {- | Populate sha256 for rows that are NULL and whose embedded body is known.
@@ -199,9 +202,9 @@ reportMismatch h (name, expected, found) =
         "  drift  "
             <> T.unpack name
             <> "  expected="
-            <> take 16 (T.unpack expected)
+            <> T.unpack expected
             <> "  found="
-            <> take 16 (T.unpack found)
+            <> T.unpack found
 
 applyEach :: Connection -> [MigrationFile] -> Int -> IO ExitCode
 applyEach _ [] count = do

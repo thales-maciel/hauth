@@ -86,3 +86,11 @@ spec = describe "Hauth.Migrate" $ do
 
         it "hashMigration produces a 64-character hex string" $
             T.length (hashMigration "hello") `shouldBe` 64
+
+-- NOTE: The failure-path guard added to applyMigrations — where backfillHashes
+-- is only called when applyEach returns ExitSuccess — is not unit-tested here
+-- because the test harness uses pure helpers (checkDrift, pendingMigrations)
+-- and has no IO-mocked DB infrastructure. The correctness of the guard is
+-- validated by code review: lines 172-176 of Migrate.hs wrap the backfill in
+-- `case result of { ExitSuccess -> ...; _ -> pure () }`, ensuring a partial or
+-- failed apply never stamps hashes onto rows that may have been rolled back.
