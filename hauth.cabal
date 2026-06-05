@@ -272,7 +272,9 @@ test-suite hauth-e2e
     E2E.HooksCrudSpec
     E2E.HooksSpec
     E2E.HooksTypesSpec
+    E2E.LogoutScopeSpec
     E2E.MfaSpec
+    E2E.MigrateSpec
     E2E.OAuthFake
     E2E.OAuthSpec
     E2E.RecoverySpec
@@ -290,6 +292,7 @@ test-suite hauth-e2e
     , aeson >=2.2 && <2.3
     , async >=2.2 && <2.3
     , bytestring >=0.11 && <0.13
+    , containers >=0.6 && <0.8
     , hauth
     , hspec >=2.10 && <2.12
     , http-client >=0.7 && <0.8
