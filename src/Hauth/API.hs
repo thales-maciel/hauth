@@ -110,18 +110,20 @@ type AdminEmailTemplateAPI =
         :<|> RequireAuth 'ServiceRole :> "email-templates" :> Capture "name" Text :> DeleteNoContent
 
 type AdminWebhookSubscriptionsAPI =
-    RequireAuth 'ServiceRole :> "webhooks" :> ReqBody '[JSON] CreateWebhookSubscriptionRequest :> Post '[JSON] WebhookSubscriptionResponse
+    RequireAuth 'ServiceRole :> "webhooks" :> ReqBody '[JSON] CreateWebhookSubscriptionRequest :> Post '[JSON] WebhookSubscriptionCreateResponse
         :<|> RequireAuth 'ServiceRole :> "webhooks" :> Get '[JSON] ListWebhookSubscriptionsResponse
         :<|> RequireAuth 'ServiceRole :> "webhooks" :> Capture "subscription_id" WebhookSubscriptionId :> Get '[JSON] WebhookSubscriptionResponse
         :<|> RequireAuth 'ServiceRole :> "webhooks" :> Capture "subscription_id" WebhookSubscriptionId :> ReqBody '[JSON] UpdateWebhookSubscriptionRequest :> Put '[JSON] WebhookSubscriptionResponse
         :<|> RequireAuth 'ServiceRole :> "webhooks" :> Capture "subscription_id" WebhookSubscriptionId :> DeleteNoContent
+        :<|> RequireAuth 'ServiceRole :> "webhooks" :> Capture "subscription_id" WebhookSubscriptionId :> "rotate-secret" :> ReqBody '[JSON] RotateWebhookSecretRequest :> Post '[JSON] RotateWebhookSecretResponse
 
 type AdminHooksAPI =
-    RequireAuth 'ServiceRole :> "hooks" :> ReqBody '[JSON] CreateHookRequest :> Post '[JSON] HookRow
+    RequireAuth 'ServiceRole :> "hooks" :> ReqBody '[JSON] CreateHookRequest :> Post '[JSON] HookCreateResponse
         :<|> RequireAuth 'ServiceRole :> "hooks" :> Get '[JSON] ListHooksResponse
         :<|> RequireAuth 'ServiceRole :> "hooks" :> Capture "hook_id" HookId :> Get '[JSON] HookRow
         :<|> RequireAuth 'ServiceRole :> "hooks" :> Capture "hook_id" HookId :> ReqBody '[JSON] UpdateHookRequest :> Put '[JSON] HookRow
         :<|> RequireAuth 'ServiceRole :> "hooks" :> Capture "hook_id" HookId :> DeleteNoContent
+        :<|> RequireAuth 'ServiceRole :> "hooks" :> Capture "hook_id" HookId :> "rotate-secret" :> ReqBody '[JSON] RotateHookSecretRequest :> Post '[JSON] RotateHookSecretResponse
 
 type AdminWebhookDeliveriesAPI =
     RequireAuth 'ServiceRole :> "webhooks" :> Capture "subscription_id" WebhookSubscriptionId :> "deliveries" :> QueryParam "limit" Int :> QueryParam "after" Text :> Get '[JSON] ListWebhookDeliveriesResponse

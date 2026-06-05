@@ -3,6 +3,7 @@ module Hauth.Server.Hooks (
     deleteHookHandler,
     getHookHandler,
     listHooksHandler,
+    rotateHookSecretHandler,
     updateHookHandler,
 ) where
 
@@ -23,10 +24,14 @@ import Database.PostgreSQL.Simple (Only (..), SqlError (..), execute, query, sql
 import Hauth.API.Auth (ServiceRolePrincipal)
 import Hauth.API.Types (
     CreateHookRequest (..),
+    HookCreateResponse (..),
     HookId (..),
     HookRow (..),
     ListHooksResponse (..),
+    RotateHookSecretRequest (..),
+    RotateHookSecretResponse (..),
     UpdateHookRequest (..),
+    toCreateResponse,
  )
 import Hauth.Env (AppEnv (..), withDatabaseConnection)
 import Hauth.Hooks.Types (HookPoint, hookPointName, parseHookPoint)
@@ -137,7 +142,15 @@ parseHookId hid =
 -- Handlers
 -- ---------------------------------------------------------------------------
 
-createHookHandler :: ServiceRolePrincipal -> CreateHookRequest -> AppHandler HookRow
+generateSecret :: IO T.Text
+generateSecret = do
+    bytes <- CR.getRandomBytes 32 :: IO BS.ByteString
+    pure (TE.decodeUtf8 (convertToBase Base16 bytes))
+
+{- | Create a new hook. Returns the plaintext secret once in the response;
+subsequent GET/list responses will redact it.
+-}
+createHookHandler :: ServiceRolePrincipal -> CreateHookRequest -> AppHandler HookCreateResponse
 createHookHandler _ req = do
     hp <- either throwError pure (validateHookPoint (createHookPoint req))
     either throwError pure (validateUrl (createHookUrl req))
@@ -147,9 +160,7 @@ createHookHandler _ req = do
     env <- ask
     secret <- case createHookSecret req of
         Just s -> pure s
-        Nothing -> do
-            bytes <- liftIO (CR.getRandomBytes 32 :: IO BS.ByteString)
-            pure (TE.decodeUtf8 (convertToBase Base16 bytes))
+        Nothing -> liftIO generateSecret
     let timeoutMs = fromMaybe 2000 (createHookTimeoutMs req)
         failOpen = fromMaybe False (createHookFailOpen req)
         enabled = fromMaybe True (createHookEnabled req)
@@ -194,7 +205,7 @@ createHookHandler _ req = do
             case rows of
                 (r : _) ->
                     case rowToHookRow r of
-                        Just hr -> pure hr
+                        Just hr -> pure (toCreateResponse hr)
                         Nothing ->
                             throwError
                                 err400
@@ -243,7 +254,8 @@ updateHookHandler _ (HookId hid) req = do
         Nothing -> throwError hookNotFoundError
         Just current -> do
             let newUrl = fromMaybe (hookRowUrl current) (updateHookUrl req)
-                newSecret = fromMaybe (hookRowSecret current) (updateHookSecret req)
+                -- Secret is NOT updated via PUT. Use POST /:id/rotate-secret.
+                newSecret = hookRowSecret current
                 newTimeout = fromMaybe (hookRowTimeoutMs current) (updateHookTimeoutMs req)
                 newFailOpen = fromMaybe (hookRowFailOpen current) (updateHookFailOpen req)
                 newEnabled = fromMaybe (hookRowEnabled current) (updateHookEnabled req)
@@ -259,6 +271,35 @@ updateHookHandler _ (HookId hid) req = do
             case mUpdated of
                 Nothing -> throwError hookNotFoundError
                 Just hr -> pure hr
+
+{- | POST /admin/hooks/:id/rotate-secret
+Rotate the HMAC signing secret for a hook. Supply @{"secret":"..."}@ to
+use a caller-provided value, or omit the body to have the server generate
+a fresh 32-byte hex secret. Returns the new secret once as
+@{"secret":"<plaintext>"}@; subsequent reads will redact it.
+-}
+rotateHookSecretHandler ::
+    ServiceRolePrincipal ->
+    HookId ->
+    RotateHookSecretRequest ->
+    AppHandler RotateHookSecretResponse
+rotateHookSecretHandler _ (HookId hid) req = do
+    uid <- parseHookId hid
+    env <- ask
+    mHook <- liftIO (fetchById env uid)
+    case mHook of
+        Nothing -> throwError hookNotFoundError
+        Just _ -> do
+            newSecret <- case rotateHookSecret req of
+                Just s -> pure s
+                Nothing -> liftIO generateSecret
+            _ <- liftIO $
+                withDatabaseConnection env \conn ->
+                    execute
+                        conn
+                        "UPDATE auth.hooks SET secret = ?, updated_at = now() WHERE id = ?"
+                        (newSecret, uid)
+            pure RotateHookSecretResponse{rotateHookNewSecret = newSecret}
 
 deleteHookHandler :: ServiceRolePrincipal -> HookId -> AppHandler NoContent
 deleteHookHandler _ (HookId hid) = do

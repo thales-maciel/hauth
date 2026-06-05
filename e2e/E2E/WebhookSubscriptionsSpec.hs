@@ -104,7 +104,7 @@ spec = do
                 Just (Aeson.String s) -> T.null s `shouldBe` False
                 _ -> fail "expected secret string"
 
-        it "echoes back explicit secret" \env -> do
+        it "echoes back explicit secret on create (one-time reveal)" \env -> do
             svcJwt <- mintServiceRoleJwt env
             resp <-
                 runApp env $
@@ -118,6 +118,7 @@ spec = do
                         (Just svcJwt)
             expectStatus 200 resp
             (obj :: Aeson.Object) <- decodeBody resp
+            -- Create response reveals the real secret exactly once.
             KeyMap.lookup "secret" obj `shouldBe` Just (Aeson.String "mysecret")
 
         it "returns 409 on duplicate URL" \env -> do
@@ -169,7 +170,7 @@ spec = do
             expectStatus 404 resp
 
     describe "PUT /admin/webhooks/:id" $ do
-        it "updates fields and reflects in subsequent GET" \env -> do
+        it "updates URL and reflects in subsequent GET (secret is not changed)" \env -> do
             svcJwt <- mintServiceRoleJwt env
             createResp <-
                 runApp env $
@@ -177,7 +178,6 @@ spec = do
                         "/admin/webhooks"
                         ( Aeson.object
                             [ "url" Aeson..= ("https://example.com/put-test" :: T.Text)
-                            , "secret" Aeson..= ("oldsecret" :: T.Text)
                             ]
                         )
                         (Just svcJwt)
@@ -190,14 +190,14 @@ spec = do
                         ("/admin/webhooks/" <> TE.encodeUtf8 subId)
                         ( Aeson.object
                             [ "url" Aeson..= ("https://example.com/put-test-updated" :: T.Text)
-                            , "secret" Aeson..= ("newsecret" :: T.Text)
                             ]
                         )
                         (Just svcJwt)
             expectStatus 200 putResp
             (updated :: Aeson.Object) <- decodeBody putResp
             KeyMap.lookup "url" updated `shouldBe` Just (Aeson.String "https://example.com/put-test-updated")
-            KeyMap.lookup "secret" updated `shouldBe` Just (Aeson.String "newsecret")
+            -- Secret is always redacted in PUT/GET responses.
+            KeyMap.lookup "secret" updated `shouldBe` Just (Aeson.String "***redacted***")
             -- Verify via GET
             getResp <- runApp env $ jsonGet ("/admin/webhooks/" <> TE.encodeUtf8 subId) (Just svcJwt)
             expectStatus 200 getResp
@@ -213,6 +213,151 @@ spec = do
                         (Aeson.object ["url" Aeson..= ("https://example.com/x" :: T.Text)])
                         (Just svcJwt)
             expectStatus 404 resp
+
+    describe "Secret write-only behaviour" $ do
+        it "GET /admin/webhooks/:id redacts the secret" \env -> do
+            svcJwt <- mintServiceRoleJwt env
+            createResp <-
+                runApp env $
+                    jsonPost
+                        "/admin/webhooks"
+                        ( Aeson.object
+                            [ "url" Aeson..= ("https://example.com/wh-redact-test" :: T.Text)
+                            , "secret" Aeson..= ("plaintextsecret" :: T.Text)
+                            ]
+                        )
+                        (Just svcJwt)
+            expectStatus 200 createResp
+            (created :: Aeson.Object) <- decodeBody createResp
+            -- Create response shows real secret.
+            KeyMap.lookup "secret" created `shouldBe` Just (Aeson.String "plaintextsecret")
+            subId <- extractString "id" created
+            getResp <- runApp env $ jsonGet ("/admin/webhooks/" <> TE.encodeUtf8 subId) (Just svcJwt)
+            expectStatus 200 getResp
+            (got :: Aeson.Object) <- decodeBody getResp
+            -- GET response must redact the secret.
+            KeyMap.lookup "secret" got `shouldBe` Just (Aeson.String "***redacted***")
+
+        it "GET /admin/webhooks (list) redacts secrets" \env -> do
+            svcJwt <- mintServiceRoleJwt env
+            _ <-
+                runApp env $
+                    jsonPost
+                        "/admin/webhooks"
+                        ( Aeson.object
+                            [ "url" Aeson..= ("https://example.com/wh-list-redact" :: T.Text)
+                            , "secret" Aeson..= ("mylistsecret" :: T.Text)
+                            ]
+                        )
+                        (Just svcJwt)
+            listResp <- runApp env $ jsonGet "/admin/webhooks" (Just svcJwt)
+            expectStatus 200 listResp
+            (listObj :: Aeson.Object) <- decodeBody listResp
+            case KeyMap.lookup "webhooks" listObj of
+                Just (Aeson.Array arr) ->
+                    mapM_
+                        ( \case
+                            Aeson.Object wObj ->
+                                KeyMap.lookup "secret" wObj
+                                    `shouldBe` Just (Aeson.String "***redacted***")
+                            _ -> fail "expected subscription object in array"
+                        )
+                        arr
+                _ -> fail "expected webhooks array"
+
+        it "PUT /admin/webhooks/:id does not rotate the secret" \env -> do
+            svcJwt <- mintServiceRoleJwt env
+            createResp <-
+                runApp env $
+                    jsonPost
+                        "/admin/webhooks"
+                        ( Aeson.object
+                            [ "url" Aeson..= ("https://example.com/wh-put-secret-test" :: T.Text)
+                            , "secret" Aeson..= ("originalSecret" :: T.Text)
+                            ]
+                        )
+                        (Just svcJwt)
+            expectStatus 200 createResp
+            (created :: Aeson.Object) <- decodeBody createResp
+            subId <- extractString "id" created
+            putResp <-
+                runApp env $
+                    jsonPut
+                        ("/admin/webhooks/" <> TE.encodeUtf8 subId)
+                        ( Aeson.object
+                            [ "url" Aeson..= ("https://example.com/wh-put-secret-updated" :: T.Text)
+                            ]
+                        )
+                        (Just svcJwt)
+            expectStatus 200 putResp
+            (putObj :: Aeson.Object) <- decodeBody putResp
+            -- The PUT response still redacts the secret.
+            KeyMap.lookup "secret" putObj `shouldBe` Just (Aeson.String "***redacted***")
+
+    describe "POST /admin/webhooks/:id/rotate-secret" $ do
+        it "returns 404 for unknown subscription" \env -> do
+            svcJwt <- mintServiceRoleJwt env
+            resp <-
+                runApp env $
+                    jsonPost
+                        "/admin/webhooks/00000000-0000-0000-0000-000000000000/rotate-secret"
+                        (Aeson.object [] :: Aeson.Value)
+                        (Just svcJwt)
+            expectStatus 404 resp
+
+        it "generates a new server secret when no body secret is provided" \env -> do
+            svcJwt <- mintServiceRoleJwt env
+            createResp <-
+                runApp env $
+                    jsonPost
+                        "/admin/webhooks"
+                        ( Aeson.object
+                            [ "url" Aeson..= ("https://example.com/wh-rotate-gen" :: T.Text)
+                            , "secret" Aeson..= ("beforeRotate" :: T.Text)
+                            ]
+                        )
+                        (Just svcJwt)
+            expectStatus 200 createResp
+            (created :: Aeson.Object) <- decodeBody createResp
+            subId <- extractString "id" created
+            rotateResp <-
+                runApp env $
+                    jsonPost
+                        ("/admin/webhooks/" <> TE.encodeUtf8 subId <> "/rotate-secret")
+                        (Aeson.object [] :: Aeson.Value)
+                        (Just svcJwt)
+            expectStatus 200 rotateResp
+            (rotateObj :: Aeson.Object) <- decodeBody rotateResp
+            case KeyMap.lookup "secret" rotateObj of
+                Just (Aeson.String s) -> do
+                    T.length s `shouldBe` 64
+                    (s == "beforeRotate") `shouldBe` False
+                _ -> fail "expected secret string in rotate response"
+
+        it "uses caller-supplied secret when provided" \env -> do
+            svcJwt <- mintServiceRoleJwt env
+            createResp <-
+                runApp env $
+                    jsonPost
+                        "/admin/webhooks"
+                        ( Aeson.object
+                            [ "url" Aeson..= ("https://example.com/wh-rotate-explicit" :: T.Text)
+                            ]
+                        )
+                        (Just svcJwt)
+            expectStatus 200 createResp
+            (created :: Aeson.Object) <- decodeBody createResp
+            subId <- extractString "id" created
+            rotateResp <-
+                runApp env $
+                    jsonPost
+                        ("/admin/webhooks/" <> TE.encodeUtf8 subId <> "/rotate-secret")
+                        (Aeson.object ["secret" Aeson..= ("explicit-new-secret" :: T.Text)])
+                        (Just svcJwt)
+            expectStatus 200 rotateResp
+            (rotateObj :: Aeson.Object) <- decodeBody rotateResp
+            KeyMap.lookup "secret" rotateObj
+                `shouldBe` Just (Aeson.String "explicit-new-secret")
 
     describe "DELETE /admin/webhooks/:id" $ do
         it "returns 204 and subsequent GET returns 404" \env -> do

@@ -25,10 +25,14 @@ module Spec.API.Golden.Helpers (
     emailTemplateRowJson,
     canonicalWebhookSubResponse,
     webhookSubJson,
+    canonicalWebhookSubCreateResponse,
+    webhookSubCreateJson,
     canonicalWebhookDeliveryResponse,
     webhookDeliveryJson,
     canonicalHookRow,
     hookRowJson,
+    canonicalHookCreateResponse,
+    hookCreateResponseJson,
 ) where
 
 import Data.Aeson (FromJSON, ToJSON, Value)
@@ -208,8 +212,30 @@ canonicalWebhookSubResponse =
         , webhookSubUpdatedAt = t0
         }
 
+-- The secret field is always redacted on read/list responses.
 webhookSubJson :: BSL.ByteString
 webhookSubJson =
+    "{\"id\":\"00000000-0000-0000-0000-000000000000\"\
+    \,\"url\":\"https://example.com/wh\"\
+    \,\"events\":[\"user.signed_up\"],\"secret\":\"***redacted***\"\
+    \,\"disabled_at\":null\
+    \,\"created_at\":\"2026-01-02T03:04:05Z\"\
+    \,\"updated_at\":\"2026-01-02T03:04:05Z\"}"
+
+canonicalWebhookSubCreateResponse :: WebhookSubscriptionCreateResponse
+canonicalWebhookSubCreateResponse =
+    WebhookSubscriptionCreateResponse
+        { webhookCreateSubId = uuid0
+        , webhookCreateSubUrl = "https://example.com/wh"
+        , webhookCreateSubEvents = ["user.signed_up"]
+        , webhookCreateSubSecret = "shh"
+        , webhookCreateSubDisabledAt = Nothing
+        , webhookCreateSubCreatedAt = t0
+        , webhookCreateSubUpdatedAt = t0
+        }
+
+webhookSubCreateJson :: BSL.ByteString
+webhookSubCreateJson =
     "{\"id\":\"00000000-0000-0000-0000-000000000000\"\
     \,\"url\":\"https://example.com/wh\"\
     \,\"events\":[\"user.signed_up\"],\"secret\":\"shh\"\
@@ -257,8 +283,28 @@ canonicalHookRow =
         , hookRowEnabled = True
         }
 
+-- The secret field is always redacted on read/list responses.
 hookRowJson :: BSL.ByteString
 hookRowJson =
+    "{\"id\":\"00000000-0000-0000-0000-000000000000\"\
+    \,\"hook_point\":\"before-user-created\"\
+    \,\"url\":\"https://example.com/hook\",\"secret\":\"***redacted***\"\
+    \,\"timeout_ms\":1000,\"fail_open\":true,\"enabled\":true}"
+
+canonicalHookCreateResponse :: HookCreateResponse
+canonicalHookCreateResponse =
+    HookCreateResponse
+        { hookCreateId = uuid0
+        , hookCreatePoint = HookBeforeUserCreated
+        , hookCreateUrl = "https://example.com/hook"
+        , hookCreateSecret = "shh"
+        , hookCreateTimeoutMs = 1000
+        , hookCreateFailOpen = True
+        , hookCreateEnabled = True
+        }
+
+hookCreateResponseJson :: BSL.ByteString
+hookCreateResponseJson =
     "{\"id\":\"00000000-0000-0000-0000-000000000000\"\
     \,\"hook_point\":\"before-user-created\"\
     \,\"url\":\"https://example.com/hook\",\"secret\":\"shh\"\

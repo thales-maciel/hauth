@@ -71,10 +71,21 @@ curl -sS -X POST http://127.0.0.1:8080/admin/hooks \
 Only one configuration per hook point is allowed (unique constraint). To change
 a hook, update it with `PUT /admin/hooks/:id` or delete and recreate it.
 
+**One-time secret readback.** The `secret` value is returned in full only in
+the create response. All subsequent `GET` and list responses emit
+`"secret": "***redacted***"`. Store the secret immediately after creation —
+it cannot be retrieved again through the API. To replace a secret, use
+`POST /admin/hooks/:id/rotate-secret` (see below).
+
+**Encryption at rest.** Secrets are currently stored as plaintext in the
+`auth.hooks` table. Full encryption at rest is out of scope for this release;
+access should be limited via Postgres role permissions on the `auth` schema.
+
 ### List, get, update, delete
 
 ```sh
 # List all configured hooks
+# NOTE: "secret" is always "***redacted***" in list/get responses.
 curl -sS http://127.0.0.1:8080/admin/hooks \
   -H "Authorization: Bearer ${SERVICE_ROLE_JWT}"
 
@@ -82,7 +93,8 @@ curl -sS http://127.0.0.1:8080/admin/hooks \
 curl -sS http://127.0.0.1:8080/admin/hooks/${HOOK_ID} \
   -H "Authorization: Bearer ${SERVICE_ROLE_JWT}"
 
-# Update (partial — only supplied fields are changed)
+# Update (partial — only url, timeout_ms, fail_open, enabled can be changed)
+# PUT does NOT change the secret. Use /rotate-secret for that.
 curl -sS -X PUT http://127.0.0.1:8080/admin/hooks/${HOOK_ID} \
   -H "Authorization: Bearer ${SERVICE_ROLE_JWT}" \
   -H "Content-Type: application/json" \
@@ -92,6 +104,32 @@ curl -sS -X PUT http://127.0.0.1:8080/admin/hooks/${HOOK_ID} \
 curl -sS -X DELETE http://127.0.0.1:8080/admin/hooks/${HOOK_ID} \
   -H "Authorization: Bearer ${SERVICE_ROLE_JWT}"
 ```
+
+### Rotating the signing secret
+
+Use `POST /admin/hooks/:id/rotate-secret` to replace the HMAC signing secret.
+The new secret is returned once in the response; subsequent reads redact it.
+
+**Server-generated secret (recommended):**
+```sh
+curl -sS -X POST http://127.0.0.1:8080/admin/hooks/${HOOK_ID}/rotate-secret \
+  -H "Authorization: Bearer ${SERVICE_ROLE_JWT}" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+# Response: {"secret": "<64-char hex>"}
+```
+
+**Caller-supplied secret:**
+```sh
+curl -sS -X POST http://127.0.0.1:8080/admin/hooks/${HOOK_ID}/rotate-secret \
+  -H "Authorization: Bearer ${SERVICE_ROLE_JWT}" \
+  -H "Content-Type: application/json" \
+  -d '{"secret": "my-new-shared-secret"}'
+# Response: {"secret": "my-new-shared-secret"}
+```
+
+Update the `SECRET` constant in your receiver to the new value before the old
+one is decommissioned.
 
 ## The four hook points
 
@@ -332,7 +370,11 @@ enforcement hooks.
 
 **Signature verification always fails.**
 Check that the `secret` you verify with matches the `secret` stored in
-`auth.hooks`. Secrets are stored in plaintext — retrieve the row and compare.
+`auth.hooks`. Secrets are stored in plaintext in the database (see the
+encryption-at-rest note above) — query the `auth.hooks` table directly in
+`psql` to compare. The API redacts the secret field on all read responses; to
+issue a known-good secret use `POST /admin/hooks/:id/rotate-secret` with an
+explicit `{"secret": "..."}` body.
 Also make sure you are signing over the raw request body bytes, not a
 re-serialised version.
 

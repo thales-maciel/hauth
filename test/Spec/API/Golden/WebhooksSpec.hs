@@ -4,10 +4,14 @@ module Spec.API.Golden.WebhooksSpec (spec) where
 import Hauth.API.Types
 import Spec.API.Golden.Helpers (
     canonicalWebhookDeliveryResponse,
+    canonicalWebhookSubCreateResponse,
     canonicalWebhookSubResponse,
+    decodeShape,
+    encodeShape,
     roundTrip,
     t0,
     webhookDeliveryJson,
+    webhookSubCreateJson,
     webhookSubJson,
  )
 import Test.Hspec (Spec, describe, it)
@@ -15,14 +19,23 @@ import Test.Hspec (Spec, describe, it)
 spec :: Spec
 spec = do
     describe "Webhook subscriptions" $ do
-        it "WebhookSubscriptionResponse" $
-            roundTrip
+        -- WebhookSubscriptionResponse: secret always redacted on read/list.
+        -- Like HookRow, encode and decode are asymmetric for the secret field.
+        it "WebhookSubscriptionResponse encodes with redacted secret" $
+            encodeShape
                 "WebhookSubscriptionResponse"
                 canonicalWebhookSubResponse
                 webhookSubJson
 
-        it "ListWebhookSubscriptionsResponse" $
+        -- WebhookSubscriptionCreateResponse: reveals plaintext secret once.
+        it "WebhookSubscriptionCreateResponse round-trips" $
             roundTrip
+                "WebhookSubscriptionCreateResponse"
+                canonicalWebhookSubCreateResponse
+                webhookSubCreateJson
+
+        it "ListWebhookSubscriptionsResponse encodes with redacted secrets" $
+            encodeShape
                 "ListWebhookSubscriptionsResponse"
                 ListWebhookSubscriptionsResponse{listWebhookSubscriptions = [canonicalWebhookSubResponse]}
                 ("{\"webhooks\":[" <> webhookSubJson <> "]}")
@@ -37,17 +50,35 @@ spec = do
                     }
                 "{\"url\":\"https://example.com/wh\",\"events\":[\"user.signed_up\"],\"secret\":\"shh\"}"
 
+        -- UpdateWebhookSubscriptionRequest no longer has a secret field.
         it "UpdateWebhookSubscriptionRequest" $
             roundTrip
                 "UpdateWebhookSubscriptionRequest"
                 UpdateWebhookSubscriptionRequest
                     { updateWebhookSubUrl = Just "https://example.com/wh2"
                     , updateWebhookSubEvents = Just ["user.signed_up"]
-                    , updateWebhookSubSecret = Just "shh"
                     , updateWebhookSubDisabledAt = Just (Just t0)
                     }
                 "{\"url\":\"https://example.com/wh2\",\"events\":[\"user.signed_up\"]\
-                \,\"secret\":\"shh\",\"disabled_at\":\"2026-01-02T03:04:05Z\"}"
+                \,\"disabled_at\":\"2026-01-02T03:04:05Z\"}"
+
+        it "RotateWebhookSecretRequest decodes with explicit secret" $
+            decodeShape
+                "RotateWebhookSecretRequest"
+                "{\"secret\":\"newsecret\"}"
+                RotateWebhookSecretRequest{rotateWebhookSecret = Just "newsecret"}
+
+        it "RotateWebhookSecretRequest decodes with absent secret" $
+            decodeShape
+                "RotateWebhookSecretRequest"
+                "{}"
+                RotateWebhookSecretRequest{rotateWebhookSecret = Nothing}
+
+        it "RotateWebhookSecretResponse" $
+            roundTrip
+                "RotateWebhookSecretResponse"
+                RotateWebhookSecretResponse{rotateWebhookNewSecret = "fresh-secret"}
+                "{\"secret\":\"fresh-secret\"}"
 
     describe "Webhook deliveries" $ do
         it "WebhookDeliveryResponse" $
