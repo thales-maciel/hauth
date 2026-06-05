@@ -1,0 +1,46 @@
+name: Lint workflows
+
+# Catch YAML and GitHub-Actions-specific mistakes in .github/workflows/*
+# before they merge (bad runner labels, expression typos, unquoted colons
+# in step names, shellcheck issues in `run:` blocks, etc.).
+#
+# Only runs when workflow files themselves change; cheap (~5s).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/**'
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Uses the maintainer-published install script. The script downloads
+      # a tagged release binary; pin a specific version by passing it as
+      # the first argument (e.g. `... download-actionlint.bash) 1.7.7`).
+      - name: Install actionlint
+        id: install
+        run: |
+          bash <(curl --proto '=https' --tlsv1.2 -sSf \
+            https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+        shell: bash
+
+      - name: Run actionlint
+        run: ./actionlint -color
+        shell: bash

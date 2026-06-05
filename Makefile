@@ -1,4 +1,4 @@
-.PHONY: build check-derived-json check-served-stubs check-stub-senders ci clean-local coverage e2e format format-check guards lint rebase-check run test
+.PHONY: build check-derived-json check-served-stubs check-stub-senders check-workflows ci clean-local coverage e2e format format-check guards lint rebase-check run test
 
 build:
 	cabal build all
@@ -77,6 +77,17 @@ check-stub-senders:
 		echo "       Wire real SMTP or bump STUB_SENDER_CALLS in the same PR with a documented reason." >&2; \
 		grep -Rn 'sendEmail stubSender' src/Hauth/Server >&2; \
 		exit 1; \
+	fi
+
+# Local convenience: lint .github/workflows/* with actionlint.
+# CI gates this via .github/workflows/lint-workflows.yml; here it just
+# gives developers a fast local check. Degrades gracefully if actionlint
+# isn't installed.
+check-workflows:
+	@if command -v actionlint >/dev/null 2>&1; then \
+		actionlint .github/workflows/*.yml; \
+	else \
+		echo "actionlint not installed; skipping. See https://github.com/rhysd/actionlint#installation"; \
 	fi
 
 rebase-check:
