@@ -12,6 +12,7 @@ import E2E.Helpers (TestEnv, truncateAll, withTestEnv)
 import qualified E2E.HooksCrudSpec
 import qualified E2E.HooksSpec
 import qualified E2E.HooksTypesSpec
+import qualified E2E.LogoutScopeSpec
 import qualified E2E.MfaSpec
 import qualified E2E.OAuthSpec
 import qualified E2E.RecoverySpec
@@ -34,6 +35,7 @@ main = hspec $ aroundAll withTestEnv $ beforeWith truncateBefore allSpecs
 allSpecs :: SpecWith TestEnv
 allSpecs = do
     describe "auth flow" E2E.AuthSpec.spec
+    describe "logout scope semantics" E2E.LogoutScopeSpec.spec
     describe "/user" E2E.UserSpec.spec
     describe "password recovery" E2E.RecoverySpec.spec
     describe "MFA TOTP" E2E.MfaSpec.spec
