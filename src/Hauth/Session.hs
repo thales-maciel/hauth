@@ -10,6 +10,8 @@ module Hauth.Session (
     getActiveRefreshTokenForSession,
     listUserSessions,
     revokeSession,
+    revokeAllUserSessions,
+    revokeAllUserSessionsExcept,
     createRefreshToken,
     lookupRefreshToken,
     lookupRefreshTokenRaw,
@@ -225,6 +227,30 @@ revokeSession conn (SessionId sid) = do
             "DELETE FROM auth.sessions WHERE id = ?"
             (Only sid)
     pure ()
+
+-- | Delete all sessions for a user. Returns the deleted session rows.
+revokeAllUserSessions :: Connection -> UUID -> IO [Session]
+revokeAllUserSessions conn uid =
+    query
+        conn
+        "DELETE FROM auth.sessions \
+        \WHERE user_id = ? \
+        \RETURNING \
+        \  id, user_id, created_at, updated_at, factor_id, aal, \
+        \  not_after, refreshed_at, user_agent, ip::text"
+        (Only uid)
+
+-- | Delete all sessions for a user except the given session. Returns the deleted rows.
+revokeAllUserSessionsExcept :: Connection -> UUID -> SessionId -> IO [Session]
+revokeAllUserSessionsExcept conn uid (SessionId exceptSid) =
+    query
+        conn
+        "DELETE FROM auth.sessions \
+        \WHERE user_id = ? AND id <> ? \
+        \RETURNING \
+        \  id, user_id, created_at, updated_at, factor_id, aal, \
+        \  not_after, refreshed_at, user_agent, ip::text"
+        (uid, exceptSid)
 
 {- | Create a new refresh token linked to an existing session.
 

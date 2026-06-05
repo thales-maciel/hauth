@@ -15,6 +15,7 @@ import Control.Monad.Except (throwError)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader (ReaderT, ask)
 import qualified Data.Aeson as Aeson
+import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime)
 import qualified Data.UUID as UUID
@@ -28,7 +29,10 @@ import Hauth.Crypto.Password (defaultArgon2Settings, hashPassword)
 import Hauth.Env (AppEnv, withDatabaseConnection)
 import Hauth.Server.Errors (supabaseErrorBody)
 import Hauth.Session (
+    Session (sessionId),
     SessionId (..),
+    revokeAllUserSessions,
+    revokeAllUserSessionsExcept,
     revokeSession,
  )
 import Hauth.User (generateConfirmationToken)
@@ -36,7 +40,7 @@ import qualified Hauth.User as User
 import Hauth.Webhooks.Events (SessionPayload (..), UserPayload (..), WebhookEvent (..))
 import qualified Hauth.Webhooks.Outbox as Outbox
 import Servant.API (NoContent (..))
-import Servant.Server (Handler, ServerError (errBody), err401, err404, err422)
+import Servant.Server (Handler, ServerError (errBody), err400, err401, err404, err422)
 
 type AppHandler = ReaderT AppEnv Handler
 
@@ -117,7 +121,7 @@ logoutHandler ::
     SessionPrincipal ->
     Maybe T.Text ->
     AppHandler NoContent
-logoutHandler principal _scope = do
+logoutHandler principal mScope = do
     env <- ask
     let sidText = sessionAccessTokenId principal
         dummyClaims =
@@ -146,15 +150,46 @@ logoutHandler principal _scope = do
                     { errBody = supabaseErrorBody "no_authorization" (T.pack (show other))
                     }
         Right s -> pure s
+    -- Default scope is global per docs/v0.1-compatibility.md.
+    let scope = fromMaybe "global" mScope
+    case scope of
+        s | s `elem` ["global", "local", "others"] -> pure ()
+        _ ->
+            throwError
+                err400
+                    { errBody = supabaseErrorBody "invalid_request" "scope must be global, local, or others"
+                    }
     let mUid = UUID.fromText (sessionUserId principal)
     liftIO $ withDatabaseConnection env \conn -> withTransaction conn do
-        revokeSession conn sid
         case mUid of
-            Just uid ->
-                Outbox.enqueue
-                    conn
-                    (SessionRevoked SessionPayload{spSessionId = unSessionId sid, spUserId = uid})
             Nothing -> pure ()
+            Just uid ->
+                case scope of
+                    "local" -> do
+                        revokeSession conn sid
+                        Outbox.enqueue
+                            conn
+                            (SessionRevoked SessionPayload{spSessionId = unSessionId sid, spUserId = uid})
+                    "global" -> do
+                        revoked <- revokeAllUserSessions conn uid
+                        mapM_
+                            ( \s ->
+                                Outbox.enqueue
+                                    conn
+                                    (SessionRevoked SessionPayload{spSessionId = unSessionId (sessionId s), spUserId = uid})
+                            )
+                            revoked
+                    "others" -> do
+                        -- Revoke every session except the bearer session.
+                        revoked <- revokeAllUserSessionsExcept conn uid sid
+                        mapM_
+                            ( \s ->
+                                Outbox.enqueue
+                                    conn
+                                    (SessionRevoked SessionPayload{spSessionId = unSessionId (sessionId s), spUserId = uid})
+                            )
+                            revoked
+                    _ -> error "unreachable: scope already validated"
     pure NoContent
 
 userPayloadFromUser :: User.User -> UserPayload
