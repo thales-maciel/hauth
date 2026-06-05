@@ -6,6 +6,7 @@ import Control.Exception (bracket)
 import Data.Aeson (encode)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
+import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.Map.Strict as Map
 import Hauth.API.Types (
@@ -83,6 +84,32 @@ spec = do
                                    , "server.port"
                                    ]
                 _ -> expectationFailure "expected ConfigValidationError"
+
+    describe "decodeConfigBytes (malformed URLs)" $ do
+        let mkSiteUrl u =
+                BSC.pack $
+                    unlines
+                        [ "{"
+                        , "  \"database\": {\"url\": \"postgresql://hauth:hauth@localhost:5432/hauth\", \"pool_size\": 5},"
+                        , "  \"jwt\": {\"secret\": \"0123456789abcdef0123456789abcdef\", \"issuer\": \"hauth\", \"audience\": \"authenticated\", \"access_token_ttl_seconds\": 3600, \"refresh_token_ttl_seconds\": 2592000},"
+                        , "  \"site\": {\"url\": " <> show u <> ", \"allowed_redirect_urls\": [\"http://localhost:3000\"]},"
+                        , "  \"email\": {\"from\": \"noreply@example.com\", \"smtp_host\": \"localhost\", \"smtp_port\": 1025},"
+                        , "  \"oauth\": {\"providers\": [{\"name\": \"github\", \"client_id\": \"cid\", \"client_secret\": \"csec\", \"discovery_url\": \"https://github.com/.well-known/openid-configuration\"}]},"
+                        , "  \"server\": {\"host\": \"127.0.0.1\", \"port\": 8080}"
+                        , "}"
+                        ]
+            rejectsSiteUrl label u =
+                it ("rejects site.url " <> label) $
+                    case decodeConfigBytes "test.json" (mkSiteUrl u) of
+                        Left (ConfigValidationError _ errs) ->
+                            any (\e -> configFieldPath e == "site.url") errs `shouldBe` True
+                        other ->
+                            expectationFailure ("expected ConfigValidationError, got: " <> show other)
+
+        rejectsSiteUrl "bare scheme (https://)" ("https://" :: String)
+        rejectsSiteUrl "scheme with space (http:// bad)" ("http:// bad" :: String)
+        rejectsSiteUrl "space in host (https://example .com)" ("https://example .com" :: String)
+        rejectsSiteUrl "empty host (https:///missing-host)" ("https:///missing-host" :: String)
 
     describe "buildSettingsResponse" $ do
         let twoProviderConfig =

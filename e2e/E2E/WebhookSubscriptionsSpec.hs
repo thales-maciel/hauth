@@ -42,7 +42,7 @@ spec = do
                         (Just tok)
             expectStatus 401 resp
 
-        it "returns 400 for invalid URL" \env -> do
+        it "returns 400 for invalid URL (no scheme)" \env -> do
             svcJwt <- mintServiceRoleJwt env
             resp <-
                 runApp env $
@@ -51,6 +51,42 @@ spec = do
                         (Aeson.object ["url" Aeson..= ("not-a-url" :: T.Text)])
                         (Just svcJwt)
             expectStatus 400 resp
+
+        it "returns 400 for malformed URL (bare scheme)" \env -> do
+            svcJwt <- mintServiceRoleJwt env
+            resp <-
+                runApp env $
+                    jsonPost
+                        "/admin/webhooks"
+                        (Aeson.object ["url" Aeson..= ("https://" :: T.Text)])
+                        (Just svcJwt)
+            expectStatus 400 resp
+            (obj :: Aeson.Object) <- decodeBody resp
+            KeyMap.lookup "error" obj `shouldBe` Just (Aeson.String "invalid_url")
+
+        it "returns 400 for malformed URL (space in host)" \env -> do
+            svcJwt <- mintServiceRoleJwt env
+            resp <-
+                runApp env $
+                    jsonPost
+                        "/admin/webhooks"
+                        (Aeson.object ["url" Aeson..= ("https://example .com/hook" :: T.Text)])
+                        (Just svcJwt)
+            expectStatus 400 resp
+            (obj :: Aeson.Object) <- decodeBody resp
+            KeyMap.lookup "error" obj `shouldBe` Just (Aeson.String "invalid_url")
+
+        it "returns 400 for non-HTTP scheme" \env -> do
+            svcJwt <- mintServiceRoleJwt env
+            resp <-
+                runApp env $
+                    jsonPost
+                        "/admin/webhooks"
+                        (Aeson.object ["url" Aeson..= ("ftp://example.com/hook" :: T.Text)])
+                        (Just svcJwt)
+            expectStatus 400 resp
+            (obj :: Aeson.Object) <- decodeBody resp
+            KeyMap.lookup "error" obj `shouldBe` Just (Aeson.String "invalid_url")
 
         it "creates subscription with generated secret on minimal body" \env -> do
             svcJwt <- mintServiceRoleJwt env

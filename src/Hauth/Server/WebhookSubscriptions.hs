@@ -32,6 +32,7 @@ import Hauth.API.Types (
     WebhookSubscriptionResponse (..),
  )
 import Hauth.Env (AppEnv, withDatabaseConnection)
+import Hauth.Validation.URL (parseHttpUrl)
 import Servant.API (NoContent (..))
 import Servant.Server (Handler, ServerError (errBody), err400, err404, err409)
 
@@ -165,19 +166,19 @@ deleteWebhookSubscriptionHandler _ (WebhookSubscriptionId idText) = do
 -- Helpers
 -- ---------------------------------------------------------------------------
 
--- Validate that a URL starts with http:// or https:// (absolute URL requirement).
+-- Validate that a URL is an absolute http:// or https:// URI.
 validateUrl :: T.Text -> AppHandler ()
 validateUrl url =
-    if T.isPrefixOf "http://" url || T.isPrefixOf "https://" url
-        then pure ()
-        else
+    case parseHttpUrl url of
+        Right _ -> pure ()
+        Left _ ->
             throwError
                 err400
                     { errBody =
                         Aeson.encode $
                             Aeson.object
                                 [ "error" Aeson..= ("invalid_url" :: T.Text)
-                                , "msg" Aeson..= ("url must start with http:// or https://" :: T.Text)
+                                , "msg" Aeson..= ("url must be an absolute http:// or https:// URI" :: T.Text)
                                 ]
                     }
 

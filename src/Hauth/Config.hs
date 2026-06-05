@@ -20,6 +20,7 @@ import qualified Data.ByteString as BS
 import Data.List (intercalate)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Hauth.Validation.URL (parseHttpUrl)
 
 data Config = Config
     { configDatabase :: DatabaseConfig
@@ -543,8 +544,15 @@ requiredPostgresUrl path =
     requireScheme path ["postgres://", "postgresql://"]
 
 requiredHttpUrl :: String -> Maybe Text -> Checked Text
-requiredHttpUrl path =
-    requireScheme path ["http://", "https://"]
+requiredHttpUrl path value =
+    case requiredText path value of
+        Checked errors Nothing ->
+            Checked errors Nothing
+        Checked _ (Just text) ->
+            case parseHttpUrl text of
+                Right _ -> valid text
+                Left _ ->
+                    invalid path "must be an absolute http:// or https:// URL"
 
 requiredHttpUrlList :: String -> Maybe [Text] -> Checked [Text]
 requiredHttpUrlList path value =

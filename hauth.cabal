@@ -113,6 +113,7 @@ library
     Hauth.Server.WebhookSubscriptions
     Hauth.Session
     Hauth.User
+    Hauth.Validation.URL
     Hauth.Verify
     Hauth.Verify.Database
     Hauth.Verify.Identity
