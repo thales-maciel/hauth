@@ -9,6 +9,7 @@ import qualified Data.ByteString as BS
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import Data.UUID (UUID)
 import Database.PostgreSQL.Simple (Only (..), query)
 import E2E.Helpers (
     TestEnv (..),
@@ -139,8 +140,8 @@ spec = do
                         conn
                         "SELECT user_id FROM auth.identities WHERE provider = ? AND provider_id = ?"
                         ("github" :: Text, "no-email-sub-999" :: Text)
-            let identityUserIds = map (\(Only i) -> i) (rows :: [Only T.Text])
-            identityUserIds `shouldBe` [T.pack (show (unUserId uid))]
+            let identityUserIds = map (\(Only i) -> i) (rows :: [Only UUID])
+            identityUserIds `shouldBe` [unUserId uid]
 
     describe "findOrCreateIdentity: concurrent first-login race" $
         it "resolves both callers to the same user even under concurrent insert" \env -> do
