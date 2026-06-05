@@ -62,6 +62,7 @@ import Hauth.Email.TemplateCache (
     startTemplateCacheListener,
     stopTemplateCacheListener,
  )
+import Hauth.OAuth.ProviderExchange (ProviderExchange, productionProviderExchange)
 import Hauth.Webhooks.Worker (WorkerHandle, startWorker, stopWorker)
 import Network.HTTP.Client (Manager, newManager)
 import Network.HTTP.Client.TLS (tlsManagerSettings)
@@ -77,6 +78,9 @@ data AppEnv = AppEnv
     -- A 'Manager' is thread-safe and meant to be long-lived; allocating a
     -- new one per request defeats connection pooling. Per-hook timeout is
     -- applied on the 'Request' (see "Hauth.Hooks.Runner"), not here.
+    , appProviderExchange :: ProviderExchange
+    -- ^ Injectable OAuth provider exchange record. Production uses
+    -- 'productionProviderExchange'; e2e tests inject a fake.
     }
 
 {- | Handles for background workers/listeners spawned by
@@ -142,6 +146,7 @@ createAppEnvWithLogger logger config = do
             , appTemplateCache = cache
             , appBackgroundServiceStatuses = statuses
             , appHookHttpManager = hookHttpManager
+            , appProviderExchange = productionProviderExchange config
             }
 
 {- | Spawn the webhook delivery worker and the template-cache LISTEN/NOTIFY
