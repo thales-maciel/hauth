@@ -3,6 +3,7 @@ module Hauth.Server.WebhookSubscriptions (
     deleteWebhookSubscriptionHandler,
     getWebhookSubscriptionHandler,
     listWebhookSubscriptionsHandler,
+    rotateWebhookSecretHandler,
     updateWebhookSubscriptionHandler,
 ) where
 
@@ -27,9 +28,13 @@ import Hauth.API.Auth (ServiceRolePrincipal)
 import Hauth.API.Types (
     CreateWebhookSubscriptionRequest (..),
     ListWebhookSubscriptionsResponse (..),
+    RotateWebhookSecretRequest (..),
+    RotateWebhookSecretResponse (..),
     UpdateWebhookSubscriptionRequest (..),
+    WebhookSubscriptionCreateResponse (..),
     WebhookSubscriptionId (..),
     WebhookSubscriptionResponse (..),
+    toWebhookCreateResponse,
  )
 import Hauth.Env (AppEnv, withDatabaseConnection)
 import Servant.API (NoContent (..))
@@ -71,11 +76,13 @@ subRowToResponse SubRow{..} =
         , webhookSubUpdatedAt = subRowUpdatedAt
         }
 
--- | POST /admin/webhooks
+{- | POST /admin/webhooks
+Returns the plaintext secret once; subsequent GET/list responses redact it.
+-}
 createWebhookSubscriptionHandler ::
     ServiceRolePrincipal ->
     CreateWebhookSubscriptionRequest ->
-    AppHandler WebhookSubscriptionResponse
+    AppHandler WebhookSubscriptionCreateResponse
 createWebhookSubscriptionHandler _ req = do
     let url = createWebhookSubUrl req
         events = fromMaybe [] (createWebhookSubEvents req)
@@ -97,7 +104,7 @@ createWebhookSubscriptionHandler _ req = do
                                 , "msg" Aeson..= ("A subscription for this URL already exists" :: T.Text)
                                 ]
                     }
-        Right sub -> pure sub
+        Right sub -> pure (toWebhookCreateResponse sub)
 
 -- | GET /admin/webhooks
 listWebhookSubscriptionsHandler ::
@@ -121,7 +128,10 @@ getWebhookSubscriptionHandler _ (WebhookSubscriptionId idText) = do
         Nothing -> throwError subNotFoundError
         Just sub -> pure sub
 
--- | PUT /admin/webhooks/:id
+{- | PUT /admin/webhooks/:id
+Updates URL, events, and disabled_at. Secret is NOT updated here; use
+POST \/:id\/rotate-secret to rotate the signing secret.
+-}
 updateWebhookSubscriptionHandler ::
     ServiceRolePrincipal ->
     WebhookSubscriptionId ->
@@ -138,7 +148,8 @@ updateWebhookSubscriptionHandler _ (WebhookSubscriptionId idText) req = do
             Just existing -> do
                 let url' = fromMaybe (webhookSubUrl existing) (updateWebhookSubUrl req)
                     events' = fromMaybe (webhookSubEvents existing) (updateWebhookSubEvents req)
-                    secret' = fromMaybe (webhookSubSecret existing) (updateWebhookSubSecret req)
+                    -- Secret is intentionally NOT changed via PUT.
+                    secret' = webhookSubSecret existing
                     disabledAt' = case updateWebhookSubDisabledAt req of
                         Nothing -> webhookSubDisabledAt existing
                         Just v -> v
@@ -147,6 +158,36 @@ updateWebhookSubscriptionHandler _ (WebhookSubscriptionId idText) req = do
     case mSub of
         Nothing -> throwError subNotFoundError
         Just sub -> pure sub
+
+{- | POST /admin/webhooks/:id/rotate-secret
+Rotate the HMAC signing secret. Supply @{"secret":"..."}@ to use a
+caller-provided value, or omit the body to have the server generate a
+fresh 32-byte hex secret. Returns the new secret once as
+@{"secret":"<plaintext>"}@; subsequent reads will redact it.
+-}
+rotateWebhookSecretHandler ::
+    ServiceRolePrincipal ->
+    WebhookSubscriptionId ->
+    RotateWebhookSecretRequest ->
+    AppHandler RotateWebhookSecretResponse
+rotateWebhookSecretHandler _ (WebhookSubscriptionId idText) req = do
+    uid <- parseSubId idText
+    env <- ask
+    mSub <- liftIO $ withDatabaseConnection env (`selectSubscriptionById` uid)
+    case mSub of
+        Nothing -> throwError subNotFoundError
+        Just _ -> do
+            newSecret <- case rotateWebhookSecret req of
+                Just s -> pure s
+                Nothing -> liftIO generateSecret
+            _ <- liftIO $
+                withDatabaseConnection env \conn ->
+                    execute
+                        conn
+                        "UPDATE auth.webhook_subscriptions \
+                        \SET secret = ?, updated_at = now() WHERE id = ?"
+                        (newSecret, uid)
+            pure RotateWebhookSecretResponse{rotateWebhookNewSecret = newSecret}
 
 -- | DELETE /admin/webhooks/:id
 deleteWebhookSubscriptionHandler ::

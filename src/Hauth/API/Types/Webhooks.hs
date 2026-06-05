@@ -8,9 +8,13 @@ module Hauth.API.Types.Webhooks (
     WebhookDeliveriesResponse (..),
     WebhookSubscriptionId (..),
     WebhookSubscriptionResponse (..),
+    WebhookSubscriptionCreateResponse (..),
+    RotateWebhookSecretRequest (..),
+    RotateWebhookSecretResponse (..),
     ListWebhookSubscriptionsResponse (..),
     CreateWebhookSubscriptionRequest (..),
     UpdateWebhookSubscriptionRequest (..),
+    toWebhookCreateResponse,
 ) where
 
 import Data.Aeson (FromJSON (..), ToJSON (toJSON), Value, object, (.=))
@@ -112,6 +116,14 @@ newtype WebhookSubscriptionId = WebhookSubscriptionId {unWebhookSubscriptionId :
     deriving stock (Eq, Generic, Ord, Show)
     deriving newtype (FromHttpApiData, FromJSON, ToHttpApiData, ToJSON)
 
+-- | Sentinel emitted in place of the real secret on read/list responses.
+webhookRedactedSecret :: Text
+webhookRedactedSecret = "***redacted***"
+
+{- | Subscription row returned by GET/list. The secret field is always
+serialised as @"***redacted***"@ — the real value is retained in the record
+for internal use (signing) but is never exposed on read paths.
+-}
 data WebhookSubscriptionResponse = WebhookSubscriptionResponse
     { webhookSubId :: UUID
     , webhookSubUrl :: Text
@@ -129,7 +141,7 @@ instance ToJSON WebhookSubscriptionResponse where
             [ "id" .= webhookSubId
             , "url" .= webhookSubUrl
             , "events" .= webhookSubEvents
-            , "secret" .= webhookSubSecret
+            , "secret" .= webhookRedactedSecret
             , "disabled_at" .= webhookSubDisabledAt
             , "created_at" .= webhookSubCreatedAt
             , "updated_at" .= webhookSubUpdatedAt
@@ -145,6 +157,87 @@ instance FromJSON WebhookSubscriptionResponse where
             <*> o Aeson..:? "disabled_at"
             <*> o Aeson..: "created_at"
             <*> o Aeson..: "updated_at"
+
+{- | Response type for the create endpoint. Identical shape to
+'WebhookSubscriptionResponse' but serialises the real plaintext secret so
+operators can configure receivers. After this one-time response the secret
+is no longer readable via the API.
+-}
+data WebhookSubscriptionCreateResponse = WebhookSubscriptionCreateResponse
+    { webhookCreateSubId :: UUID
+    , webhookCreateSubUrl :: Text
+    , webhookCreateSubEvents :: [Text]
+    , webhookCreateSubSecret :: Text
+    , webhookCreateSubDisabledAt :: Maybe UTCTime
+    , webhookCreateSubCreatedAt :: UTCTime
+    , webhookCreateSubUpdatedAt :: UTCTime
+    }
+    deriving stock (Eq, Show)
+
+instance ToJSON WebhookSubscriptionCreateResponse where
+    toJSON WebhookSubscriptionCreateResponse{..} =
+        object
+            [ "id" .= webhookCreateSubId
+            , "url" .= webhookCreateSubUrl
+            , "events" .= webhookCreateSubEvents
+            , "secret" .= webhookCreateSubSecret
+            , "disabled_at" .= webhookCreateSubDisabledAt
+            , "created_at" .= webhookCreateSubCreatedAt
+            , "updated_at" .= webhookCreateSubUpdatedAt
+            ]
+
+instance FromJSON WebhookSubscriptionCreateResponse where
+    parseJSON = Aeson.withObject "WebhookSubscriptionCreateResponse" \o ->
+        WebhookSubscriptionCreateResponse
+            <$> o Aeson..: "id"
+            <*> o Aeson..: "url"
+            <*> o Aeson..: "events"
+            <*> o Aeson..: "secret"
+            <*> o Aeson..:? "disabled_at"
+            <*> o Aeson..: "created_at"
+            <*> o Aeson..: "updated_at"
+
+{- | Convert an internal 'WebhookSubscriptionResponse' (which holds the real
+secret) into a 'WebhookSubscriptionCreateResponse' that reveals it once.
+-}
+toWebhookCreateResponse :: WebhookSubscriptionResponse -> WebhookSubscriptionCreateResponse
+toWebhookCreateResponse WebhookSubscriptionResponse{..} =
+    WebhookSubscriptionCreateResponse
+        { webhookCreateSubId = webhookSubId
+        , webhookCreateSubUrl = webhookSubUrl
+        , webhookCreateSubEvents = webhookSubEvents
+        , webhookCreateSubSecret = webhookSubSecret
+        , webhookCreateSubDisabledAt = webhookSubDisabledAt
+        , webhookCreateSubCreatedAt = webhookSubCreatedAt
+        , webhookCreateSubUpdatedAt = webhookSubUpdatedAt
+        }
+
+{- | Optional request body for @POST /admin/webhooks\/:id\/rotate-secret@.
+If @rotateWebhookSecret@ is absent the server generates a fresh secret.
+-}
+newtype RotateWebhookSecretRequest = RotateWebhookSecretRequest
+    { rotateWebhookSecret :: Maybe Text
+    }
+    deriving stock (Eq, Show)
+
+instance FromJSON RotateWebhookSecretRequest where
+    parseJSON = Aeson.withObject "RotateWebhookSecretRequest" \o ->
+        RotateWebhookSecretRequest
+            <$> o Aeson..:? "secret"
+
+-- | Response for the rotate endpoint: returns the new plaintext secret once.
+newtype RotateWebhookSecretResponse = RotateWebhookSecretResponse
+    { rotateWebhookNewSecret :: Text
+    }
+    deriving stock (Eq, Show)
+
+instance ToJSON RotateWebhookSecretResponse where
+    toJSON RotateWebhookSecretResponse{rotateWebhookNewSecret} =
+        object ["secret" .= rotateWebhookNewSecret]
+
+instance FromJSON RotateWebhookSecretResponse where
+    parseJSON = Aeson.withObject "RotateWebhookSecretResponse" \o ->
+        RotateWebhookSecretResponse <$> o Aeson..: "secret"
 
 newtype ListWebhookSubscriptionsResponse = ListWebhookSubscriptionsResponse
     { listWebhookSubscriptions :: [WebhookSubscriptionResponse]
@@ -181,10 +274,12 @@ instance ToJSON CreateWebhookSubscriptionRequest where
             , "secret" .= createWebhookSubSecret
             ]
 
+{- | PUT body. The @secret@ field is intentionally absent — updating other
+fields does not rotate the secret. Use @POST \/:id\/rotate-secret@ instead.
+-}
 data UpdateWebhookSubscriptionRequest = UpdateWebhookSubscriptionRequest
     { updateWebhookSubUrl :: Maybe Text
     , updateWebhookSubEvents :: Maybe [Text]
-    , updateWebhookSubSecret :: Maybe Text
     , updateWebhookSubDisabledAt :: Maybe (Maybe UTCTime)
     }
     deriving stock (Eq, Show)
@@ -194,7 +289,6 @@ instance FromJSON UpdateWebhookSubscriptionRequest where
         UpdateWebhookSubscriptionRequest
             <$> o Aeson..:? "url"
             <*> o Aeson..:? "events"
-            <*> o Aeson..:? "secret"
             <*> (fmap Just <$> o Aeson..:? "disabled_at")
 
 instance ToJSON UpdateWebhookSubscriptionRequest where
@@ -202,6 +296,5 @@ instance ToJSON UpdateWebhookSubscriptionRequest where
         object
             [ "url" .= updateWebhookSubUrl
             , "events" .= updateWebhookSubEvents
-            , "secret" .= updateWebhookSubSecret
             , "disabled_at" .= updateWebhookSubDisabledAt
             ]

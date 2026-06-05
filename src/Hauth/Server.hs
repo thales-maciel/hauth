@@ -72,6 +72,7 @@ import Hauth.Server.Hooks (
     deleteHookHandler,
     getHookHandler,
     listHooksHandler,
+    rotateHookSecretHandler,
     updateHookHandler,
  )
 import Hauth.Server.Mfa (
@@ -92,6 +93,7 @@ import Hauth.Server.WebhookSubscriptions (
     deleteWebhookSubscriptionHandler,
     getWebhookSubscriptionHandler,
     listWebhookSubscriptionsHandler,
+    rotateWebhookSecretHandler,
     updateWebhookSubscriptionHandler,
  )
 import Network.Wai (Application, Request, requestHeaders)
@@ -238,6 +240,7 @@ adminWebhookSubscriptionsServer =
         :<|> getWebhookSubscriptionHandler
         :<|> updateWebhookSubscriptionHandler
         :<|> deleteWebhookSubscriptionHandler
+        :<|> rotateWebhookSecretHandler
 
 adminHooksServer :: ServerT AdminHooksAPI AppHandler
 adminHooksServer =
@@ -246,6 +249,7 @@ adminHooksServer =
         :<|> getHookHandler
         :<|> updateHookHandler
         :<|> deleteHookHandler
+        :<|> rotateHookSecretHandler
 
 adminWebhookDeliveriesServer :: ServerT AdminWebhookDeliveriesAPI AppHandler
 adminWebhookDeliveriesServer =

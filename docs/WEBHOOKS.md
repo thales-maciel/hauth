@@ -30,9 +30,8 @@ curl -sS -X POST https://your-hauth/admin/webhooks \
   is skipped at the SQL `cardinality(events) = 0 OR event_type = ANY(events)`
   check.
 
-`secret` is plaintext on the row — operators can read it back through the
-admin UI. Omit it and hauth generates a 32-byte hex secret and returns it in
-the response:
+Omit `secret` and hauth generates a 32-byte hex secret automatically.
+The secret is returned **once** in the create response:
 
 ```json
 {
@@ -46,9 +45,54 @@ the response:
 }
 ```
 
+**Store the secret immediately.** All subsequent `GET` and list responses emit
+`"secret": "***redacted***"`. To replace a secret, use
+`POST /admin/webhooks/:id/rotate-secret` (see below).
+
+**Encryption at rest.** Secrets are currently stored as plaintext in the
+`auth.webhook_subscriptions` table. Full encryption at rest is out of scope
+for this release; restrict access via Postgres role permissions on the `auth`
+schema.
+
 To pause deliveries without losing history, `PUT` `disabled_at` to a
 timestamp. To delete the subscription entirely, `DELETE
 /admin/webhooks/{id}` — pending deliveries cascade-delete with it.
+
+### Rotating the signing secret
+
+Use `POST /admin/webhooks/:id/rotate-secret` to replace the HMAC signing
+secret. The new secret is returned once in the response; subsequent reads
+redact it.
+
+**Server-generated secret (recommended):**
+```sh
+curl -sS -X POST https://your-hauth/admin/webhooks/${SUB_ID}/rotate-secret \
+  -H "Authorization: Bearer $SERVICE_ROLE_JWT" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+# Response: {"secret": "<64-char hex>"}
+```
+
+**Caller-supplied secret:**
+```sh
+curl -sS -X POST https://your-hauth/admin/webhooks/${SUB_ID}/rotate-secret \
+  -H "Authorization: Bearer $SERVICE_ROLE_JWT" \
+  -H "Content-Type: application/json" \
+  -d '{"secret": "my-new-shared-secret"}'
+# Response: {"secret": "my-new-shared-secret"}
+```
+
+Update the `SECRET` constant in your receiver before decommissioning the old
+one. The `PUT /admin/webhooks/:id` endpoint does **not** change the secret;
+pass only `url`, `events`, and `disabled_at` fields to avoid accidentally
+triggering rotation.
+
+### Migration note for existing clients
+
+If you currently read back the `secret` field from `GET /admin/webhooks/:id`
+or the list endpoint, those responses now return `"***redacted***"` instead of
+the plaintext value. Store the secret from the create response or use
+`/rotate-secret` to issue a new known-good secret.
 
 ## Event catalog
 
@@ -184,7 +228,7 @@ LIMIT 20;
 | Symptom | Likely cause |
 |---|---|
 | Deliveries stay `pending` forever | The worker isn't running — confirm `hauth serve` (not `migrate`) is the process; `serve` starts the worker, `migrate` does not. |
-| Receiver gets `webhook-signature` mismatches | Make sure you're HMACing the **raw** body bytes — not the JSON pretty-printed by your framework's middleware. |
+| Receiver gets `webhook-signature` mismatches | Make sure you're HMACing the **raw** body bytes — not the JSON pretty-printed by your framework's middleware. The secret field in `GET` responses is `"***redacted***"` — use the create/rotate response or query `auth.webhook_subscriptions` directly in `psql` to confirm the stored value. |
 | `403`/`401` from your receiver shows up as `exhausted` after 6 attempts | hauth treats every non-2xx as failure; check the receiver's auth requirements. |
 | Receiver returns 200 but your processing fails | Return non-2xx so hauth retries. 200 marks the delivery `sent` permanently. |
 | `connection refused` in `last_error` | TLS issue or DNS issue at the receiver hostname; hauth doesn't proxy. |
