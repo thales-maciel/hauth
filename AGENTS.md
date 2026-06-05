@@ -78,6 +78,11 @@ Do not refactor existing module shape or public signatures. Need extra args? Kee
 
 - Outbound `http-client` tests need threaded RTS. Keep `hauth-test` and `hauth-e2e` cabal stanzas with `-threaded -rtsopts -with-rtsopts=-N`.
 - Raw test INSERTs must satisfy migration `CHECK` constraints (`timeout_ms`, `hook_point`, etc.). Read migration before seeding.
+- New `AppEnv` field: grep `AppEnv\s*{` in `test/`, `e2e/`. Add `error "<field> not used in <suite>"` stub everywhere. Forgotten field = runtime crash, not compile error.
+- Adding outbound/auth policy? Mirror Manager-injection pattern in `createAppEnvWith`. Inject the new check via `AppEnv` too. Hardcoded `defaultResolver`/etc. in a handler breaks e2e loopback URLs.
+- `cabal build` sometimes lies "Up to date" after Edit. Source changed, `.o` stale. Fix: `rm -rf dist-newstyle/build/*/ghc-*/hauth-*/build && cabal build lib:hauth`. Trust test failures over the build message.
+- `.github/workflows/*.yml` gated by actionlint on every PR. Quote step names with `:`. Pin runner labels (`ubuntu-latest` ok; floats not).
+- `docs.yml` CLI-subcommand guard scopes to fenced ``` blocks and inline backticks only AND requires `hauth` as first command word. Prose like "hauth verifies X" passes through. Don't widen.
 - No silent-skipping tests in CI.
 - No DB code in unit suite.
 - No multi-paragraph comments/docstrings. One short line max, only for non-obvious WHY.
@@ -104,10 +109,13 @@ Do not refactor existing module shape or public signatures. Need extra args? Kee
 fourmolu --mode check app src test e2e
 hlint app src test e2e
 cabal test hauth-test --project-file=cabal.project.ci
-HAUTH_E2E_DATABASE_URL=postgresql://hauth:hauth@localhost:5432/hauth_e2e \
-  cabal test hauth-e2e --project-file=cabal.project.ci
+make e2e          # preflights Postgres, then runs hauth-e2e with the CI project file
 make rebase-check
 ```
+
+`make e2e` defaults `HAUTH_E2E_DATABASE_URL` to `postgresql://hauth:hauth@localhost:5432/hauth_e2e` via `withTestEnv`. Override only if your local DB differs.
+
+Iterating on e2e? `make e2e-watch` runs `ghcid` against `hauth-e2e` for fast feedback. Install once: `cabal install --installdir=$HOME/.local/bin ghcid`.
 
 CLI changed? Smoke-test:
 
