@@ -12,6 +12,7 @@ import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.ByteString as BS
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
+import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import Database.PostgreSQL.Simple (Only (..), execute)
@@ -146,9 +147,7 @@ assertValidSignature secret CapturedRequest{capHeaders, capBody} = do
 
 lookupHeader :: HeaderName -> RequestHeaders -> BS.ByteString
 lookupHeader name hdrs =
-    case lookup name hdrs of
-        Just v -> v
-        Nothing -> ""
+    fromMaybe "" (lookup name hdrs)
 
 -- ---------------------------------------------------------------------------
 -- In-process Warp receiver

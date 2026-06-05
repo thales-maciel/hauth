@@ -28,12 +28,15 @@ type AppHandler = ReaderT AppEnv Handler
 listEmailTemplatesHandler :: ServiceRolePrincipal -> AppHandler EmailTemplatesListResponse
 listEmailTemplatesHandler _ = do
     env <- ask
-    rows <- liftIO $ withDatabaseConnection env \conn ->
-        query_
-            conn
-            "SELECT name, subject, body_text, body_html, updated_at \
-            \FROM auth.email_templates \
-            \ORDER BY name"
+    rows <-
+        liftIO $
+            withDatabaseConnection
+                env
+                ( `query_`
+                    "SELECT name, subject, body_text, body_html, updated_at \
+                    \FROM auth.email_templates \
+                    \ORDER BY name"
+                )
     pure EmailTemplatesListResponse{emailTemplatesList = fmap rowToRecord rows}
 
 getEmailTemplateHandler :: ServiceRolePrincipal -> T.Text -> AppHandler EmailTemplateRow

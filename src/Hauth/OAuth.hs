@@ -19,6 +19,7 @@ import Data.List (find)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import Data.Time (UTCTime)
 import Data.Time.Clock (diffUTCTime)
 import Data.UUID (UUID)
@@ -28,6 +29,7 @@ import Database.PostgreSQL.Simple.FromRow (FromRow (..), field)
 import Hauth.Config (OAuthConfig (..), OAuthProviderConfig (..), SiteConfig (..))
 import Hauth.Session (generateOpaqueToken)
 import qualified Hauth.User as User
+import Network.HTTP.Types.URI (renderSimpleQuery)
 
 -- ---------------------------------------------------------------------------
 -- Core types
@@ -140,15 +142,18 @@ buildStubAuthorizeUrl ::
     Text ->
     Text
 buildStubAuthorizeUrl OAuthProviderConfig{oauthProviderDiscoveryUrl, oauthProviderClientId} state callbackUrl _redirectTo =
-    oauthProviderDiscoveryUrl
-        <> "?state="
-        <> state
-        <> "&client_id="
-        <> oauthProviderClientId
-        <> "&redirect_uri="
-        <> callbackUrl
-        <> "&response_type=code"
-        <> "&scope=openid%20email%20profile"
+    oauthProviderDiscoveryUrl <> "?" <> renderedQuery
+  where
+    renderedQuery =
+        TE.decodeUtf8 $
+            renderSimpleQuery
+                False
+                [ ("state", TE.encodeUtf8 state)
+                , ("client_id", TE.encodeUtf8 oauthProviderClientId)
+                , ("redirect_uri", TE.encodeUtf8 callbackUrl)
+                , ("response_type", "code")
+                , ("scope", "openid email profile")
+                ]
 
 -- ---------------------------------------------------------------------------
 -- IO helpers

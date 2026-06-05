@@ -92,12 +92,13 @@ spec = do
         it "upserts a template and subsequent GET returns the updated content" \env -> do
             svcJwt <- mintServiceRoleJwt env
             let resetRow =
-                    withDatabaseConnection (testAppEnv env) \conn ->
-                        execute_
-                            conn
+                    withDatabaseConnection
+                        (testAppEnv env)
+                        ( `execute_`
                             "UPDATE auth.email_templates \
                             \SET subject = 'Confirm your email address' \
                             \WHERE name = 'confirmation'"
+                        )
             bracket_ (pure ()) resetRow $ do
                 putResp <-
                     runApp env $
@@ -129,12 +130,13 @@ spec = do
             svcJwt <- mintServiceRoleJwt env
             -- Re-seed the row after the test using bracket_
             let reseedRow =
-                    withDatabaseConnection (testAppEnv env) \conn ->
-                        execute_
-                            conn
+                    withDatabaseConnection
+                        (testAppEnv env)
+                        ( `execute_`
                             "INSERT INTO auth.email_templates (name, subject, body_text, body_html) \
                             \VALUES ('recovery', 'Reset your password', 'text', '<p>html</p>') \
                             \ON CONFLICT (name) DO NOTHING"
+                        )
             bracket_ (pure ()) reseedRow $ do
                 delResp <- runApp env $ jsonDelete "/admin/email-templates/recovery" (Just svcJwt)
                 expectStatus 204 delResp

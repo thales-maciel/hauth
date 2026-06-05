@@ -1,4 +1,8 @@
 [tools]
+cabal = "3.12.1.0"
+fourmolu = "0.15.0.0"
+ghc = "9.4.8"
+hlint = "3.8"
 postgres = "16"
 
 [env]
