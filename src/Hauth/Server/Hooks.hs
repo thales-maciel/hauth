@@ -30,7 +30,7 @@ import Hauth.API.Types (
  )
 import Hauth.Env (AppEnv (..), withDatabaseConnection)
 import Hauth.Hooks.Types (HookPoint, hookPointName, parseHookPoint)
-import Network.URI (parseAbsoluteURI)
+import Network.URI (URI (uriScheme), parseAbsoluteURI)
 import Servant.API (NoContent (..))
 import Servant.Server (Handler, ServerError (..), err400, err404, err409)
 
@@ -43,17 +43,17 @@ type AppHandler = ReaderT AppEnv Handler
 validateUrl :: T.Text -> Either ServerError ()
 validateUrl u =
     case parseAbsoluteURI (T.unpack u) of
-        Nothing ->
+        Just uri | uriScheme uri `elem` ["http:", "https:"] -> Right ()
+        _ ->
             Left
                 err400
                     { errBody =
                         Aeson.encode $
                             Aeson.object
                                 [ "error" Aeson..= ("invalid_url" :: T.Text)
-                                , "msg" Aeson..= ("url must be an absolute URI" :: T.Text)
+                                , "msg" Aeson..= ("url must be an absolute http:// or https:// URI" :: T.Text)
                                 ]
                     }
-        Just _ -> Right ()
 
 validateTimeout :: Int -> Either ServerError ()
 validateTimeout ms =

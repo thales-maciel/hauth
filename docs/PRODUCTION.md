@@ -318,7 +318,7 @@ hauth stores all state in Postgres inside the `auth` schema. Back up the entire
 | Table | Consequence of loss |
 |---|---|
 | `auth.users` | **Catastrophic.** All accounts gone; users cannot log in; data referencing user IDs is orphaned. |
-| `auth.sessions` | Active sessions invalidated silently. Users will be forced to re-login on next request. |
+| `auth.sessions` | Refresh/session state is lost. Existing access tokens remain valid until they expire. |
 | `auth.refresh_tokens` | Refresh grants fail. Access tokens remain valid until they expire. |
 | `auth.identities` | OAuth linkages lost. Users cannot log in via OAuth until they re-link. |
 | `auth.mfa_factors` | MFA enrollments lost. Users will need to re-enroll. |

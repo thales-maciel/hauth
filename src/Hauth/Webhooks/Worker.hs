@@ -94,9 +94,14 @@ workerLoop withConn mgr stopMVar = do
     case shouldStop of
         Just () -> pure ()
         Nothing -> do
-            _ <- runOnce withConn mgr `catch` (\(_ :: SomeException) -> pure False)
+            drainReady withConn mgr
             threadDelay pollIntervalMicros
             workerLoop withConn mgr stopMVar
+
+drainReady :: (forall a. (Connection -> IO a) -> IO a) -> Manager -> IO ()
+drainReady withConn mgr = do
+    more <- runOnce withConn mgr `catch` (\(_ :: SomeException) -> pure False)
+    when more (drainReady withConn mgr)
 
 {- | Drain all currently-pending deliveries on a single connection. Spins
 through `runOnce` until no more rows are claimable. Exposed so e2e tests
@@ -120,8 +125,12 @@ runOnce withConn mgr =
             Left _ -> pure False
             Right Nothing -> pure False
             Right (Just row) -> do
-                processDelivery conn mgr row
-                pure True
+                processingResult <- try @SomeException (processDelivery conn mgr row)
+                case processingResult of
+                    Right () -> pure True
+                    Left _ ->
+                        releaseProcessing conn (drId row) `catch` (\(_ :: SomeException) -> pure ())
+                            >> pure False
 
 data DeliveryRow = DeliveryRow
     { drId :: UUID
@@ -169,11 +178,10 @@ attempts) so future loops can re-evaluate it.
 -}
 processDelivery :: Connection -> Manager -> DeliveryRow -> IO ()
 processDelivery conn mgr row@DeliveryRow{..} = do
-    subResult <- try @SomeException (loadSubscription conn drSubscriptionId)
-    case subResult of
-        Left _ -> releaseProcessing conn drId
-        Right Nothing -> releaseProcessing conn drId
-        Right (Just (url, secret)) -> do
+    mSub <- loadSubscription conn drSubscriptionId
+    case mSub of
+        Nothing -> releaseProcessing conn drId
+        Just (url, secret) -> do
             outcome <- deliverPayload mgr url secret drId drPayload
             recordOutcome conn row outcome
 

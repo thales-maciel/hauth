@@ -25,7 +25,14 @@ import E2E.OAuthFake (
     withFakeProviders,
  )
 import Hauth.Env (withDatabaseConnection)
-import Hauth.OAuth (IdentityClaims (..), findOrCreateIdentity)
+import Hauth.OAuth (
+    IdentityClaims (..),
+    OAuthError (..),
+    ProviderName (..),
+    consumeFlowState,
+    createFlowState,
+    findOrCreateIdentity,
+ )
 import Hauth.User (unUserId)
 import Test.Hspec (SpecWith, describe, it, shouldBe, shouldSatisfy)
 
@@ -54,6 +61,21 @@ spec = do
                 Just (Aeson.String e) ->
                     (e `elem` ["invalid_state", "state_expired"]) `shouldBe` True
                 other -> error ("expected error string; got " <> show other)
+
+    describe "consumeFlowState" $
+        it "allows exactly one concurrent consumer for a state token" \env -> do
+            let stateToken = "race-state-token"
+            _ <-
+                withDatabaseConnection (testAppEnv env) \conn ->
+                    createFlowState conn (ProviderName "google") stateToken
+            (r1, r2) <-
+                concurrently
+                    (withDatabaseConnection (testAppEnv env) (`consumeFlowState` stateToken))
+                    (withDatabaseConnection (testAppEnv env) (`consumeFlowState` stateToken))
+            let successes = length [() | Right _ <- [r1, r2]]
+                invalids = length [() | Left OAuthStateInvalid <- [r1, r2]]
+            successes `shouldBe` 1
+            invalids `shouldBe` 1
 
     describe "OAuth happy path with injected fake (google)" $
         it "authorize creates state, callback consumes it, identity persisted, session returned" \env -> do
