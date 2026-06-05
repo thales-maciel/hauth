@@ -110,6 +110,7 @@ library
     Hauth.Server.OAuth
     Hauth.Server.Session
     Hauth.Server.WebhookDeliveries
+    Hauth.Security.OutboundDestination
     Hauth.Server.WebhookSubscriptions
     Hauth.Session
     Hauth.User
@@ -230,6 +231,7 @@ test-suite hauth-test
     Spec.Verify.SmtpSpec
     Spec.VerifySpec
     Spec.Verify.OauthSpec
+    Spec.Security.OutboundDestinationSpec
     Spec.Webhooks.SigningSpec
   build-depends:
       base >=4.17 && <5
@@ -290,6 +292,7 @@ test-suite hauth-e2e
     E2E.WebhookDeliveriesSpec
     E2E.WebhookEmitSpec
     E2E.WebhookOutboxSpec
+    E2E.OutboundDestinationSpec
     E2E.WebhooksSpec
     E2E.WebhookSubscriptionsSpec
     E2E.WebhookWorkerSpec

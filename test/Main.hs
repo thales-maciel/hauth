@@ -30,6 +30,7 @@ import qualified Spec.OAuth.GithubSpec
 import qualified Spec.OAuth.GoogleSpec
 import qualified Spec.OAuthSpec
 import qualified Spec.RefreshTokenSpec
+import qualified Spec.Security.OutboundDestinationSpec
 import qualified Spec.ServerSpec
 import qualified Spec.SessionSpec
 import qualified Spec.UserSpec
@@ -76,6 +77,7 @@ specs = do
     describe "OAuth/Google" Spec.OAuth.GoogleSpec.spec
     describe "OAuth handlers" Spec.OAuthSpec.spec
     describe "refresh tokens" Spec.RefreshTokenSpec.spec
+    describe "security/outbound destination" Spec.Security.OutboundDestinationSpec.spec
     describe "server wiring" Spec.ServerSpec.spec
     describe "session helpers" Spec.SessionSpec.spec
     describe "user identity" Spec.UserSpec.spec

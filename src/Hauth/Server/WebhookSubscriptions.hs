@@ -37,7 +37,7 @@ import Hauth.API.Types (
     toWebhookCreateResponse,
  )
 import Hauth.Env (AppEnv, withDatabaseConnection)
-import Hauth.Validation.URL (parseHttpUrl)
+import Hauth.Security.OutboundDestination (checkDestination, defaultResolver)
 import Servant.API (NoContent (..))
 import Servant.Server (Handler, ServerError (errBody), err400, err404, err409)
 
@@ -207,11 +207,13 @@ deleteWebhookSubscriptionHandler _ (WebhookSubscriptionId idText) = do
 -- Helpers
 -- ---------------------------------------------------------------------------
 
--- Validate that a URL is an absolute http:// or https:// URI.
+-- Validate that a URL is an absolute http:// or https:// URI
+-- with a publicly-routable destination.
 validateUrl :: T.Text -> AppHandler ()
-validateUrl url =
-    case parseHttpUrl url of
-        Right _ -> pure ()
+validateUrl url = do
+    result <- liftIO (checkDestination defaultResolver url)
+    case result of
+        Right () -> pure ()
         Left _ ->
             throwError
                 err400
@@ -219,7 +221,7 @@ validateUrl url =
                         Aeson.encode $
                             Aeson.object
                                 [ "error" Aeson..= ("invalid_url" :: T.Text)
-                                , "msg" Aeson..= ("url must be an absolute http:// or https:// URI" :: T.Text)
+                                , "msg" Aeson..= ("url must be an absolute http:// or https:// URI with a publicly-routable destination" :: T.Text)
                                 ]
                     }
 

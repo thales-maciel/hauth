@@ -47,7 +47,7 @@ import Hauth.Email.TemplateCache (
 import Hauth.Env (
     AppEnv (..),
     Logger (..),
-    createAppEnvWithLogger,
+    createAppEnvWith,
     destroyAppEnv,
     startRequiredBackgroundServices,
     stopBackgroundServices,
@@ -55,6 +55,7 @@ import Hauth.Env (
  )
 import Hauth.Migrate (runMigrate)
 import Hauth.Server (app)
+import Network.HTTP.Client (defaultManagerSettings, newManager)
 import Network.HTTP.Types (Method, hAccept, hAuthorization, hContentType, statusCode)
 import Network.Wai (Request (requestHeaders, requestMethod))
 import Network.Wai.Test (
@@ -101,7 +102,11 @@ withTestEnv action = do
         T.pack . fromMaybe "postgresql://hauth:hauth@localhost:5432/hauth_e2e"
             <$> lookupEnv "HAUTH_E2E_DATABASE_URL"
     let cfg = testingConfig dbUrl
-    bracket (createAppEnvWithLogger silentLogger cfg) destroyAppEnv \appEnv -> do
+    -- Use a plain (non-hardened) Manager: e2e tests spin up loopback servers
+    -- for hook and webhook receivers; the hardened manager would block them.
+    -- The SSRF policy is covered separately by unit tests and e2e OutboundDestination tests.
+    plainMgr <- newManager defaultManagerSettings
+    bracket (createAppEnvWith silentLogger cfg plainMgr) destroyAppEnv \appEnv -> do
         _ <- runMigrate cfg MigrateUp
         bracket (startRequiredBackgroundServices appEnv) stopBackgroundServices \_ -> do
             let env = TestEnv appEnv cfg

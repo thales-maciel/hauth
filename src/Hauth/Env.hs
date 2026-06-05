@@ -31,6 +31,7 @@ module Hauth.Env (
     Logger (..),
     backgroundServiceStatusChecks,
     createAppEnv,
+    createAppEnvWith,
     createAppEnvWithLogger,
     destroyAppEnv,
     isRequiredForServe,
@@ -65,9 +66,9 @@ import Hauth.Email.TemplateCache (
     stopTemplateCacheListener,
  )
 import Hauth.OAuth.ProviderExchange (ProviderExchange, productionProviderExchange)
+import Hauth.Security.OutboundDestination (newOutboundManager)
 import Hauth.Webhooks.Worker (WorkerHandle, startWorker, stopWorker)
-import Network.HTTP.Client (Manager, newManager)
-import Network.HTTP.Client.TLS (tlsManagerSettings)
+import Network.HTTP.Client (Manager)
 
 data AppEnv = AppEnv
     { appConfig :: Config
@@ -137,12 +138,20 @@ createAppEnv :: Config -> IO AppEnv
 createAppEnv =
     createAppEnvWithLogger stdoutLogger
 
-createAppEnvWithLogger :: Logger -> Config -> IO AppEnv
-createAppEnvWithLogger logger config = do
+{- | Construct an 'AppEnv' with an injectable HTTP 'Manager'.
+
+Use 'createAppEnv' / 'createAppEnvWithLogger' in production — they default to
+'Hauth.Security.OutboundDestination.newOutboundManager', which enforces the
+SSRF policy on every outbound hook/webhook request.
+
+Pass a plain @'newManager' 'defaultManagerSettings'@ from @http-client@ only
+in test harnesses where hook/webhook endpoints are loopback servers.
+-}
+createAppEnvWith :: Logger -> Config -> Manager -> IO AppEnv
+createAppEnvWith logger config hookMgr = do
     pool <- createConnectionPool config
     cache <- newTemplateCache
     statuses <- newBackgroundServiceStatuses
-    hookHttpManager <- newManager tlsManagerSettings
     let emailSender = makeSMTPSender (configEmail config)
     pure
         AppEnv
@@ -151,10 +160,15 @@ createAppEnvWithLogger logger config = do
             , appConnectionPool = pool
             , appTemplateCache = cache
             , appBackgroundServiceStatuses = statuses
-            , appHookHttpManager = hookHttpManager
+            , appHookHttpManager = hookMgr
             , appEmailSender = emailSender
             , appProviderExchange = productionProviderExchange config
             }
+
+createAppEnvWithLogger :: Logger -> Config -> IO AppEnv
+createAppEnvWithLogger logger config = do
+    hookMgr <- newOutboundManager
+    createAppEnvWith logger config hookMgr
 
 {- | Spawn the webhook delivery worker and the template-cache LISTEN/NOTIFY
 listener. Both expect a migrated schema and a reachable DB — call this AFTER
@@ -170,10 +184,10 @@ e2e harnesses that race service startup against truncation/migration
 windows.
 -}
 startBackgroundServices :: AppEnv -> IO BackgroundServices
-startBackgroundServices env@AppEnv{appConfig, appConnectionPool, appTemplateCache} =
+startBackgroundServices env@AppEnv{appConfig, appConnectionPool, appTemplateCache, appHookHttpManager} =
     startBackgroundServicesWith
         env
-        (startWorker (withResource (unConnectionPool appConnectionPool)))
+        (startWorker appHookHttpManager (withResource (unConnectionPool appConnectionPool)))
         (startTemplateCacheListener (databaseUrl (configDatabase appConfig)) appTemplateCache)
 
 startBackgroundServicesWith :: AppEnv -> IO WorkerHandle -> IO TemplateCacheListener -> IO BackgroundServices
