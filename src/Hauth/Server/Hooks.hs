@@ -8,9 +8,10 @@ module Hauth.Server.Hooks (
 ) where
 
 import Control.Exception (try)
+import Control.Monad (forM_)
 import Control.Monad.Except (throwError)
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.Reader (ReaderT, ask)
+import Control.Monad.Reader (ReaderT, ask, asks)
 import qualified Crypto.Random as CR
 import qualified Data.Aeson as Aeson
 import Data.ByteArray.Encoding (Base (..), convertToBase)
@@ -35,7 +36,6 @@ import Hauth.API.Types (
  )
 import Hauth.Env (AppEnv (..), withDatabaseConnection)
 import Hauth.Hooks.Types (HookPoint, hookPointName, parseHookPoint)
-import Hauth.Validation.URL (parseHttpUrl)
 import Servant.API (NoContent (..))
 import Servant.Server (Handler, ServerError (..), err400, err404, err409)
 
@@ -45,18 +45,20 @@ type AppHandler = ReaderT AppEnv Handler
 -- Validation helpers
 -- ---------------------------------------------------------------------------
 
-validateUrl :: T.Text -> Either ServerError ()
-validateUrl u =
-    case parseHttpUrl u of
-        Right _ -> Right ()
+validateUrl :: T.Text -> AppHandler ()
+validateUrl u = do
+    destCheck <- asks appOutboundDestinationCheck
+    result <- liftIO (destCheck u)
+    case result of
+        Right () -> pure ()
         Left _ ->
-            Left
+            throwError
                 err400
                     { errBody =
                         Aeson.encode $
                             Aeson.object
                                 [ "error" Aeson..= ("invalid_url" :: T.Text)
-                                , "msg" Aeson..= ("url must be an absolute http:// or https:// URI" :: T.Text)
+                                , "msg" Aeson..= ("url must be an absolute http:// or https:// URI with a publicly-routable destination" :: T.Text)
                                 ]
                     }
 
@@ -153,7 +155,7 @@ subsequent GET/list responses will redact it.
 createHookHandler :: ServiceRolePrincipal -> CreateHookRequest -> AppHandler HookCreateResponse
 createHookHandler _ req = do
     hp <- either throwError pure (validateHookPoint (createHookPoint req))
-    either throwError pure (validateUrl (createHookUrl req))
+    validateUrl (createHookUrl req)
     case createHookTimeoutMs req of
         Just ms -> either throwError pure (validateTimeout ms)
         Nothing -> pure ()
@@ -242,9 +244,7 @@ getHookHandler _ (HookId hid) = do
 updateHookHandler :: ServiceRolePrincipal -> HookId -> UpdateHookRequest -> AppHandler HookRow
 updateHookHandler _ (HookId hid) req = do
     uid <- parseHookId hid
-    case updateHookUrl req of
-        Just u -> either throwError pure (validateUrl u)
-        Nothing -> pure ()
+    forM_ (updateHookUrl req) validateUrl
     case updateHookTimeoutMs req of
         Just ms -> either throwError pure (validateTimeout ms)
         Nothing -> pure ()

@@ -28,6 +28,7 @@ import Hauth.Env (withDatabaseConnection)
 import Hauth.User (User (..), getUserByEmail)
 import Hauth.Webhooks.Signing (verifySignature)
 import Hauth.Webhooks.Worker (dispatchPending)
+import Network.HTTP.Client (defaultManagerSettings, newManager)
 import Network.HTTP.Types (HeaderName, RequestHeaders, status200)
 import Network.Socket (
     Family (..),
@@ -121,7 +122,9 @@ spec = do
                                 Nothing
 
                     -- 5. Run the worker to dispatch the two pending deliveries.
-                    withDatabaseConnection (testAppEnv env) dispatchPending
+                    -- Use a plain (non-hardened) manager: the receiver is on loopback.
+                    plainMgr <- newManager defaultManagerSettings
+                    withDatabaseConnection (testAppEnv env) (dispatchPending plainMgr)
 
                     -- 6. Poll the receiver IORef (worker is synchronous in tests).
                     reqs <- readIORef captured

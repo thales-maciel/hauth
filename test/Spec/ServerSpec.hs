@@ -34,6 +34,7 @@ import Hauth.Env (
  )
 import Hauth.Server (aggregateStatus, isUnhealthy)
 import Hauth.Webhooks.Worker (WorkerHandle, startWorker)
+import Network.HTTP.Client (defaultManagerSettings, newManager)
 import Spec.TestUtils (validConfigBytes)
 import Test.Hspec (Spec, describe, expectationFailure, it, shouldBe)
 
@@ -212,8 +213,9 @@ throws is harmless: the loop just retries on the polling interval and never
 makes progress. 'stopWorker' will cancel it cleanly.
 -}
 fakeWorkerHandle :: IO WorkerHandle
-fakeWorkerHandle =
-    startWorker (\_ -> ioError (userError "test withConn: never connects"))
+fakeWorkerHandle = do
+    mgr <- newManager defaultManagerSettings
+    startWorker mgr (\_ -> ioError (userError "test withConn: never connects"))
 
 assertFailedStatus :: String -> T.Text -> BackgroundServiceStatus -> IO ()
 assertFailedStatus label needle = \case

@@ -9,7 +9,7 @@ module Hauth.Server.WebhookSubscriptions (
 
 import Control.Monad.Except (throwError)
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.Reader (ReaderT, ask)
+import Control.Monad.Reader (ReaderT, ask, asks)
 import qualified Crypto.Random as CR
 import qualified Data.Aeson as Aeson
 import Data.ByteArray.Encoding (Base (..), convertToBase)
@@ -36,8 +36,7 @@ import Hauth.API.Types (
     WebhookSubscriptionResponse (..),
     toWebhookCreateResponse,
  )
-import Hauth.Env (AppEnv, withDatabaseConnection)
-import Hauth.Validation.URL (parseHttpUrl)
+import Hauth.Env (AppEnv (..), withDatabaseConnection)
 import Servant.API (NoContent (..))
 import Servant.Server (Handler, ServerError (errBody), err400, err404, err409)
 
@@ -207,11 +206,14 @@ deleteWebhookSubscriptionHandler _ (WebhookSubscriptionId idText) = do
 -- Helpers
 -- ---------------------------------------------------------------------------
 
--- Validate that a URL is an absolute http:// or https:// URI.
+-- Validate that a URL is an absolute http:// or https:// URI
+-- with a publicly-routable destination.
 validateUrl :: T.Text -> AppHandler ()
-validateUrl url =
-    case parseHttpUrl url of
-        Right _ -> pure ()
+validateUrl url = do
+    destCheck <- asks appOutboundDestinationCheck
+    result <- liftIO (destCheck url)
+    case result of
+        Right () -> pure ()
         Left _ ->
             throwError
                 err400
@@ -219,7 +221,7 @@ validateUrl url =
                         Aeson.encode $
                             Aeson.object
                                 [ "error" Aeson..= ("invalid_url" :: T.Text)
-                                , "msg" Aeson..= ("url must be an absolute http:// or https:// URI" :: T.Text)
+                                , "msg" Aeson..= ("url must be an absolute http:// or https:// URI with a publicly-routable destination" :: T.Text)
                                 ]
                     }
 

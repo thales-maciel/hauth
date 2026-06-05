@@ -31,7 +31,6 @@ import Network.HTTP.Client (
     RequestBody (..),
     httpLbs,
     method,
-    newManager,
     parseRequest,
     requestBody,
     requestHeaders,
@@ -39,7 +38,6 @@ import Network.HTTP.Client (
     responseStatus,
  )
 import qualified Network.HTTP.Client as HTTP
-import Network.HTTP.Client.TLS (tlsManagerSettings)
 import Network.HTTP.Types (statusCode)
 
 -- | Opaque handle; pass to 'stopWorker' to terminate cleanly.
@@ -61,24 +59,23 @@ backoffForAttempt n =
 maxAttempts :: Int
 maxAttempts = 6
 
-httpTimeoutMicros :: Int
-httpTimeoutMicros = 10_000_000
-
 pollIntervalMicros :: Int
 pollIntervalMicros = 1_000_000
 
 {- | Spawn the background delivery worker.
-Takes a connection-borrow function to avoid a circular import with Hauth.Env.
+
+Takes a connection-borrow function to avoid a circular import with Hauth.Env,
+and a pre-built HTTP 'Manager'.  In production, pass
+'Hauth.Security.OutboundDestination.newOutboundManager' (or a Manager built
+from 'Hauth.Security.OutboundDestination.hardenedManagerSettings'); in test
+harnesses that target loopback servers, pass a plain
+@'newManager' 'defaultManagerSettings'@.
+
 Safe when the DB schema is absent — transient failures are caught and retried.
 -}
-startWorker :: (forall a. (Connection -> IO a) -> IO a) -> IO WorkerHandle
-startWorker withConn = do
+startWorker :: Manager -> (forall a. (Connection -> IO a) -> IO a) -> IO WorkerHandle
+startWorker mgr withConn = do
     stopMVar <- newEmptyMVar
-    mgr <-
-        newManager
-            tlsManagerSettings
-                { HTTP.managerResponseTimeout = HTTP.responseTimeoutMicro httpTimeoutMicros
-                }
     handle <- async (workerLoop withConn mgr stopMVar)
     pure (WorkerHandle handle stopMVar)
 
@@ -104,13 +101,15 @@ drainReady withConn mgr = do
     when more (drainReady withConn mgr)
 
 {- | Drain all currently-pending deliveries on a single connection. Spins
-through `runOnce` until no more rows are claimable. Exposed so e2e tests
+through 'runOnce' until no more rows are claimable. Exposed so e2e tests
 can dispatch deterministically without starting/stopping the background
 worker thread.
+
+Pass the same 'Manager' as 'startWorker' — in production the caller should
+use a manager from 'Hauth.Security.OutboundDestination.newOutboundManager'.
 -}
-dispatchPending :: Connection -> IO ()
-dispatchPending conn = do
-    mgr <- newManager tlsManagerSettings
+dispatchPending :: Manager -> Connection -> IO ()
+dispatchPending mgr conn = do
     let loop = do
             more <- runOnce (\k -> k conn) mgr
             when more loop

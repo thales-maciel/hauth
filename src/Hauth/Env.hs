@@ -31,6 +31,7 @@ module Hauth.Env (
     Logger (..),
     backgroundServiceStatusChecks,
     createAppEnv,
+    createAppEnvWith,
     createAppEnvWithLogger,
     destroyAppEnv,
     isRequiredForServe,
@@ -65,9 +66,13 @@ import Hauth.Email.TemplateCache (
     stopTemplateCacheListener,
  )
 import Hauth.OAuth.ProviderExchange (ProviderExchange, productionProviderExchange)
+import Hauth.Security.OutboundDestination (
+    checkDestination,
+    defaultResolver,
+    newOutboundManager,
+ )
 import Hauth.Webhooks.Worker (WorkerHandle, startWorker, stopWorker)
-import Network.HTTP.Client (Manager, newManager)
-import Network.HTTP.Client.TLS (tlsManagerSettings)
+import Network.HTTP.Client (Manager)
 
 data AppEnv = AppEnv
     { appConfig :: Config
@@ -80,6 +85,13 @@ data AppEnv = AppEnv
     -- A 'Manager' is thread-safe and meant to be long-lived; allocating a
     -- new one per request defeats connection pooling. Per-hook timeout is
     -- applied on the 'Request' (see "Hauth.Hooks.Runner"), not here.
+    , appOutboundDestinationCheck :: Text -> IO (Either String ())
+    -- ^ Validation-time SSRF check applied to admin hook/webhook URLs.
+    -- Production uses 'checkDestination' with 'defaultResolver'; e2e tests
+    -- substitute a permissive check so loopback receivers work. Symmetric
+    -- with 'appHookHttpManager': both layers are injectable so the test
+    -- harness can target loopback servers without weakening the production
+    -- default.
     , appEmailSender :: EmailSender
     -- ^ Configured email sender. Points at real SMTP in production; tests
     -- inject a capturing fake to assert delivery without a live server.
@@ -137,12 +149,28 @@ createAppEnv :: Config -> IO AppEnv
 createAppEnv =
     createAppEnvWithLogger stdoutLogger
 
-createAppEnvWithLogger :: Logger -> Config -> IO AppEnv
-createAppEnvWithLogger logger config = do
+{- | Construct an 'AppEnv' with injectable SSRF-policy hooks: a custom HTTP
+'Manager' for delivery-time enforcement, and a custom validation-time
+destination check.
+
+Use 'createAppEnv' / 'createAppEnvWithLogger' in production — they default to
+the hardened 'Manager' and the real 'checkDestination' with 'defaultResolver'.
+
+Pass a plain @'newManager' 'defaultManagerSettings'@ and a permissive check
+(e.g. @const (pure (Right ()))@) only in test harnesses where hook/webhook
+endpoints are loopback servers and the SSRF policy is exercised by dedicated
+unit/e2e suites instead.
+-}
+createAppEnvWith ::
+    Logger ->
+    Config ->
+    Manager ->
+    (Text -> IO (Either String ())) ->
+    IO AppEnv
+createAppEnvWith logger config hookMgr destCheck = do
     pool <- createConnectionPool config
     cache <- newTemplateCache
     statuses <- newBackgroundServiceStatuses
-    hookHttpManager <- newManager tlsManagerSettings
     let emailSender = makeSMTPSender (configEmail config)
     pure
         AppEnv
@@ -151,10 +179,16 @@ createAppEnvWithLogger logger config = do
             , appConnectionPool = pool
             , appTemplateCache = cache
             , appBackgroundServiceStatuses = statuses
-            , appHookHttpManager = hookHttpManager
+            , appHookHttpManager = hookMgr
+            , appOutboundDestinationCheck = destCheck
             , appEmailSender = emailSender
             , appProviderExchange = productionProviderExchange config
             }
+
+createAppEnvWithLogger :: Logger -> Config -> IO AppEnv
+createAppEnvWithLogger logger config = do
+    hookMgr <- newOutboundManager
+    createAppEnvWith logger config hookMgr (checkDestination defaultResolver)
 
 {- | Spawn the webhook delivery worker and the template-cache LISTEN/NOTIFY
 listener. Both expect a migrated schema and a reachable DB — call this AFTER
@@ -170,10 +204,10 @@ e2e harnesses that race service startup against truncation/migration
 windows.
 -}
 startBackgroundServices :: AppEnv -> IO BackgroundServices
-startBackgroundServices env@AppEnv{appConfig, appConnectionPool, appTemplateCache} =
+startBackgroundServices env@AppEnv{appConfig, appConnectionPool, appTemplateCache, appHookHttpManager} =
     startBackgroundServicesWith
         env
-        (startWorker (withResource (unConnectionPool appConnectionPool)))
+        (startWorker appHookHttpManager (withResource (unConnectionPool appConnectionPool)))
         (startTemplateCacheListener (databaseUrl (configDatabase appConfig)) appTemplateCache)
 
 startBackgroundServicesWith :: AppEnv -> IO WorkerHandle -> IO TemplateCacheListener -> IO BackgroundServices

@@ -121,10 +121,12 @@ withTestServer port app action =
         action
 
 -- Start a worker using the given connection function, run action, then stop.
+-- Uses a plain (non-hardened) manager because test subscriptions point at loopback.
 withWorker :: TestEnv -> IO a -> IO a
-withWorker env action =
+withWorker env action = do
+    mgr <- newManager defaultManagerSettings
     bracket
-        (startWorker (withDatabaseConnection (testAppEnv env)))
+        (startWorker mgr (withDatabaseConnection (testAppEnv env)))
         stopWorker
         (const action)
 

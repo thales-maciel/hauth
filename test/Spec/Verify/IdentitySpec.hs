@@ -73,6 +73,7 @@ fakeEnv cfg =
         , appConnectionPool = error "connection pool not used in identity checks"
         , appTemplateCache = error "template cache not used in identity checks"
         , appBackgroundServiceStatuses = error "background services not used in identity checks"
+        , appOutboundDestinationCheck = error "outbound destination check not used in identity checks"
         }
 
 baseConfig :: Config
