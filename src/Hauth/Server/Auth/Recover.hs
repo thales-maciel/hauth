@@ -12,6 +12,7 @@ import Control.Monad (unless)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader (ask)
 import qualified Data.Text as T
+import Database.PostgreSQL.Simple (withTransaction)
 import Hauth.API.Auth (AnonymousPrincipal)
 import Hauth.API.Types
 import Hauth.Auth.Recovery (recoverySentMessage, validateRecoverRequest)
@@ -35,36 +36,42 @@ recoverHandler _ req = do
             pure ""
         Right e -> pure e
     unless (T.null emailText) $ do
-        mUser <- liftIO (withDatabaseConnection env (`User.getUserByEmail` emailText))
-        case mUser of
+        mToken <- liftIO $
+            withDatabaseConnection env \conn ->
+                withTransaction conn do
+                    mUser <- User.getUserByEmail conn emailText
+                    case mUser of
+                        Nothing -> pure Nothing
+                        Just user ->
+                            case User.userEncryptedPassword user of
+                                Nothing -> pure Nothing
+                                Just _ -> do
+                                    token <- generateOpaqueToken
+                                    User.setRecoveryToken conn (User.userId user) token
+                                    pure (Just (user, token))
+        case mToken of
             Nothing -> pure ()
-            Just user ->
-                case User.userEncryptedPassword user of
-                    Nothing -> pure ()
-                    Just _ -> do
-                        token <- liftIO generateOpaqueToken
-                        liftIO $ withDatabaseConnection env \conn ->
-                            User.setRecoveryToken conn (User.userId user) token
-                        let actionUrl = siteUrl <> "/auth/v1/verify?token=" <> token <> "&type=recovery"
-                            tdata =
-                                TemplateData
-                                    { templateRecipientEmail = emailText
-                                    , templateActionUrl = actionUrl
-                                    , templateSiteUrl = siteUrl
-                                    , templateTokenHash = token
-                                    }
-                        rendered <- liftIO (renderEmailCached (appTemplateCache env) Recovery emailFrom tdata)
-                        case rendered of
+            Just (_user, token) -> do
+                let actionUrl = siteUrl <> "/auth/v1/verify?token=" <> token <> "&type=recovery"
+                    tdata =
+                        TemplateData
+                            { templateRecipientEmail = emailText
+                            , templateActionUrl = actionUrl
+                            , templateSiteUrl = siteUrl
+                            , templateTokenHash = token
+                            }
+                rendered <- liftIO (renderEmailCached (appTemplateCache env) Recovery emailFrom tdata)
+                case rendered of
+                    Left err ->
+                        liftIO $
+                            logMessage appLogger LogWarn $
+                                "recoverHandler: renderEmail failed: " <> T.pack (show err)
+                    Right msg -> do
+                        result <- liftIO (sendEmail (appEmailSender env) msg)
+                        case result of
                             Left err ->
                                 liftIO $
                                     logMessage appLogger LogWarn $
-                                        "recoverHandler: renderEmail failed: " <> T.pack (show err)
-                            Right msg -> do
-                                result <- liftIO (sendEmail (appEmailSender env) msg)
-                                case result of
-                                    Left err ->
-                                        liftIO $
-                                            logMessage appLogger LogWarn $
-                                                "recoverHandler: email send failed: " <> T.pack (show err)
-                                    Right () -> pure ()
+                                        "recoverHandler: email send failed: " <> T.pack (show err)
+                            Right () -> pure ()
     pure MessageResponse{message = recoverySentMessage}

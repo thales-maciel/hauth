@@ -357,7 +357,11 @@ adminInviteUserHandler _ req = do
             withTransaction conn do
                 existing <- User.getUserByEmail conn emailText
                 case existing of
-                    Just u -> pure u
+                    Just u -> do
+                        -- Resend-invite semantics: regenerate and persist the token
+                        -- so the invite URL delivered below is actually valid.
+                        User.setConfirmationToken conn (User.userId u) token
+                        pure u
                     Nothing -> User.createUser conn newUser
     let actionUrl = siteUrl <> "/auth/v1/verify?token=" <> token <> "&type=invite"
         tdata =
