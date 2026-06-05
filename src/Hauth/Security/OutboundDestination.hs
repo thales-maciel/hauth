@@ -19,6 +19,7 @@ Both layers are required; neither alone is sufficient.
 
 == Blocked ranges (default policy, always on)
 
+* @0.0.0.0\/8@ — "this network"; @0.0.0.0@ is kernel-routed to loopback on Linux
 * @127.0.0.0\/8@ — loopback IPv4
 * @169.254.0.0\/16@ — link-local IPv4 (includes cloud metadata endpoints)
 * @10.0.0.0\/8@, @172.16.0.0\/12@, @192.168.0.0\/16@ — RFC 1918 private
@@ -45,7 +46,7 @@ module Hauth.Security.OutboundDestination (
     isBlockedIpv6Tuple,
 ) where
 
-import Control.Exception (throwIO)
+import Control.Exception (IOException, throwIO, try)
 import Data.Bits (shiftR, (.&.))
 import qualified Data.ByteString.Char8 as BSC
 import Data.Text (Text)
@@ -106,18 +107,28 @@ checkDestination resolve url =
                         "" ->
                             pure (Left "must be an absolute http:// or https:// URL")
                         hostname -> do
-                            addrs <- resolve hostname
-                            let blocked = filter isBlockedAddr addrs
-                            case blocked of
-                                [] ->
-                                    pure (Right ())
-                                (addr : _) ->
-                                    pure
-                                        ( Left
-                                            ( "destination resolves to a blocked address: "
-                                                <> show addr
-                                            )
-                                        )
+                            -- Reject on DNS failure (NXDOMAIN, timeout, etc.) rather than
+                            -- letting the IOException propagate as an unhandled 500. A host
+                            -- we can't validate isn't a host we can safely accept; the user
+                            -- can retry once the name resolves. The delivery-time Manager
+                            -- guard re-resolves on each request, so transient validation
+                            -- failures don't lock a config out permanently.
+                            result <- try @IOException (resolve hostname)
+                            case result of
+                                Left _ ->
+                                    pure (Left "could not resolve hostname")
+                                Right addrs ->
+                                    let blocked = filter isBlockedAddr addrs
+                                     in case blocked of
+                                            [] ->
+                                                pure (Right ())
+                                            (addr : _) ->
+                                                pure
+                                                    ( Left
+                                                        ( "destination resolves to a blocked address: "
+                                                            <> show addr
+                                                        )
+                                                    )
 
 {- | Default production DNS resolver.
 
@@ -212,6 +223,8 @@ is in a blocked range.
 Checked ranges:
 
 * @127.0.0.0\/8@    — loopback
+* @0.0.0.0\/8@     — "this network"; @0.0.0.0@ is routed to loopback on Linux
+                     and is a classic SSRF bypass
 * @169.254.0.0\/16@ — link-local (includes AWS\/GCP metadata @169.254.169.254@)
 * @10.0.0.0\/8@    — RFC 1918
 * @172.16.0.0\/12@ — RFC 1918
@@ -219,8 +232,10 @@ Checked ranges:
 -}
 isBlockedIpv4Tuple :: (Word8, Word8, Word8, Word8) -> Bool
 isBlockedIpv4Tuple (a, b, _, _) =
-    -- 127.0.0.0/8
-    a == 127
+    -- 0.0.0.0/8 — kernel routes 0.0.0.0 to localhost
+    a == 0
+        -- 127.0.0.0/8
+        || a == 127
         -- 169.254.0.0/16
         || (a == 169 && b == 254)
         -- 10.0.0.0/8

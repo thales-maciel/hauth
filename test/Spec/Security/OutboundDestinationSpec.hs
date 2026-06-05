@@ -1,5 +1,6 @@
 module Spec.Security.OutboundDestinationSpec (spec) where
 
+import Control.Exception (throwIO)
 import Data.Word (Word16, Word8)
 import Hauth.Security.OutboundDestination (
     checkDestination,
@@ -12,6 +13,7 @@ import Network.Socket (
     tupleToHostAddress,
     tupleToHostAddress6,
  )
+import System.IO.Error (userError)
 import Test.Hspec (Spec, describe, it, shouldBe, shouldSatisfy)
 
 -- ---------------------------------------------------------------------------
@@ -36,6 +38,10 @@ resolveEmpty _ = pure []
 resolvePublic :: String -> IO [SockAddr]
 resolvePublic = resolveAs4 (93, 184, 216, 34) -- example.com
 
+-- | A stub resolver that throws an IOException, mimicking NXDOMAIN / timeout.
+resolveFails :: String -> IO [SockAddr]
+resolveFails _ = throwIO (userError "simulated DNS failure")
+
 -- ---------------------------------------------------------------------------
 -- Spec
 -- ---------------------------------------------------------------------------
@@ -43,6 +49,12 @@ resolvePublic = resolveAs4 (93, 184, 216, 34) -- example.com
 spec :: Spec
 spec = do
     describe "isBlockedIpv4Tuple" $ do
+        it "blocks 0.0.0.0 (kernel routes to loopback)" $
+            isBlockedIpv4Tuple (0, 0, 0, 0) `shouldBe` True
+
+        it "blocks 0.1.2.3 (0.0.0.0/8)" $
+            isBlockedIpv4Tuple (0, 1, 2, 3) `shouldBe` True
+
         it "blocks 127.0.0.1 (loopback)" $
             isBlockedIpv4Tuple (127, 0, 0, 1) `shouldBe` True
 
@@ -202,10 +214,20 @@ spec = do
             result <- checkDestination (resolveAs6 (0, 0, 0, 0, 0, 0xffff, 0x0a00, 0x0001)) "http://internal.example.com/hook"
             result `shouldSatisfy` isLeft
 
-        it "accepts when resolver returns no addresses" $ do
-            -- If DNS returns nothing we cannot confirm it's blocked, so we allow.
+        it "accepts when resolver returns no records (rare but distinct from failure)" $ do
+            -- A resolver that returns an empty list (no A/AAAA records) is treated as
+            -- accept: we cannot prove the destination is blocked. This is the corner
+            -- case of getAddrInfo succeeding with zero results, NOT the failure path.
             result <- checkDestination resolveEmpty "https://example.com/hook"
             result `shouldBe` Right ()
+
+        it "rejects when resolver throws (NXDOMAIN / timeout)" $ do
+            -- getAddrInfo throws IOException on real DNS failures. We catch and reject:
+            -- an unresolvable host can't be validated, so we don't accept it. The user
+            -- can retry once the name resolves. The delivery-time Manager guard
+            -- re-resolves on each request, so this doesn't lock a config out forever.
+            result <- checkDestination resolveFails "https://transient.example.com/hook"
+            result `shouldSatisfy` isLeft
 
 isLeft :: Either a b -> Bool
 isLeft (Left _) = True
