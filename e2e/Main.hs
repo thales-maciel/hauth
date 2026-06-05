@@ -13,6 +13,7 @@ import qualified E2E.HooksCrudSpec
 import qualified E2E.HooksSpec
 import qualified E2E.HooksTypesSpec
 import qualified E2E.MfaSpec
+import qualified E2E.MigrateSpec
 import qualified E2E.OAuthSpec
 import qualified E2E.RecoverySpec
 import qualified E2E.UserSpec
@@ -37,6 +38,7 @@ allSpecs = do
     describe "/user" E2E.UserSpec.spec
     describe "password recovery" E2E.RecoverySpec.spec
     describe "MFA TOTP" E2E.MfaSpec.spec
+    describe "migration drift detection" E2E.MigrateSpec.spec
     describe "admin users API" E2E.AdminSpec.spec
     describe "compatibility placeholder routes" E2E.CompatibilityPlaceholdersSpec.spec
     describe "health checks" E2E.HealthSpec.spec
