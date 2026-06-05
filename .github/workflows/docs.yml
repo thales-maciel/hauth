@@ -129,19 +129,19 @@ jobs:
         # Fast build for smoke test: optimization level 0 (set in cabal.project.ci)
         run: cabal build exe:hauth --project-file=cabal.project.ci
 
-      - name: Smoke test: hauth --help
+      - name: "Smoke test: hauth --help"
         run: |
           cabal exec exe:hauth -- --help
 
-      - name: Smoke test: hauth serve --help
+      - name: "Smoke test: hauth serve --help"
         run: |
           cabal exec exe:hauth -- serve --help
 
-      - name: Smoke test: hauth migrate --help
+      - name: "Smoke test: hauth migrate --help"
         run: |
           cabal exec exe:hauth -- migrate --help
 
-      - name: Smoke test: hauth verify --help
+      - name: "Smoke test: hauth verify --help"
         run: |
           cabal exec exe:hauth -- verify --help
 
@@ -162,31 +162,62 @@ jobs:
           set -eu
           subcommands='${{ steps.subcommands.outputs.subcommands }}'
 
-          # Build a regex pattern of supported subcommands
-          pattern=$(echo "$subcommands" | paste -sd '|' - | sed 's/^/(/; s/$/)/')
+          echo "Supported subcommands:"
+          echo "$subcommands"
 
-          echo "Checking that docs only mention supported subcommands: $pattern"
+          # Only scan code contexts (fenced ``` blocks and inline `backticks`),
+          # not prose. Otherwise sentences like "hauth verifies the state token"
+          # would be parsed as referencing a "verifies" subcommand.
+          extract_code() {
+            awk '
+              BEGIN { in_block = 0 }
+              /^```/ { in_block = !in_block; next }
+              {
+                if (in_block) {
+                  print
+                } else {
+                  line = $0
+                  while (match(line, /`[^`]+`/)) {
+                    print substr(line, RSTART+1, RLENGTH-2)
+                    line = substr(line, RSTART+RLENGTH)
+                  }
+                }
+              }
+            ' "$1"
+          }
 
-          # Search for 'hauth <subcommand>' patterns in docs and README
+          # Within code text, treat `hauth <word>` as a CLI invocation only
+          # when `hauth` is the first word of a command:
+          #   hauth ...               at line start (possibly indented)
+          #   $ hauth ... / # hauth   after a shell prompt
+          #   /usr/local/bin/hauth    as basename of an absolute path
+          #   && hauth / ; hauth      chained
+          # This excludes "hauth" appearing as a username (sudo/chown/cron),
+          # config value (systemd Description=hauth ...), or process name in
+          # log output ([info] hauth listening ...).
+          cli_re='(^[[:space:]]*|[$#][[:space:]]+|/|&&[[:space:]]+|;[[:space:]]+|\|[[:space:]]+)hauth[[:space:]]+([a-z_-]+)'
+
           found_unknown=0
           while IFS= read -r line; do
-            # Extract the subcommand following 'hauth '
-            if [[ $line =~ hauth[[:space:]]+([a-z_-]+) ]]; then
-              cmd="${BASH_REMATCH[1]}"
-              # Skip if it's help or hyphenated options
+            if [[ $line =~ $cli_re ]]; then
+              cmd="${BASH_REMATCH[2]}"
               if [[ "$cmd" == "-"* ]] || [[ "$cmd" == "help" ]]; then
                 continue
               fi
-              # Check if this subcommand is in the supported list
               if ! echo "$subcommands" | grep -q "^$cmd\$"; then
-                echo "::error::Unsupported subcommand referenced in docs: '$cmd' (from: $line)"
+                echo "::error::Unsupported subcommand referenced in docs code: '$cmd' (from: $line)"
                 found_unknown=1
               fi
             fi
-          done < <(grep -rh "hauth " docs/ README.md 2>/dev/null || true)
+          done < <(
+            for f in $(find docs -name '*.md' 2>/dev/null) README.md; do
+              [ -f "$f" ] || continue
+              extract_code "$f"
+            done
+          )
 
           if [ "$found_unknown" -eq 1 ]; then
             exit 1
           fi
 
-          echo "All documented subcommands are supported by the binary."
+          echo "All documented subcommands (in code blocks) are supported by the binary."
