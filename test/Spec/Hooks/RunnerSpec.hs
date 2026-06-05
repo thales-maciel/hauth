@@ -218,3 +218,58 @@ spec = do
                         (sigWebhookSignature hdrs')
                         (BSC.pack body)
             ok `shouldBe` True
+
+        it "valid signature verifies" $ do
+            now <- getPOSIXTime
+            let body = "test body"
+                hdrs' = signHookRequest testSecret nil now body
+                ok =
+                    verifyHookSignature
+                        testSecret
+                        (sigWebhookId hdrs')
+                        (sigWebhookTimestamp hdrs')
+                        (sigWebhookSignature hdrs')
+                        body
+            ok `shouldBe` True
+
+        it "wrong secret fails verification" $ do
+            now <- getPOSIXTime
+            let body = "test body"
+                hdrs' = signHookRequest testSecret nil now body
+                ok =
+                    verifyHookSignature
+                        "wrong-secret"
+                        (sigWebhookId hdrs')
+                        (sigWebhookTimestamp hdrs')
+                        (sigWebhookSignature hdrs')
+                        body
+            ok `shouldBe` False
+
+        it "multi-candidate header with one valid passes" $ do
+            now <- getPOSIXTime
+            let body = "test body"
+                hdrs' = signHookRequest testSecret nil now body
+                validSig = sigWebhookSignature hdrs'
+                -- Space-separated candidates: one garbage, one valid.
+                multiSig = "v1,aGVsbG8= " <> validSig
+                ok =
+                    verifyHookSignature
+                        testSecret
+                        (sigWebhookId hdrs')
+                        (sigWebhookTimestamp hdrs')
+                        multiSig
+                        body
+            ok `shouldBe` True
+
+        it "malformed candidate returns False" $ do
+            now <- getPOSIXTime
+            let body = "test body"
+                hdrs' = signHookRequest testSecret nil now body
+                ok =
+                    verifyHookSignature
+                        testSecret
+                        (sigWebhookId hdrs')
+                        (sigWebhookTimestamp hdrs')
+                        "not-a-valid-sig-at-all"
+                        body
+            ok `shouldBe` False
