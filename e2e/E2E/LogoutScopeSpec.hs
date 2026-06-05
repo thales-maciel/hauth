@@ -77,6 +77,9 @@ spec = do
             -- Bearer session's refresh token is still alive
             rotateResp1 <- runApp env $ jsonPost "/token?grant_type=refresh_token" (Aeson.object ["refresh_token" Aeson..= refresh1]) Nothing
             expectStatus 200 rotateResp1
+            -- Bearer's access token still authenticates after the refresh rotate
+            bearerResp <- runApp env $ jsonGet "/user" (Just access1)
+            expectStatus 200 bearerResp
             -- DB: only the bearer session remains
             sessions <- withDatabaseConnection (testAppEnv env) (`listUserSessions` uid)
             length sessions `shouldBe` 1

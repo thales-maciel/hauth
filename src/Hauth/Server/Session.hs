@@ -179,8 +179,8 @@ logoutHandler principal mScope = do
                                     (SessionRevoked SessionPayload{spSessionId = unSessionId (sessionId s), spUserId = uid})
                             )
                             revoked
-                    _ -> do
-                        -- "others": revoke every session except the bearer session
+                    "others" -> do
+                        -- Revoke every session except the bearer session.
                         revoked <- revokeAllUserSessionsExcept conn uid sid
                         mapM_
                             ( \s ->
@@ -189,6 +189,7 @@ logoutHandler principal mScope = do
                                     (SessionRevoked SessionPayload{spSessionId = unSessionId (sessionId s), spUserId = uid})
                             )
                             revoked
+                    _ -> error "unreachable: scope already validated"
     pure NoContent
 
 userPayloadFromUser :: User.User -> UserPayload
