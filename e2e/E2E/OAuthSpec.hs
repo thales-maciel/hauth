@@ -2,12 +2,14 @@
 
 module E2E.OAuthSpec (spec) where
 
+import Control.Concurrent.Async (concurrently)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.ByteString as BS
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import Data.UUID (UUID)
 import Database.PostgreSQL.Simple (Only (..), query)
 import E2E.Helpers (
     TestEnv (..),
@@ -23,7 +25,8 @@ import E2E.OAuthFake (
     withFakeProviders,
  )
 import Hauth.Env (withDatabaseConnection)
-import Hauth.OAuth (IdentityClaims (..))
+import Hauth.OAuth (IdentityClaims (..), findOrCreateIdentity)
+import Hauth.User (unUserId)
 import Test.Hspec (SpecWith, describe, it, shouldBe, shouldSatisfy)
 
 redirectTo :: BS.ByteString
@@ -115,3 +118,63 @@ spec = do
             expectStatus 401 callbackResp
             (errObj :: Aeson.Object) <- decodeBody callbackResp
             KeyMap.lookup "error" errObj `shouldBe` Just (Aeson.String "oauth_exchange_failed")
+
+    describe "findOrCreateIdentity: no-email path" $
+        it "links identity to the exact user returned by createUser, not latest-created" \env -> do
+            -- Use a no-email identity so the code takes the no-email branch.
+            let noEmailClaims =
+                    IdentityClaims
+                        { identityProvider = "github"
+                        , identityProviderId = "no-email-sub-999"
+                        , identityEmail = Nothing
+                        , identityData = Aeson.object ["id" Aeson..= (999 :: Int)]
+                        }
+            (uid, isNew) <-
+                withDatabaseConnection (testAppEnv env) (`findOrCreateIdentity` noEmailClaims)
+            -- Must be a new user.
+            isNew `shouldBe` True
+            -- The identity row must reference the same user.
+            rows <-
+                withDatabaseConnection (testAppEnv env) \conn ->
+                    query
+                        conn
+                        "SELECT user_id FROM auth.identities WHERE provider = ? AND provider_id = ?"
+                        ("github" :: Text, "no-email-sub-999" :: Text)
+            let identityUserIds = map (\(Only i) -> i) (rows :: [Only UUID])
+            identityUserIds `shouldBe` [unUserId uid]
+
+    describe "findOrCreateIdentity: concurrent first-login race" $
+        it "resolves both callers to the same user even under concurrent insert" \env -> do
+            -- Two concurrent callers with identical (provider, provider_id).
+            let raceClaims =
+                    IdentityClaims
+                        { identityProvider = "google"
+                        , identityProviderId = "race-sub-777"
+                        , identityEmail = Nothing
+                        , identityData = Aeson.object ["sub" Aeson..= ("race-sub-777" :: Text)]
+                        }
+            (uid1, uid2) <-
+                concurrently
+                    (withDatabaseConnection (testAppEnv env) \conn -> fst <$> findOrCreateIdentity conn raceClaims)
+                    (withDatabaseConnection (testAppEnv env) \conn -> fst <$> findOrCreateIdentity conn raceClaims)
+            -- Both callers must resolve to the same user.
+            uid1 `shouldBe` uid2
+            -- Exactly one identity row must exist.
+            identityRows <-
+                withDatabaseConnection (testAppEnv env) \conn ->
+                    query
+                        conn
+                        "SELECT provider_id FROM auth.identities WHERE provider = ? AND provider_id = ?"
+                        ("google" :: Text, "race-sub-777" :: Text)
+            length (identityRows :: [Only Text]) `shouldBe` 1
+            -- Exactly one auth.users row must exist for the two resolved user-ids.
+            -- Before the SAVEPOINT fix the race loser's createUser was committed but
+            -- never linked to an identity, leaving an orphan row; this assertion
+            -- would have caught that leak.
+            userRows <-
+                withDatabaseConnection (testAppEnv env) \conn ->
+                    query
+                        conn
+                        "SELECT COUNT(*) FROM auth.users WHERE id IN (?, ?)"
+                        (unUserId uid1, unUserId uid2)
+            head (map (\(Only n) -> n :: Int) userRows) `shouldBe` 1
