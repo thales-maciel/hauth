@@ -16,8 +16,9 @@ Put a reverse proxy in front and let hauth listen only on `127.0.0.1`.
 ### Caddy (recommended)
 
 Caddy handles ACME certificate issuance and renewal automatically. Install from
-[caddyserver.com](https://caddyserver.com/docs/install), then write a
-`Caddyfile`:
+[caddyserver.com](https://caddyserver.com/) or the
+[GitHub releases page](https://github.com/caddyserver/caddy/releases), then
+write a `Caddyfile`:
 
 ```caddy
 auth.example.com {
