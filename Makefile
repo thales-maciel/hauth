@@ -1,4 +1,4 @@
-.PHONY: build check-derived-json check-served-stubs check-stub-senders check-workflows ci clean-local coverage e2e format format-check guards lint rebase-check run test
+.PHONY: build check-derived-json check-served-stubs check-stub-senders check-workflows ci clean-local coverage e2e e2e-watch format format-check guards lint rebase-check run test
 
 build:
 	cabal build all
@@ -18,8 +18,29 @@ run:
 test:
 	cabal test hauth-test
 
+# Preflight Postgres so a missing DB fails in ~50ms with a clear hint instead
+# of building the suite first and then erroring opaquely. withTestEnv defaults
+# HAUTH_E2E_DATABASE_URL to postgresql://hauth:hauth@localhost:5432/hauth_e2e
+# when unset, so the env var is optional locally.
 e2e:
+	@pg_isready -h localhost -p 5432 -q || { \
+		echo "ERROR: Postgres not reachable at localhost:5432." >&2; \
+		echo "       Start it (e.g. via your local dev compose / brew services / systemctl)" >&2; \
+		echo "       and ensure DB 'hauth_e2e' + role 'hauth' exist." >&2; \
+		exit 1; \
+	}
 	cabal test hauth-e2e --project-file=cabal.project.ci
+
+# Fast feedback loop for e2e during development. Re-runs on file change.
+# Requires `ghcid` (cabal install --installdir=$HOME/.local/bin ghcid).
+e2e-watch:
+	@if ! command -v ghcid >/dev/null 2>&1; then \
+		echo "ghcid not installed. Install: cabal install --installdir=\$$HOME/.local/bin ghcid"; \
+		exit 1; \
+	fi
+	@pg_isready -h localhost -p 5432 -q || { echo "ERROR: Postgres not reachable at localhost:5432." >&2; exit 1; }
+	ghcid --command 'cabal repl hauth-e2e --project-file=cabal.project.ci' \
+	      --test ':main' --warnings
 
 coverage:
 	cabal test hauth-test --project-file=cabal.project.ci --enable-coverage
