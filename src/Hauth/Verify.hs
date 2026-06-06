@@ -9,9 +9,9 @@ module Hauth.Verify (
 ) where
 
 import Data.ByteString (ByteString)
-import qualified Data.ByteString.Char8 as BSC
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import Hauth.Config (Config)
 import Hauth.Env (AppEnv)
 import qualified Hauth.Verify.Database as Database
@@ -19,6 +19,7 @@ import qualified Hauth.Verify.Identity as Identity
 import qualified Hauth.Verify.Oauth as OauthChecks
 import qualified Hauth.Verify.Smtp as Smtp
 import Hauth.Verify.Types (Check (..), CheckOutcome (..), Report (..))
+import Numeric (showHex)
 
 defaultChecks :: Config -> [Check]
 defaultChecks cfg =
@@ -78,9 +79,14 @@ outcomeDetail = \case
     CheckWarn msg -> "  (" <> msg <> ")"
     CheckFail msg -> "  (" <> msg <> ")"
 
+{- | Encode the report as UTF-8 JSON. `BSC.pack` is not used because it
+truncates `Char` to the low byte, corrupting any message that contains
+non-ASCII text (e.g. an em-dash becomes a raw control byte and the output
+is no longer parseable JSON).
+-}
 formatJson :: Report -> ByteString
 formatJson Report{reportResults, reportPassed, reportWarned, reportFailed} =
-    BSC.pack $
+    TE.encodeUtf8 . T.pack $
         "{"
             <> "\"passed\":"
             <> show reportPassed
@@ -124,15 +130,27 @@ outcomeMessageField = \case
 jsonStr :: String -> String
 jsonStr s = "\"" <> escapeJson s <> "\""
 
+{- | RFC 8259 §7: chars `\x00`-`\x1F`, `"`, and `\\` MUST be escaped in a
+JSON string. The five short forms are preferred where they exist; every
+other control char gets a `\uXXXX` escape. Non-ASCII (>= U+0080) is
+emitted as-is and carried by the UTF-8 encoder in `formatJson`.
+-}
 escapeJson :: String -> String
 escapeJson = concatMap escapeChar
   where
     escapeChar '"' = "\\\""
     escapeChar '\\' = "\\\\"
+    escapeChar '\b' = "\\b"
+    escapeChar '\f' = "\\f"
     escapeChar '\n' = "\\n"
     escapeChar '\r' = "\\r"
     escapeChar '\t' = "\\t"
-    escapeChar c = [c]
+    escapeChar c
+        | c < '\x20' =
+            let h = showHex (fromEnum c) ""
+                padded = replicate (4 - length h) '0' <> h
+             in "\\u" <> padded
+        | otherwise = [c]
 
 commaSep :: [String] -> String
 commaSep [] = ""

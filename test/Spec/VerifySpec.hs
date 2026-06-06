@@ -101,7 +101,7 @@ spec = do
             r <- buildReport [okCheck "verify.framework", warnCheck "db.connect" "slow", failCheck "jwt.key" "missing"]
             formatText r `shouldSatisfy` T.isInfixOf "failed: 1"
 
-    describe "formatJson" $
+    describe "formatJson" $ do
         it "encodes passed, warned, failed, checks keys" $ do
             r <- buildReport [okCheck "verify.framework", failCheck "db.connect" "unreachable"]
             let bs = formatJson r
@@ -114,3 +114,14 @@ spec = do
                     assertHasKey "checks" obj
                 Just _ ->
                     expectationFailure "formatJson: expected JSON object"
+        -- Regression: rc.2 emitted U+2014 as raw byte 0x14 (control char) and
+        -- the JSON failed to parse. Cover non-ASCII + a raw control char so
+        -- both the UTF-8 encoder and the control-char escape table stay
+        -- honest. See PR #203 for the original defect.
+        it "round-trips non-ASCII and control chars in messages" $ do
+            r <- buildReport [failCheck "jwt.secret" "matches the example value \x2014 regen", failCheck "name.with.bell" "with bell \x07 here"]
+            let bs = formatJson r
+            case decode (BSL.fromStrict bs) of
+                Nothing -> expectationFailure ("formatJson: invalid JSON: " <> show bs)
+                Just (Object _) -> pure ()
+                Just _ -> expectationFailure "formatJson: expected JSON object"
