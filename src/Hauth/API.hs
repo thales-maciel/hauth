@@ -3,11 +3,13 @@ module Hauth.API (
     AdminConfigAPI,
     AdminEmailTemplateAPI,
     AdminHooksAPI,
+    AdminUIAPI,
     AdminUsersAPI,
     AdminWebhookAPI,
     AdminWebhookDeliveriesAPI,
     AdminWebhookSubscriptionsAPI,
     HauthAPI,
+    HTML,
     MfaAPI,
     OperatorAPI,
     PublicAuthAPI,
@@ -36,6 +38,8 @@ import Servant.API (
     type (:<|>),
     type (:>),
  )
+import Servant.HTML.Blaze (HTML)
+import Text.Blaze.Html5 (Html)
 
 type HauthAPI =
     OperatorAPI
@@ -43,6 +47,13 @@ type HauthAPI =
         :<|> SessionAPI
         :<|> MfaAPI
         :<|> AdminAPI
+        :<|> AdminUIAPI
+
+{- | Operator-facing admin UI. Anonymous-gated until #206 lands proper
+admin sessions; the placeholder page emits no sensitive data.
+-}
+type AdminUIAPI =
+    RequireAuth 'Anonymous :> "admin" :> "ui" :> Get '[HTML] Html
 
 type OperatorAPI =
     RequireAuth 'Anonymous :> "healthz" :> Get '[JSON] HealthResponse

@@ -51,6 +51,7 @@ import Hauth.Server.Admin (
     adminListUsersHandler,
     adminUpdateUserHandler,
  )
+import Hauth.Server.AdminUI (adminUIPlaceholderHandler)
 import Hauth.Server.Auth (
     recoverHandler,
     resendHandler,
@@ -158,6 +159,7 @@ server =
         :<|> sessionServer
         :<|> mfaServer
         :<|> adminServer
+        :<|> adminUIPlaceholderHandler
 
 operatorServer :: ServerT OperatorAPI AppHandler
 operatorServer =
