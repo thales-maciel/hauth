@@ -32,8 +32,8 @@ following `{{var}}` placeholders:
 
 Unknown placeholders are left unchanged in the rendered output.
 
-Adding new variables is not supported in v0.2; variable expansion is deferred
-to v0.3.
+Adding new variables is not supported today; variable expansion is deferred
+to v0.4.
 
 ## Editing a Template
 
@@ -105,7 +105,7 @@ is also a no-op (idempotent).
 
 **Adding a new variable does not expand.**
 
-Variable substitution is fixed at compile time in v0.2. Only the four
+Variable substitution is fixed at compile time today. Only the four
 placeholders listed above are supported. Adding a custom `{{my_var}}` in
 the template body will leave `{{my_var}}` literally in the rendered output.
-New variable support is tracked for v0.3.
+New variable support is tracked for v0.4.

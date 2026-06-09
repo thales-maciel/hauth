@@ -137,7 +137,7 @@ Despite the @discovery_url@ field name, hauth does not fetch an OIDC
 discovery document — per-provider token and userinfo endpoints are
 compiled in (see "Hauth.OAuth.Google" and "Hauth.OAuth.Github").
 Per-provider scope configuration and runtime discovery are deferred to
-v0.3; see @docs\/OAUTH.md@ ("Status and limitations").
+v0.4; see @docs\/OAUTH.md@ ("Status and limitations").
 -}
 buildStubAuthorizeUrl ::
     OAuthProviderConfig ->

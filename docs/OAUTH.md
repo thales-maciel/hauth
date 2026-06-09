@@ -62,7 +62,7 @@ front is cheaper than discovering them at integration time.
   password login.
 - Built-in support for two providers: `google` and `github`.
 
-**Not implemented (deferred to v0.3 or later):**
+**Not implemented (deferred to v0.4 or later):**
 
 - **OIDC discovery-document fetch.** hauth does not load
   `.well-known/openid-configuration` at startup or per-request. The
@@ -76,7 +76,9 @@ front is cheaper than discovering them at integration time.
   v0.2.
 - **Arbitrary OIDC providers via config.** Adding a third provider
   requires the source-level steps described in "Adding new providers" at
-  the bottom of this page. v0.3 plans a config-only provider type.
+  the bottom of this page. v0.4 plans a config-only provider type. (v0.3
+  ships compiled-in modules for Microsoft, GitLab, Apple, and Discord —
+  see the v0.3 milestone.)
 
 **About the `discovery_url` field.** Despite its name, hauth does **not**
 treat this URL as an OIDC discovery document to be fetched. It is the
@@ -336,6 +338,6 @@ changes:
 2. Wire it into `src/Hauth/Server/OAuth.hs` by adding a new branch in the
    callback handler's provider dispatch.
 
-v0.3 is planned to introduce a config-only provider type for arbitrary OpenID
+v0.4 is planned to introduce a config-only provider type for arbitrary OpenID
 Connect providers, removing the need for source changes when the target is OIDC
 compliant.
