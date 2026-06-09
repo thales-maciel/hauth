@@ -82,15 +82,15 @@ We do not commit to:
 
 - **Admin UI implementation.** Haskell-rendered templates for single-binary simplicity.
 - **MFA scope for v0.1.** TOTP. WebAuthn likely v0.2.
-- **SAML / SSO.** v0.2 at earliest, more likely later.
+- **SAML / SSO.** v0.4 at earliest, more likely later.
 
 ## Roadmap shape
 
 Sequence, not dates.
 
-- **v0.1 — Core flows.** Email/password signup and login, password reset, email verification, OAuth (Google and GitHub), JWT with refresh rotation, sessions, basic admin API. Config file with validation. Static binary. `migrate` and `healthz`.
-- **v0.2 — Operator experience.** Admin UI. Webhook delivery log. Synchronous hooks. `verify` subcommand. Hot-reloaded email templates. `/healthz/deep`.
-- **v0.3 — Parity push.** TOTP MFA. Magic links. Phone/SMS OTP. Anonymous users. Additional OAuth providers. Audit log surfaced in admin UI.
+- **v0.1 — Core flows.** Email/password signup and login, password reset, email verification, OAuth (Google and GitHub), JWT with refresh rotation, sessions, basic admin API. Config file with validation. Static binary. `migrate` and `healthz`. *Shipped.*
+- **v0.2 — Operator experience.** Webhook delivery log. Synchronous hooks. `verify` subcommand. Hot-reloaded email templates. `/healthz/deep`. TOTP MFA. *Shipped.*
+- **v0.3 — Parity push.** Admin UI (deferred from v0.2). Magic links. Phone/SMS OTP. Anonymous users. Config-only OIDC OAuth provider. Additional first-party OAuth providers. Audit log surfaced in admin UI.
 - **v0.4+** — WebAuthn, SAML/SSO, captcha integrations, anything else needed for serious enterprise self-hosting.
 
 ## How we will know it is working
