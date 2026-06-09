@@ -233,8 +233,8 @@ transaction-pooling mode is incompatible with prepared statements. If you place
 pgBouncer in front of hauth in transaction mode, queries will fail. Session
 pooling mode works but provides no benefit over hauth's built-in pool.
 
-Do not use pgBouncer in front of hauth in v0.2. This constraint may be revisited
-in v0.3 if named prepared-statement support is added.
+Do not use pgBouncer in front of hauth today. This constraint may be revisited
+in v0.4 if named prepared-statement support is added.
 
 ---
 
@@ -461,7 +461,7 @@ sudo journalctl -u hauth --since "1 hour ago"
 sudo journalctl -u hauth -p err   # errors only
 ```
 
-Structured JSON log output is planned for v0.3. For now, use `journalctl`'s
+Structured JSON log output is planned for v0.4. For now, use `journalctl`'s
 `-o json` flag if you need to forward logs to a log aggregator:
 
 ```sh
@@ -605,7 +605,7 @@ These topics are out of scope for v0.2 and will be addressed in later milestones
   authentication events. This is planned for v0.3.
 
 - **Structured / JSON logs** — log output is human-readable text. JSON log
-  format is planned for v0.3.
+  format is planned for v0.4.
 
 - **Multi-region replication and HA failover** — hauth is a single-instance
   service in v0.2. For high availability, run it behind a load balancer with
@@ -613,7 +613,7 @@ These topics are out of scope for v0.2 and will be addressed in later milestones
   instances pointing at the same database.
 
 - **Container deploys** — Kubernetes and Docker Compose examples are deferred
-  to v0.3. This guide covers the binary + systemd path only.
+  to v0.4. This guide covers the binary + systemd path only.
 
 - **Cloud-vendor-specific guides** — AWS RDS, GCP Cloud SQL, Azure Database for
   PostgreSQL each have quirks (IAM auth, SSL cert pinning, etc.) not covered

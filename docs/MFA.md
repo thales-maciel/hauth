@@ -333,7 +333,7 @@ if claims["aal"] != "aal2":
 
 ## Recovery Codes
 
-Recovery codes are **not implemented in v0.1**.
+Recovery codes are **not implemented today** — they are tracked for v0.4.
 
 If a user loses access to their authenticator app, the only recovery path is
 for an administrator to delete the factor via the admin API:

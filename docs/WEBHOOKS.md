@@ -236,4 +236,4 @@ LIMIT 20;
 
 Webhook secrets, the subscription's `events` filter, and the retry/backoff
 schedule are not yet configurable per-subscription beyond what the admin API
-exposes today — that's a v0.3 enhancement.
+exposes today — that's a v0.4 enhancement.

@@ -41,7 +41,7 @@ Drop-in Supabase compatibility is the *wedge* — the reason someone bothers to 
 - **Hosted SaaS.** The product is the binary. Commercial offerings, if any, come later and built on top.
 - **Database-agnostic.** Postgres only. RLS-aware JWT issuance is the entire point.
 - **ORM layer.** Direct SQL via postgresql-simple. We want control over query shape and we want the `auth` schema to be inspectable as plain SQL.
-- **Reinventing OAuth.** Supported providers are Google and GitHub via the OAuth 2.0 authorization-code flow with compiled-in token and userinfo endpoints; arbitrary OIDC providers via runtime discovery are a v0.3 conversation. See [docs/OAUTH.md](docs/OAUTH.md) for what is and isn't covered today. No exotic flows.
+- **Reinventing OAuth.** Supported providers are Google and GitHub via the OAuth 2.0 authorization-code flow with compiled-in token and userinfo endpoints; arbitrary OIDC providers via runtime discovery are a v0.4 conversation. See [docs/OAUTH.md](docs/OAUTH.md) for what is and isn't covered today. No exotic flows.
 - **Multi-tenancy in v1.** Single project per deployment. Multi-project is a v2 conversation.
 - **Reshaping the Supabase JWT.** We may add fields, never move or rename existing claims.
 
@@ -81,8 +81,8 @@ We do not commit to:
 ## Open questions
 
 - **Admin UI implementation.** Haskell-rendered templates for single-binary simplicity.
-- **MFA scope for v0.1.** TOTP. WebAuthn likely v0.2.
-- **SAML / SSO.** v0.4 at earliest, more likely later.
+- **MFA scope for v0.1.** TOTP. WebAuthn likely v0.5.
+- **SAML / SSO.** v0.5 at earliest, more likely later.
 
 ## Roadmap shape
 
@@ -90,8 +90,9 @@ Sequence, not dates.
 
 - **v0.1 — Core flows.** Email/password signup and login, password reset, email verification, OAuth (Google and GitHub), JWT with refresh rotation, sessions, basic admin API. Config file with validation. Static binary. `migrate` and `healthz`. *Shipped.*
 - **v0.2 — Operator experience.** Webhook delivery log. Synchronous hooks. `verify` subcommand. Hot-reloaded email templates. `/healthz/deep`. TOTP MFA. *Shipped.*
-- **v0.3 — Parity push.** Admin UI (deferred from v0.2). Magic links. Phone/SMS OTP. Anonymous users. Config-only OIDC OAuth provider. Additional first-party OAuth providers. Audit log surfaced in admin UI.
-- **v0.4+** — WebAuthn, SAML/SSO, captcha integrations, anything else needed for serious enterprise self-hosting.
+- **v0.3 — Admin UI.** Admin UI (deferred from v0.2). Audit log surfaced in admin UI. Additional first-party OAuth providers (Microsoft, GitLab, Apple, Discord).
+- **v0.4 — Parity push.** Magic links. Phone/SMS OTP. Anonymous users. Config-only OIDC OAuth provider. MFA recovery codes. Webhook secret rotation. Structured JSON logging. Container deployment guides (Docker Compose, Kubernetes). Additional email template variables.
+- **v0.5+** — WebAuthn, SAML/SSO, captcha integrations, anything else needed for serious enterprise self-hosting.
 
 ## How we will know it is working
 
