@@ -1,6 +1,7 @@
 module Main (main) where
 
 import qualified E2E.AdminSpec
+import qualified E2E.AdminUISpec
 import qualified E2E.AuthSpec
 import qualified E2E.CompatibilityPlaceholdersSpec
 import qualified E2E.EmailDeliverySpec
@@ -45,6 +46,7 @@ allSpecs = do
     describe "MFA TOTP" E2E.MfaSpec.spec
     describe "migration drift detection" E2E.MigrateSpec.spec
     describe "admin users API" E2E.AdminSpec.spec
+    describe "admin UI sessions" E2E.AdminUISpec.spec
     describe "compatibility placeholder routes" E2E.CompatibilityPlaceholdersSpec.spec
     describe "health checks" E2E.HealthSpec.spec
     describe "OAuth (limited)" E2E.OAuthSpec.spec

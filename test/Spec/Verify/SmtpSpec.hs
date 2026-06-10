@@ -11,6 +11,7 @@ import Hauth.Config (
     OAuthConfig (..),
     ServerConfig (..),
     SiteConfig (..),
+    defaultAdminUIConfig,
  )
 import Hauth.Env (AppEnv (..), Logger (..))
 import Hauth.Verify (Check (..), CheckOutcome (..))
@@ -129,6 +130,7 @@ mkEnv smtpHost smtpPort =
                         { serverHost = "127.0.0.1"
                         , serverPort = 8080
                         }
+                , configAdminUI = defaultAdminUIConfig
                 }
         , appLogger = Logger $ \_level _msg -> pure ()
         , appConnectionPool = error "smtp tests do not use the connection pool"

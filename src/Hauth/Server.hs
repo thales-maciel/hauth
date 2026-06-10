@@ -29,8 +29,16 @@ import qualified Data.ByteString.Lazy.Char8 as BSLC
 import Data.Proxy (Proxy (Proxy))
 import Data.String (fromString)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import Hauth.API
 import Hauth.API.Auth
+import Hauth.AdminUI.Session (
+    AdminUISessionRow (..),
+    clearSessionCookie,
+    hashSessionToken,
+    lookupAdminUISession,
+    lookupSessionCookie,
+ )
 import Hauth.Auth.Jwt (AccessTokenClaims (..), validateAccessToken)
 import Hauth.Config (Config (..), ServerConfig (..))
 import Hauth.Env (
@@ -41,6 +49,7 @@ import Hauth.Env (
     logMessage,
     startRequiredBackgroundServices,
     stopBackgroundServices,
+    withDatabaseConnection,
  )
 import Hauth.Server.Admin (
     adminCreateUserHandler,
@@ -51,7 +60,12 @@ import Hauth.Server.Admin (
     adminListUsersHandler,
     adminUpdateUserHandler,
  )
-import Hauth.Server.AdminUI (adminUIPlaceholderHandler)
+import Hauth.Server.AdminUI (
+    adminUIHomeHandler,
+    adminUILoginPageHandler,
+    adminUILoginSubmitHandler,
+    adminUILogoutHandler,
+ )
 import Hauth.Server.Auth (
     recoverHandler,
     resendHandler,
@@ -103,8 +117,9 @@ import Servant.API (NoContent (..), type (:<|>) ((:<|>)))
 import Servant.Server (
     Context (EmptyContext, (:.)),
     Handler,
-    ServerError (errBody),
+    ServerError (errBody, errHeaders),
     ServerT,
+    err303,
     err401,
     err501,
     hoistServerWithContext,
@@ -118,6 +133,7 @@ type AuthContext =
     '[ AuthHandler Request AnonymousPrincipal
      , AuthHandler Request SessionPrincipal
      , AuthHandler Request ServiceRolePrincipal
+     , AuthHandler Request AdminUIPrincipal
      ]
 
 runServer :: Config -> IO ()
@@ -159,7 +175,7 @@ server =
         :<|> sessionServer
         :<|> mfaServer
         :<|> adminServer
-        :<|> adminUIPlaceholderHandler
+        :<|> adminUIServer
 
 operatorServer :: ServerT OperatorAPI AppHandler
 operatorServer =
@@ -200,6 +216,13 @@ adminServer =
         :<|> adminWebhookSubscriptionsServer
         :<|> adminHooksServer
         :<|> adminWebhookDeliveriesServer
+
+adminUIServer :: ServerT AdminUIAPI AppHandler
+adminUIServer =
+    adminUIHomeHandler
+        :<|> adminUILoginPageHandler
+        :<|> adminUILoginSubmitHandler
+        :<|> adminUILogoutHandler
 
 adminUsersServer :: ServerT AdminUsersAPI AppHandler
 adminUsersServer =
@@ -268,6 +291,7 @@ authContext env =
     anonymousAuth
         :. validSessionAuth env
         :. serviceRoleAuth env
+        :. adminSessionAuth env
         :. EmptyContext
 
 anonymousAuth :: AuthHandler Request AnonymousPrincipal
@@ -297,6 +321,36 @@ validSessionAuth env =
                         , sessionRole = claimRole claims
                         , sessionAccessTokenId = claimSessionId claims
                         }
+
+{- | Cookie-based auth for @/admin/ui/*@ pages. Unauthenticated browsers are
+redirected to the login page (303) instead of receiving a bare 401; a stale
+or unknown cookie is cleared on the way out.
+-}
+adminSessionAuth :: AppEnv -> AuthHandler Request AdminUIPrincipal
+adminSessionAuth env =
+    mkAuthHandler \request ->
+        case lookup "Cookie" (requestHeaders request) >>= lookupSessionCookie of
+            Nothing ->
+                throwError (redirectToLogin [])
+            Just token -> do
+                let tokenHash = hashSessionToken token
+                mRow <- liftIO (withDatabaseConnection env (`lookupAdminUISession` tokenHash))
+                case mRow of
+                    Nothing ->
+                        throwError
+                            (redirectToLogin [("Set-Cookie", TE.encodeUtf8 clearSessionCookie)])
+                    Just row ->
+                        pure
+                            AdminUIPrincipal
+                                { adminPrincipalUsername = adminUISessionUsername row
+                                , adminPrincipalTokenHash = adminUISessionTokenHash row
+                                }
+  where
+    redirectToLogin extraHeaders =
+        err303
+            { errHeaders = ("Location", "/admin/ui/login") : extraHeaders
+            , errBody = ""
+            }
 
 serviceRoleAuth :: AppEnv -> AuthHandler Request ServiceRolePrincipal
 serviceRoleAuth env =

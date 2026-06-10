@@ -11,18 +11,20 @@ This module exposes pure 'Html' values; HTTP wiring lives in
 "Hauth.Server.AdminUI".
 -}
 module Hauth.AdminUI (
-    placeholderPage,
+    homePage,
+    loginPage,
 ) where
 
+import Data.Text (Text)
 import Text.Blaze.Html5 (Html, (!))
 import qualified Text.Blaze.Html5 as H
 import qualified Text.Blaze.Html5.Attributes as A
 
-{- | Placeholder landing page served at @\/admin\/ui\/@ until the real
-shell (#207), login (#206), and per-resource pages (#208 onward) land.
+{- | Authenticated landing page served at @\/admin\/ui@. Still a placeholder
+until the real shell (#207) and per-resource pages (#208 onward) land.
 -}
-placeholderPage :: Html
-placeholderPage = layout "Hauth admin" $ do
+homePage :: Text -> Html
+homePage username = layout "Hauth admin" $ do
     H.h1 "Hauth admin"
     H.p
         "Placeholder. The operator-facing admin UI is being built out under \
@@ -33,6 +35,38 @@ placeholderPage = layout "Hauth admin" $ do
         H.a ! A.href "https://github.com/thales-maciel/hauth/milestone/3" $
             "github.com/thales-maciel/hauth/milestone/3"
         "."
+    H.p ! A.class_ "session" $ do
+        "Signed in as "
+        H.strong (H.toHtml username)
+        "."
+    H.form ! A.method "post" ! A.action "/admin/ui/logout" $
+        H.button ! A.type_ "submit" $
+            "Log out"
+
+{- | Login form served at @\/admin\/ui\/login@; the flag shows the
+generic failed-attempt message.
+-}
+loginPage :: Bool -> Html
+loginPage showError = layout "Log in — Hauth admin" $ do
+    H.h1 "Log in"
+    if showError
+        then H.p ! A.class_ "error" $ "Invalid username or password."
+        else mempty
+    H.form ! A.method "post" ! A.action "/admin/ui/login" $ do
+        H.label ! A.for "username" $ "Username"
+        H.input
+            ! A.type_ "text"
+            ! A.id "username"
+            ! A.name "username"
+            ! A.required "required"
+            ! A.autofocus "autofocus"
+        H.label ! A.for "password" $ "Password"
+        H.input
+            ! A.type_ "password"
+            ! A.id "password"
+            ! A.name "password"
+            ! A.required "required"
+        H.button ! A.type_ "submit" $ "Log in"
 
 {- | The single base layout every admin page renders through. Inline
 styles only — no external assets, no CDN. System font stack and neutral
@@ -65,8 +99,23 @@ baseStylesheet =
         \@media (prefers-color-scheme: dark) { \
         \  body { color: #e6e6e6; background: #1a1a1a; } \
         \  a { color: #8ab4f8; } \
+        \  input { color: inherit; background: #262626; border-color: #555; } \
         \}\n\
         \.container { max-width: 48rem; margin: 2rem auto; padding: 0 1rem; }\n\
         \h1 { font-size: 1.5rem; margin: 0 0 1rem; }\n\
         \p { margin: 0 0 1rem; }\n\
-        \a { color: #1a73e8; }\n"
+        \a { color: #1a73e8; }\n\
+        \label { display: block; margin: 0 0 0.25rem; }\n\
+        \input { \
+        \  display: block; \
+        \  width: 100%; \
+        \  max-width: 20rem; \
+        \  margin: 0 0 1rem; \
+        \  padding: 0.4rem 0.5rem; \
+        \  font: inherit; \
+        \  border: 1px solid #bbb; \
+        \  border-radius: 3px; \
+        \  box-sizing: border-box; \
+        \}\n\
+        \button { font: inherit; padding: 0.4rem 1rem; cursor: pointer; }\n\
+        \.error { color: #b3261e; }\n"

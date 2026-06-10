@@ -1,4 +1,6 @@
 module Hauth.Config (
+    AdminUIConfig (..),
+    AdminUICredential (..),
     Config (..),
     ConfigError (..),
     ConfigFieldError (..),
@@ -10,6 +12,7 @@ module Hauth.Config (
     ServerConfig (..),
     SiteConfig (..),
     decodeConfigBytes,
+    defaultAdminUIConfig,
     formatConfigError,
     loadConfig,
 ) where
@@ -18,6 +21,7 @@ import Control.Exception (IOException, try)
 import Data.Aeson (FromJSON (parseJSON), eitherDecodeStrict', withObject, (.:?))
 import qualified Data.ByteString as BS
 import Data.List (intercalate)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Hauth.Validation.URL (parseHttpUrl)
@@ -29,6 +33,7 @@ data Config = Config
     , configEmail :: EmailConfig
     , configOAuth :: OAuthConfig
     , configServer :: ServerConfig
+    , configAdminUI :: AdminUIConfig
     }
     deriving stock (Eq, Show)
 
@@ -143,6 +148,37 @@ data ServerConfig = ServerConfig
     }
     deriving stock (Eq, Show)
 
+data AdminUIConfig = AdminUIConfig
+    { adminUICredentials :: [AdminUICredential]
+    , adminUISessionTtlSeconds :: Int
+    }
+    deriving stock (Eq, Show)
+
+{- | Section default when @admin_ui@ is absent: no credentials, so every
+admin UI login attempt is rejected.
+-}
+defaultAdminUIConfig :: AdminUIConfig
+defaultAdminUIConfig =
+    AdminUIConfig
+        { adminUICredentials = []
+        , adminUISessionTtlSeconds = 3600
+        }
+
+data AdminUICredential = AdminUICredential
+    { adminUIUsername :: Text
+    , adminUIPasswordHash :: Text
+    }
+    deriving stock (Eq)
+
+-- | Manual 'Show' instance that redacts 'adminUIPasswordHash'.
+instance Show AdminUICredential where
+    show AdminUICredential{adminUIUsername} =
+        "AdminUICredential {adminUIUsername = "
+            <> show adminUIUsername
+            <> ", adminUIPasswordHash = "
+            <> redactedLiteral
+            <> "}"
+
 data ConfigFieldError = ConfigFieldError
     { configFieldPath :: String
     , configFieldMessage :: String
@@ -162,6 +198,7 @@ data RawConfig = RawConfig
     , rawConfigEmail :: Maybe RawEmailConfig
     , rawConfigOAuth :: Maybe RawOAuthConfig
     , rawConfigServer :: Maybe RawServerConfig
+    , rawConfigAdminUI :: Maybe RawAdminUIConfig
     }
     deriving stock (Eq, Show)
 
@@ -175,6 +212,7 @@ instance FromJSON RawConfig where
                 <*> object .:? "email"
                 <*> object .:? "oauth"
                 <*> object .:? "server"
+                <*> object .:? "admin_ui"
 
 data RawDatabaseConfig = RawDatabaseConfig
     { rawDatabaseUrl :: Maybe Text
@@ -281,6 +319,32 @@ instance FromJSON RawServerConfig where
                 <$> object .:? "host"
                 <*> object .:? "port"
 
+data RawAdminUIConfig = RawAdminUIConfig
+    { rawAdminUICredentials :: Maybe [RawAdminUICredential]
+    , rawAdminUISessionTtlSeconds :: Maybe Int
+    }
+    deriving stock (Eq, Show)
+
+instance FromJSON RawAdminUIConfig where
+    parseJSON =
+        withObject "AdminUIConfig" \object ->
+            RawAdminUIConfig
+                <$> object .:? "credentials"
+                <*> object .:? "session_ttl_seconds"
+
+data RawAdminUICredential = RawAdminUICredential
+    { rawAdminUIUsername :: Maybe Text
+    , rawAdminUIPasswordHash :: Maybe Text
+    }
+    deriving stock (Eq, Show)
+
+instance FromJSON RawAdminUICredential where
+    parseJSON =
+        withObject "AdminUICredential" \object ->
+            RawAdminUICredential
+                <$> object .:? "username"
+                <*> object .:? "password_hash"
+
 data Checked a = Checked
     { checkedErrors :: [ConfigFieldError]
     , checkedValue :: Maybe a
@@ -333,6 +397,7 @@ validateRawConfig RawConfig{..} =
         email = validateSection "email" rawConfigEmail validateEmail
         oauth = validateSection "oauth" rawConfigOAuth validateOAuth
         server = validateSection "server" rawConfigServer validateServer
+        adminUI = validateOptionalAdminUI rawConfigAdminUI
         errors =
             concatMap
                 checkedErrors
@@ -342,6 +407,7 @@ validateRawConfig RawConfig{..} =
                 , hideValue email
                 , hideValue oauth
                 , hideValue server
+                , hideValue adminUI
                 ]
      in case ( checkedValue database
              , checkedValue jwt
@@ -349,8 +415,9 @@ validateRawConfig RawConfig{..} =
              , checkedValue email
              , checkedValue oauth
              , checkedValue server
+             , checkedValue adminUI
              ) of
-            (Just databaseConfig, Just jwtConfig, Just siteConfig, Just emailConfig, Just oauthConfig, Just serverConfig) ->
+            (Just databaseConfig, Just jwtConfig, Just siteConfig, Just emailConfig, Just oauthConfig, Just serverConfig, Just adminUIConfig) ->
                 Right
                     Config
                         { configDatabase = databaseConfig
@@ -359,6 +426,7 @@ validateRawConfig RawConfig{..} =
                         , configEmail = emailConfig
                         , configOAuth = oauthConfig
                         , configServer = serverConfig
+                        , configAdminUI = adminUIConfig
                         }
             _ ->
                 Left errors
@@ -483,6 +551,55 @@ validateServer RawServerConfig{..} =
      in Checked
             (checkedErrors host <> checkedErrors port)
             (ServerConfig <$> checkedValue host <*> checkedValue port)
+
+{- | The @admin_ui@ section is optional: absent means the admin UI has no
+credentials and no login can succeed.
+-}
+validateOptionalAdminUI :: Maybe RawAdminUIConfig -> Checked AdminUIConfig
+validateOptionalAdminUI = \case
+    Nothing ->
+        valid defaultAdminUIConfig
+    Just RawAdminUIConfig{..} ->
+        let credentials = case rawAdminUICredentials of
+                Nothing ->
+                    invalid "admin_ui.credentials" "is required"
+                Just [] ->
+                    -- An explicitly empty list is an operator mistake: omit
+                    -- the whole admin_ui section to disable logins instead.
+                    invalid "admin_ui.credentials" "must contain at least one entry"
+                Just rawCredentials ->
+                    let checkedCredentials =
+                            zipWith validateAdminUICredential [0 :: Int ..] rawCredentials
+                     in Checked
+                            (concatMap checkedErrors checkedCredentials)
+                            (traverse checkedValue checkedCredentials)
+            ttl =
+                requiredPositiveInt
+                    "admin_ui.session_ttl_seconds"
+                    (Just (fromMaybe (adminUISessionTtlSeconds defaultAdminUIConfig) rawAdminUISessionTtlSeconds))
+         in Checked
+                (checkedErrors credentials <> checkedErrors ttl)
+                (AdminUIConfig <$> checkedValue credentials <*> checkedValue ttl)
+
+validateAdminUICredential :: Int -> RawAdminUICredential -> Checked AdminUICredential
+validateAdminUICredential index RawAdminUICredential{..} =
+    let fieldPath field = "admin_ui.credentials[" <> show index <> "]." <> field
+        username = requiredText (fieldPath "username") rawAdminUIUsername
+        passwordHash = requiredArgon2idHash (fieldPath "password_hash") rawAdminUIPasswordHash
+     in Checked
+            (checkedErrors username <> checkedErrors passwordHash)
+            (AdminUICredential <$> checkedValue username <*> checkedValue passwordHash)
+
+requiredArgon2idHash :: String -> Maybe Text -> Checked Text
+requiredArgon2idHash path value =
+    case requiredText path value of
+        Checked errors Nothing ->
+            Checked errors Nothing
+        Checked _ (Just text)
+            | "$argon2id$" `T.isPrefixOf` text ->
+                valid text
+            | otherwise ->
+                invalid path "must be a PHC-format argon2id hash (starts with $argon2id$)"
 
 requiredText :: String -> Maybe Text -> Checked Text
 requiredText path value =

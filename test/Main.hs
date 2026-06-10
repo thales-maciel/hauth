@@ -2,6 +2,7 @@ module Main (main) where
 
 import qualified Spec.API.GoldenSpec
 import qualified Spec.APISpec
+import qualified Spec.AdminUISessionSpec
 import qualified Spec.AdminUISpec
 import qualified Spec.Auth.AalAmrSpec
 import qualified Spec.Auth.AdminSpec
@@ -50,7 +51,8 @@ specs :: Spec
 specs = do
     describe "API golden encodings" Spec.API.GoldenSpec.spec
     describe "API server" Spec.APISpec.spec
-    describe "admin-ui placeholder page" Spec.AdminUISpec.spec
+    describe "admin-ui pages" Spec.AdminUISpec.spec
+    describe "admin-ui session primitives" Spec.AdminUISessionSpec.spec
     describe "auth/aal & amr" Spec.Auth.AalAmrSpec.spec
     describe "auth/admin users" Spec.Auth.AdminSpec.spec
     describe "auth/custom-access-token hook" Spec.Auth.CustomAccessTokenSpec.spec
