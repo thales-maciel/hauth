@@ -16,6 +16,7 @@ module Hauth.API.Types (
 ) where
 
 import Hauth.API.Types.Admin as X
+import Hauth.API.Types.AdminUI as X
 import Hauth.API.Types.Auth as X
 import Hauth.API.Types.Common as X
 import Hauth.API.Types.EmailTemplates as X

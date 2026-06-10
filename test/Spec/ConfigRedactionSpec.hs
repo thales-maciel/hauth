@@ -3,6 +3,8 @@ module Spec.ConfigRedactionSpec (spec) where
 import Data.Text (Text)
 import qualified Data.Text as T
 import Hauth.Config (
+    AdminUIConfig (..),
+    AdminUICredential (..),
     Config (..),
     DatabaseConfig (..),
     EmailConfig (..),
@@ -26,6 +28,9 @@ emailPasswordLiteral = "smtp-hunter2-do-not-leak"
 
 oauthSecretLiteral :: Text
 oauthSecretLiteral = "oauth-client-secret-do-not-leak"
+
+adminPasswordHashLiteral :: Text
+adminPasswordHashLiteral = "$argon2id$v=19$m=65536,t=3,p=4$ADMIN-HASH-MUST-NOT-LEAK$ADMIN-HASH-MUST-NOT-LEAK"
 
 sampleDatabase :: DatabaseConfig
 sampleDatabase =
@@ -80,6 +85,18 @@ sampleServer =
         , serverPort = 8080
         }
 
+sampleAdminUI :: AdminUIConfig
+sampleAdminUI =
+    AdminUIConfig
+        { adminUICredentials =
+            [ AdminUICredential
+                { adminUIUsername = "root"
+                , adminUIPasswordHash = adminPasswordHashLiteral
+                }
+            ]
+        , adminUISessionTtlSeconds = 900
+        }
+
 sampleConfig :: Config
 sampleConfig =
     Config
@@ -89,6 +106,7 @@ sampleConfig =
         , configEmail = sampleEmail
         , configOAuth = sampleOAuth
         , configServer = sampleServer
+        , configAdminUI = sampleAdminUI
         }
 
 containsRedacted :: String -> Bool
@@ -138,6 +156,15 @@ spec = do
         it "still prints non-secret fields" $
             T.isInfixOf "oauthProviderClientId = \"client-id\"" (T.pack rendered) `shouldBe` True
 
+    describe "AdminUICredential Show" $ do
+        let rendered = show sampleAdminUI
+        it "renders <redacted> in place of adminUIPasswordHash" $
+            rendered `shouldSatisfy` containsRedacted
+        it "does not leak the admin password hash" $
+            leaks adminPasswordHashLiteral rendered `shouldBe` False
+        it "still prints non-secret fields" $
+            T.isInfixOf "adminUIUsername = \"root\"" (T.pack rendered) `shouldBe` True
+
     describe "Config Show (aggregate)" $ do
         let rendered = show sampleConfig
         it "renders <redacted> for every nested secret field" $
@@ -147,3 +174,4 @@ spec = do
             leaks jwtSecretLiteral rendered `shouldBe` False
             leaks emailPasswordLiteral rendered `shouldBe` False
             leaks oauthSecretLiteral rendered `shouldBe` False
+            leaks adminPasswordHashLiteral rendered `shouldBe` False

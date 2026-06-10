@@ -4,6 +4,7 @@ module Hauth.API (
     AdminEmailTemplateAPI,
     AdminHooksAPI,
     AdminUIAPI,
+    AdminUIRedirect,
     AdminUsersAPI,
     AdminWebhookAPI,
     AdminWebhookDeliveriesAPI,
@@ -19,13 +20,16 @@ module Hauth.API (
 
 import Data.Proxy (Proxy (Proxy))
 import Data.Text (Text)
-import Hauth.API.Auth (AuthRequirement (Anonymous, ServiceRole, ValidSession), RequireAuth)
+import Hauth.API.Auth (AuthRequirement (AdminSession, Anonymous, ServiceRole, ValidSession), RequireAuth)
 import Hauth.API.Types
 import Servant.API (
     Capture,
     Delete,
     DeleteNoContent,
+    FormUrlEncoded,
     Get,
+    Header,
+    Headers,
     JSON,
     Post,
     PostNoContent,
@@ -34,7 +38,9 @@ import Servant.API (
     QueryParam',
     ReqBody,
     Required,
+    StdMethod (POST),
     Strict,
+    Verb,
     type (:<|>),
     type (:>),
  )
@@ -49,11 +55,19 @@ type HauthAPI =
         :<|> AdminAPI
         :<|> AdminUIAPI
 
-{- | Operator-facing admin UI. Anonymous-gated until #206 lands proper
-admin sessions; the placeholder page emits no sensitive data.
+{- | Operator-facing admin UI. Pages require an admin UI session cookie
+(#206); the login pair is anonymous and both mutations answer with a
+post-redirect-get 303.
 -}
 type AdminUIAPI =
-    RequireAuth 'Anonymous :> "admin" :> "ui" :> Get '[HTML] Html
+    RequireAuth 'AdminSession :> "admin" :> "ui" :> Get '[HTML] Html
+        :<|> RequireAuth 'Anonymous :> "admin" :> "ui" :> "login" :> QueryParam "error" Text :> Get '[HTML] Html
+        :<|> RequireAuth 'Anonymous :> "admin" :> "ui" :> "login" :> ReqBody '[FormUrlEncoded] AdminLoginForm :> Verb 'POST 303 '[HTML] AdminUIRedirect
+        :<|> RequireAuth 'AdminSession :> "admin" :> "ui" :> "logout" :> Verb 'POST 303 '[HTML] AdminUIRedirect
+
+-- | 303 with a target and an optional cookie mutation; body is empty HTML.
+type AdminUIRedirect =
+    Headers '[Header "Location" Text, Header "Set-Cookie" Text] Html
 
 type OperatorAPI =
     RequireAuth 'Anonymous :> "healthz" :> Get '[JSON] HealthResponse

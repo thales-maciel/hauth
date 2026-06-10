@@ -10,6 +10,7 @@ import Hauth.Config (
     OAuthConfig (..),
     ServerConfig (..),
     SiteConfig (..),
+    defaultAdminUIConfig,
  )
 import Hauth.Env (AppEnv (..), Logger (..))
 import Hauth.Verify.Identity (checks, placeholderJwtSecret)
@@ -107,6 +108,7 @@ baseConfig =
                 }
         , configOAuth = OAuthConfig{oauthProviders = []}
         , configServer = ServerConfig{serverHost = "127.0.0.1", serverPort = 8080}
+        , configAdminUI = defaultAdminUIConfig
         }
 
 withJwtSecret :: Text -> Config

@@ -31,6 +31,7 @@ expectedNames =
     , "0011_email_templates.sql"
     , "0012_email_templates_notify.sql"
     , "0013_migration_hash.sql"
+    , "0014_admin_ui_sessions.sql"
     ]
 
 -- Build an embedded map as checkDrift expects.

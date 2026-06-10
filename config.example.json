@@ -27,5 +27,14 @@
   "server": {
     "host": "127.0.0.1",
     "port": 8080
+  },
+  "admin_ui": {
+    "credentials": [
+      {
+        "username": "admin",
+        "password_hash": "$argon2id$v=19$m=65536,t=3,p=4$REPLACE-WITH-REAL-SALT$REPLACE-WITH-REAL-HASH"
+      }
+    ],
+    "session_ttl_seconds": 3600
   }
 }

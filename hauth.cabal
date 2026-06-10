@@ -54,6 +54,7 @@ library
     Hauth.API.Auth
     Hauth.API.Types
     Hauth.API.Types.Admin
+    Hauth.API.Types.AdminUI
     Hauth.API.Types.Auth
     Hauth.API.Types.Common
     Hauth.API.Types.EmailTemplates
@@ -64,6 +65,7 @@ library
     Hauth.API.Types.Settings
     Hauth.API.Types.Webhooks
     Hauth.AdminUI
+    Hauth.AdminUI.Session
     Hauth.Auth.AalAmr
     Hauth.Auth.Admin
     Hauth.Auth.Jwt
@@ -197,6 +199,7 @@ test-suite hauth-test
     Spec.API.Golden.SettingsSpec
     Spec.API.Golden.WebhooksSpec
     Spec.API.GoldenSpec
+    Spec.AdminUISessionSpec
     Spec.AdminUISpec
     Spec.APISpec
     Spec.Auth.AalAmrSpec
@@ -274,6 +277,7 @@ test-suite hauth-e2e
   hs-source-dirs: e2e
   other-modules:
     E2E.AdminSpec
+    E2E.AdminUISpec
     E2E.AuthSpec
     E2E.CompatibilityPlaceholdersSpec
     E2E.EmailDeliverySpec

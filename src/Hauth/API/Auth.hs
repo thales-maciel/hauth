@@ -1,6 +1,7 @@
 {-# OPTIONS_GHC -Wno-orphans #-}
 
 module Hauth.API.Auth (
+    AdminUIPrincipal (..),
     AnonymousPrincipal (..),
     AuthRequirement (..),
     RequireAuth,
@@ -25,12 +26,14 @@ data AuthRequirement
     = Anonymous
     | ValidSession
     | ServiceRole
+    | AdminSession
 
 type AuthScheme :: AuthRequirement -> Symbol
 type family AuthScheme requirement where
     AuthScheme 'Anonymous = "anonymous"
     AuthScheme 'ValidSession = "valid-session"
     AuthScheme 'ServiceRole = "service-role"
+    AuthScheme 'AdminSession = "admin-session"
 
 type RequireAuth :: AuthRequirement -> Type
 type RequireAuth requirement = AuthProtect (AuthScheme requirement)
@@ -50,9 +53,19 @@ newtype ServiceRolePrincipal = ServiceRolePrincipal
     }
     deriving stock (Eq, Show)
 
+{- | Proof of a live admin UI session (cookie validated against
+@auth.admin_ui_sessions@), distinct from JWT-backed 'SessionPrincipal'.
+-}
+data AdminUIPrincipal = AdminUIPrincipal
+    { adminPrincipalUsername :: Text
+    , adminPrincipalTokenHash :: Text
+    }
+    deriving stock (Eq, Show)
+
 type instance AuthServerData (AuthProtect "anonymous") = AnonymousPrincipal
 type instance AuthServerData (AuthProtect "valid-session") = SessionPrincipal
 type instance AuthServerData (AuthProtect "service-role") = ServiceRolePrincipal
+type instance AuthServerData (AuthProtect "admin-session") = AdminUIPrincipal
 
 {- | Extract a bearer token from a list of HTTP request headers.
 

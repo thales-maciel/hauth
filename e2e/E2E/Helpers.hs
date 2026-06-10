@@ -32,6 +32,8 @@ import Hauth.Auth.Jwt (
  )
 import Hauth.CLI (MigrateCommand (..))
 import Hauth.Config (
+    AdminUIConfig (..),
+    AdminUICredential (..),
     Config (..),
     DatabaseConfig (..),
     EmailConfig (..),
@@ -142,6 +144,7 @@ truncateAll TestEnv{testAppEnv} =
             execute_
                 conn
                 "TRUNCATE TABLE \
+                \  auth.admin_ui_sessions, \
                 \  auth.flow_state, \
                 \  auth.hooks, \
                 \  auth.mfa_factors, \
@@ -354,5 +357,16 @@ testingConfig dbUrl =
             ServerConfig
                 { serverHost = "127.0.0.1"
                 , serverPort = 8080
+                }
+        , configAdminUI =
+            AdminUIConfig
+                { adminUICredentials =
+                    [ AdminUICredential
+                        { adminUIUsername = "admin"
+                        , -- argon2id of "e2e-admin-password" (see E2E.AdminUISpec)
+                          adminUIPasswordHash = "$argon2id$v=19$m=65536,t=3,p=4$ecLE2swpiJ7g4nuWOtt+Hg$snkfbWnFPXKg24mntCv/SvsKj5lQTgUnAJrboa4m/7g"
+                        }
+                    ]
+                , adminUISessionTtlSeconds = 3600
                 }
         }

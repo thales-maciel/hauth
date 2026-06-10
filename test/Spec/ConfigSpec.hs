@@ -9,11 +9,14 @@ import qualified Data.Aeson.KeyMap as KeyMap
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BSL
 import qualified Data.Map.Strict as Map
+import qualified Data.Text as T
 import Hauth.API.Types (
     SettingsResponse (..),
     buildSettingsResponse,
  )
 import Hauth.Config (
+    AdminUIConfig (..),
+    AdminUICredential (..),
     Config (..),
     ConfigError (..),
     ConfigFieldError (..),
@@ -25,6 +28,7 @@ import Hauth.Config (
     ServerConfig (..),
     SiteConfig (..),
     decodeConfigBytes,
+    defaultAdminUIConfig,
  )
 import Hauth.Env (
     AppEnv (..),
@@ -110,6 +114,104 @@ spec = do
         rejectsSiteUrl "scheme with space (http:// bad)" ("http:// bad" :: String)
         rejectsSiteUrl "space in host (https://example .com)" ("https://example .com" :: String)
         rejectsSiteUrl "empty host (https:///missing-host)" ("https:///missing-host" :: String)
+
+    describe "decodeConfigBytes (admin_ui)" $ do
+        let argonHash =
+                "$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$c29tZWhhc2hzb21laGFzaHNvbWVoYXNo" :: String
+            mkAdminUI fragment =
+                BSC.pack $
+                    unlines
+                        [ "{"
+                        , "  \"database\": {\"url\": \"postgresql://hauth:hauth@localhost:5432/hauth\", \"pool_size\": 5},"
+                        , "  \"jwt\": {\"secret\": \"0123456789abcdef0123456789abcdef\", \"issuer\": \"hauth\", \"audience\": \"authenticated\", \"access_token_ttl_seconds\": 3600, \"refresh_token_ttl_seconds\": 2592000},"
+                        , "  \"site\": {\"url\": \"http://localhost:3000\", \"allowed_redirect_urls\": [\"http://localhost:3000\"]},"
+                        , "  \"email\": {\"from\": \"noreply@example.com\", \"smtp_host\": \"localhost\", \"smtp_port\": 1025},"
+                        , "  \"oauth\": {\"providers\": []},"
+                        , "  \"server\": {\"host\": \"127.0.0.1\", \"port\": 8080}" <> fragment
+                        , "}"
+                        ]
+
+        it "defaults to no credentials when the section is absent" $
+            case decodeConfigBytes "valid.json" validConfigBytes of
+                Left err -> expectationFailure ("valid config failed: " <> show err)
+                Right config -> configAdminUI config `shouldBe` defaultAdminUIConfig
+
+        it "parses credentials and session TTL" $
+            case decodeConfigBytes
+                "admin.json"
+                ( mkAdminUI
+                    ( ",\n  \"admin_ui\": {\"credentials\": [{\"username\": \"root\", \"password_hash\": \""
+                        <> argonHash
+                        <> "\"}], \"session_ttl_seconds\": 900}"
+                    )
+                ) of
+                Left err -> expectationFailure ("admin_ui config failed: " <> show err)
+                Right config ->
+                    configAdminUI config
+                        `shouldBe` AdminUIConfig
+                            { adminUICredentials =
+                                [ AdminUICredential
+                                    { adminUIUsername = "root"
+                                    , adminUIPasswordHash = T.pack argonHash
+                                    }
+                                ]
+                            , adminUISessionTtlSeconds = 900
+                            }
+
+        it "defaults session_ttl_seconds when omitted" $
+            case decodeConfigBytes
+                "admin.json"
+                ( mkAdminUI
+                    ( ",\n  \"admin_ui\": {\"credentials\": [{\"username\": \"root\", \"password_hash\": \""
+                        <> argonHash
+                        <> "\"}]}"
+                    )
+                ) of
+                Left err -> expectationFailure ("admin_ui config failed: " <> show err)
+                Right config ->
+                    adminUISessionTtlSeconds (configAdminUI config) `shouldBe` 3600
+
+        it "rejects an explicitly empty credentials list" $
+            case decodeConfigBytes
+                "admin.json"
+                (mkAdminUI ",\n  \"admin_ui\": {\"credentials\": []}") of
+                Left (ConfigValidationError _ errs) ->
+                    fmap configFieldPath errs `shouldBe` ["admin_ui.credentials"]
+                other ->
+                    expectationFailure ("expected ConfigValidationError, got: " <> show other)
+
+        it "rejects a password_hash that is not argon2id PHC" $
+            case decodeConfigBytes
+                "admin.json"
+                (mkAdminUI ",\n  \"admin_ui\": {\"credentials\": [{\"username\": \"root\", \"password_hash\": \"hunter2\"}]}") of
+                Left (ConfigValidationError _ errs) ->
+                    fmap configFieldPath errs
+                        `shouldBe` ["admin_ui.credentials[0].password_hash"]
+                other ->
+                    expectationFailure ("expected ConfigValidationError, got: " <> show other)
+
+        it "rejects a section without credentials" $
+            case decodeConfigBytes
+                "admin.json"
+                (mkAdminUI ",\n  \"admin_ui\": {\"session_ttl_seconds\": 900}") of
+                Left (ConfigValidationError _ errs) ->
+                    fmap configFieldPath errs `shouldBe` ["admin_ui.credentials"]
+                other ->
+                    expectationFailure ("expected ConfigValidationError, got: " <> show other)
+
+        it "rejects a non-positive session TTL" $
+            case decodeConfigBytes
+                "admin.json"
+                ( mkAdminUI
+                    ( ",\n  \"admin_ui\": {\"credentials\": [{\"username\": \"root\", \"password_hash\": \""
+                        <> argonHash
+                        <> "\"}], \"session_ttl_seconds\": 0}"
+                    )
+                ) of
+                Left (ConfigValidationError _ errs) ->
+                    fmap configFieldPath errs `shouldBe` ["admin_ui.session_ttl_seconds"]
+                other ->
+                    expectationFailure ("expected ConfigValidationError, got: " <> show other)
 
     describe "buildSettingsResponse" $ do
         let twoProviderConfig =
@@ -215,4 +317,5 @@ settingsTestConfig providers =
                 { serverHost = "127.0.0.1"
                 , serverPort = 8080
                 }
+        , configAdminUI = defaultAdminUIConfig
         }
